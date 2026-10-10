@@ -515,3 +515,69 @@ def test_a_video_that_is_not_live_is_not_marked_live():
     ]})[0]
     assert hit.live is False
     assert ytq.clock(hit.duration, hit.live) == "1m30s"
+
+
+# --------------------------------------------------------------------------- #
+# What `nibbles <x>` takes: what yt-dlp would
+# --------------------------------------------------------------------------- #
+
+
+def test_what_yt_dlp_would_take_is_taken(monkeypatch):
+    monkeypatch.setattr(ytq, "yt_dlp_takes", lambda text, timeout=30: text == "dQw4w9WgXcQ")
+    assert ytq.read_input("https://vimeo.com/76979871") == ("url", "https://vimeo.com/76979871")
+    assert ytq.read_input("youtu.be/dQw4w9WgXcQ") == ("url", "youtu.be/dQw4w9WgXcQ")
+    # A link typed without its scheme gets one, the way yt-dlp fixes it up.
+    assert ytq.read_input("example.com/a.iso") == ("url", "https://example.com/a.iso")
+    # yt-dlp's YouTube search keys are the app's own search.
+    assert ytq.read_input("ytsearch:crust of rust") == ("search", "crust of rust")
+    assert ytq.read_input("ytsearch5:rust") == ("search", "rust")
+    assert ytq.read_input("ytsearchdate:rust") == ("search", "rust")
+    # What only an extractor knows is a link: asked of yt-dlp.
+    assert ytq.read_input("dQw4w9WgXcQ") == ("url", "dQw4w9WgXcQ")
+
+
+def test_what_yt_dlp_would_not_take_is_not(monkeypatch):
+    monkeypatch.setattr(ytq, "yt_dlp_takes", lambda text, timeout=30: False)
+    for text in ("", "   ", "ytsearch:", "crust of rust", "stauts", "subs"):
+        assert ytq.read_input(text) is None, text
+    # And with no yt-dlp to ask, an extractor's word is not guessed at.
+    monkeypatch.setattr(ytq, "yt_dlp_takes", lambda text, timeout=30: None)
+    assert ytq.read_input("dQw4w9WgXcQ") is None
+
+
+def test_yt_dlp_itself_is_asked_offline(monkeypatch, tmp_path):
+    """Against a stand-in ``yt_dlp`` whose one extractor takes eleven-letter
+    ids, and whose catch-all takes everything: the catch-all is not asked."""
+    package = tmp_path / "yt_dlp"
+    (package / "extractor").mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "extractor" / "__init__.py").write_text(
+        "import re\n"
+        "class Youtube:\n"
+        "    @staticmethod\n"
+        "    def ie_key(): return 'Youtube'\n"
+        "    @staticmethod\n"
+        "    def suitable(text): return re.fullmatch(r'[0-9A-Za-z_-]{11}', text) is not None\n"
+        "class Generic:\n"
+        "    @staticmethod\n"
+        "    def ie_key(): return 'Generic'\n"
+        "    @staticmethod\n"
+        "    def suitable(text): return True\n"
+        "def gen_extractor_classes(): return [Youtube, Generic]\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    assert ytq.yt_dlp_takes("dQw4w9WgXcQ") is True
+    assert ytq.yt_dlp_takes("stauts") is False
+
+
+def test_a_link_only_yt_dlp_knows_opens_its_sheet_not_a_search(monkeypatch, capsys):
+    """``--link`` (nibbles' own, hidden) hands the app a link the field would
+    search for, marked as one."""
+    import nibbles
+
+    seen = {}
+    monkeypatch.setattr(ytq.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(nibbles, "run", lambda tab, first, *a, **k: seen.update(first=first) or [])
+    assert ytq.main(["--link", "dQw4w9WgXcQ"]) == 0
+    assert seen["first"] == ytq.LINK_KEY + "dQw4w9WgXcQ"

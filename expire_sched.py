@@ -1189,7 +1189,7 @@ def compose_status(
 
     doc = facts["portal"]
     if verdict == "empty":
-        wrapped("nibbles search or nibbles file to add something", "90")
+        wrapped("nibbles search or nibbles URL to add something", "90")
     elif verdict == "off":
         # The one verdict a reader can undo from the phone in their hand, so
         # it carries the undoing. The second half is there because the switch
@@ -1542,9 +1542,9 @@ def show_names() -> int:
 # Where downloads go
 # --------------------------------------------------------------------------- #
 
-#: Which command fills each destination, for the line that explains it.
-FILLED_BY = {"video": "nibbles URL", "audio": "nibbles URL, audio only",
-             "file": "nibbles file URL"}
+#: What fills each destination, for the line that explains it.
+FILLED_BY = {"video": "videos", "audio": "audio-only picks",
+             "file": "plain file URLs"}
 
 
 def show_dest(argv: list[str]) -> int:
@@ -1584,7 +1584,7 @@ def show_dest(argv: list[str]) -> int:
             note(_short(where), "")
             note(
                 f"{'set' if config.get(f'{kind}_dir') else 'default'}, "
-                f"used by {FILLED_BY[kind]}",
+                f"used for {FILLED_BY[kind]}",
                 "90",
             )
             problem = runner.dest_problem(where)
@@ -2369,7 +2369,6 @@ HELP = (
     ("path NAME", "where a finished download landed"),
     ("dest", "show or set where finished downloads are put"),
     ("settings", "show or set the window, the reserve and automatic downloads"),
-    ("queue", "just the queued item files"),
     ("logs", "last 40 lines of the runner log"),
     ("dump", "everything a bug report needs, in one paste"),
     ("run-now", "run the whole queue now; --blind if the portal is unreachable"),
@@ -2691,8 +2690,8 @@ def main(argv: list[str] | None = None) -> int:
     assume_yes = "--yes" in argv
     argv = [arg for arg in argv if arg != "--yes"]
 
-    # A URL is the queue ask itself — `nibbles file <url>` queues a direct file
-    # download, uniform with `nibbles <url>`. Routed before the verbs so a verb
+    # A URL is the queue ask itself — run directly, this file queues a direct
+    # file download for one (`nibbles <url>` decides page or file first). Routed before the verbs so a verb
     # can never shadow a URL (no verb contains "://"). The queuer keeps its
     # own module (dlq.py, with its own flags); this is only the door.
     if argv and "://" in argv[0]:
@@ -2743,22 +2742,6 @@ def main(argv: list[str] | None = None) -> int:
         tail(LOGS / "runner.log", 40)
     elif action == "dump":
         return dump(rest[0] if rest else None)
-    elif action == "queue":
-        # Same filter the runner applies: .staging and __pycache__ are not
-        # items, and listing them here reads as a queue with junk in it.
-        width = _width()
-        for path in sorted(QUEUE.glob("*")):
-            if path.name.startswith(".") or not path.is_file():
-                continue
-            size = f"{path.stat().st_size:,}"
-            # The whole file name, always: this is the raw view, and the names
-            # are what the other commands are given. The size moves under it
-            # rather than the name losing its tail.
-            if 9 + 2 + len(path.name) <= width:
-                print(f"{size:>9}  {path.name}")
-            else:
-                print(path.name)
-                print(f"  {size} bytes")
     elif action == "run-now":
         problem = root_problem() or shebang_problem()
         if problem:

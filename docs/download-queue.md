@@ -12,10 +12,9 @@ were two repos, `dlq` and `ytq`, until 2026-10-10). **One command is
 installable**, `nibbles` (see [Installing](#installing-the-commands)), and it
 then works from any directory: on its own it opens [the app](#the-app) on
 Search, `nibbles queue` opens it on its Queue tab, which is where the queue is
-worked on, `nibbles file <url>` queues a plain file URL, and every verb in
-these docs (`nibbles status`, `nibbles settings`, …) is one of its words —
-`nibbles help` lists them all. It installs no `ytq` or `dlq`, so an old
-install of either can stay on PATH beside it. Without installing, every line
+worked on, `nibbles <url>` queues a plain file URL (or opens a video page's
+sheet), and every verb in these docs (`nibbles status`, `nibbles settings`,
+…) is one of its words — `nibbles help` lists them all. Without installing, every line
 in these docs also works as `python3 ~/nibbles/nibbles.py …`.
 
 The runner reads the portal through the quota widget in a second checkout,
@@ -37,21 +36,25 @@ portal cannot be reached](#when-the-portal-cannot-be-reached).
 |---|---|
 | a video page (YouTube etc.) | `nibbles <url>` — see [ytq.md](ytq.md) |
 | no link, just a title | `nibbles search <words>` |
-| a direct file URL | `nibbles file <url>` |
+| a direct file URL | `nibbles <url>` — the same command |
 | something more exotic | write an item by hand — `queue/README.md` is the contract |
 
-`nibbles file` sizes the file from its response headers (headers only — costs no
-data), writes the queue item, and prints where the file will land:
+`nibbles <url>` first asks the server what the URL is — its headers only,
+~1 KB: HTML is a page, for yt-dlp and the video sheet; anything else is a
+file. (YouTube's own hosts are pages without asking, and any of the flags
+below says "a file" without asking.) For a file it then sizes it from the
+same kind of headers (no payload), writes the queue item, and prints where
+the file will land:
 
 ```
-nibbles file <url>                    # probe the size, queue it
-nibbles file <url> --name x.iso       # choose the saved file name
-nibbles file <url> --sha256 <hex>     # verify the file before delivery
-nibbles file <url> --probe            # just print size + resume support
-nibbles file <url> --expect-bytes N   # server won't state a size: set the
-                                  # most you are willing to let it cost
-nibbles file <url> --again            # queue it even though it is already
-                                  # queued or already downloaded
+nibbles <url>                    # probe the size, queue it
+nibbles <url> --name x.iso       # choose the saved file name
+nibbles <url> --sha256 <hex>     # verify the file before delivery
+nibbles <url> --probe            # just print size + resume support
+nibbles <url> --expect-bytes N   # server won't state a size: set the
+                                 # most you are willing to let it cost
+nibbles <url> --again            # queue it even though it is already
+                                 # queued or already downloaded
 ```
 
 A URL that is already in the queue, already downloaded or already given up on
@@ -64,9 +67,8 @@ Nothing downloads when you queue — the item just waits for the nightly window.
 ## Installing the commands
 
 Optional — the app runs fine as `python3 ~/nibbles/nibbles.py`. Installing
-just puts that on PATH as `nibbles`, the one command, from the one checkout;
-it installs no `ytq` or `dlq`, so it never clashes with an old install of
-either. The pyproject declares one dependency, **blessed**, which owns the
+just puts that on PATH as `nibbles`, the one command, from the one checkout
+(it installs no `ytq` or `dlq`). The pyproject declares one dependency, **blessed**, which owns the
 terminal for the screens (run uninstalled, that is `pip install blessed`);
 yt-dlp is a separate binary on PATH, and **bewitch**, the library the screens
 are drawn with, is a checkout beside this one (`~/bewitch`, or
@@ -205,9 +207,8 @@ tab's window card (see [The Queue tab](#the-queue-tab)), and the More tab
 holds the window, the reserve, the destinations, the nightly job and the
 runner log (`s` and `l` on the Queue tab go there directly). The command
 line is what is left for the things a screen cannot do: `path` prints a path
-and nothing else, so `cd (nibbles path ubuntu)` works; and a bare `nibbles`
-with no terminal to draw on — in a pipe, or a script — prints the status screen
-rather than opening anything.
+and nothing else, so `cd (nibbles path ubuntu)` works; and `nibbles status`
+prints the status screen in a pipe or a script, where there is no app.
 
 `nibbles status` answers "is it going to download tonight, and what". It leads
 with that answer and then shows the working:
@@ -332,10 +333,9 @@ nibbles queue     # the app on its Queue tab
 nibbles           # ...on Search
 ```
 
-`nibbles queue` opens the app on its Queue tab, and a bare `nibbles` on
-Search (`subs`, `wl` or `more` opens another tab). In a pipe or a script — no
-terminal to draw on — a bare `nibbles` prints `nibbles status` instead, which
-is what a bare `dlq` always did.
+`nibbles queue` opens the app on its Queue tab, a bare `nibbles` on Search,
+and `nibbles more` on More. With no terminal to draw on — a pipe, a script —
+there is no app, and it says so; `nibbles status` is the printed view.
 
 **One app, five tabs** along the bottom: **Search · Feed · Later · Queue ·
 More**. The first three are YouTube — see [ytq.md](ytq.md); Queue is the queue
@@ -595,7 +595,7 @@ else — the container on zero — the default stays the queue's own `out/`.
 A setting is read **when the file is delivered**, not when it was queued, so
 changing one moves everything already waiting in the queue as well — including
 the audio ones, which is the point of them being a kind rather than a folder
-chosen once. For a one-off, `nibbles --dest DIR` and `nibbles file --dest DIR` write an
+chosen once. For a one-off, `nibbles <url> --dest DIR` writes an
 absolute path into that item instead, and that wins over the kind.
 
 Finished files land directly in the folder, named as they were downloaded. A

@@ -35,14 +35,12 @@ playlist keeps, on the same cookie and the same bound.
 
 Usage::
 
-    ytq                      # search, or paste a URL into the same field
-    nibbles search crust of rust        # straight to the results
-    nibbles subs                 # straight to the subscription feed
-    nibbles <url>                # straight to the video sheet
-    nibbles --list <url>         # print the formats, write nothing
-    nibbles --list subs        # print the feed, write nothing
-    nibbles wl                   # straight to your Watch Later playlist
-    nibbles --now <url>          # open the video sheet ready to download now
+    nibbles                       # search, or paste a URL into the same field
+    nibbles search crust of rust  # straight to the results
+    nibbles <url>                 # straight to the video sheet
+    nibbles --now <url>           # open the video sheet ready to download now
+    nibbles --list <url>          # print the formats, write nothing
+    nibbles --list subs           # print the feed, write nothing
 
 The item it writes runs yt-dlp per firing (see :mod:`ytdl_item`); it never
 resolves a media URL up front, because those are signed and expire in hours,
@@ -60,14 +58,15 @@ choosing it does not end the session: the sheet closes, and the status bar
 along the foot says how far the download has got.
 
 This module is the YouTube half's logic and its printing paths. The screens are
-nibbles' (``nibbles.py``, ``yt_screens.py``): ``ytq`` opens the app on its
-Search tab, ``nibbles subs`` on Feed and ``nibbles wl`` on Later.
+nibbles' (``nibbles.py``, ``yt_screens.py``); ``nibbles`` opens the app on its
+Search tab, and ``nibbles.main`` decides what reaches :func:`main`.
 """
 
 from __future__ import annotations
 
 import argparse
 import fcntl
+import importlib.util
 import json
 import math
 import os
@@ -336,6 +335,86 @@ def looks_like_url(text: str) -> bool:
     if not text or " " in text:
         return False
     return "://" in text or text.startswith(("www.", "youtu.be/", "youtube.com/"))
+
+
+#: The prefix that says "this is a link yt-dlp takes, whatever it looks like":
+#: ``nibbles <x>`` hands the app a bare video id this way, which the field on
+#: its own would search for. The same shape as :data:`SUBS_KEY`.
+LINK_KEY = ":link:"
+
+#: yt-dlp's own YouTube search keys: ``ytsearch:``, ``ytsearch5:``,
+#: ``ytsearchdate:``, ``ytsearchall:``. The query after it is the app's search.
+_YT_SEARCH = re.compile(r"^ytsearch(?:date)?(?:\d+|all)?:(.+)$", re.S)
+
+#: yt-dlp's fixup for a link typed without its scheme: ``host.tld/path``.
+_NO_SCHEME = re.compile(r"^[^\s/:]+\.[^\s/]+/")
+
+#: Asked of yt-dlp's own extractors, in the interpreter that has them: does one
+#: other than the catch-all take this? Offline — it compiles patterns, nothing
+#: more. Exit 0 for yes, 1 for no; anything else is "could not ask".
+_SUITABLE = (
+    "import sys\n"
+    "from yt_dlp.extractor import gen_extractor_classes\n"
+    "text = sys.argv[1]\n"
+    "sys.exit(0 if any(ie.suitable(text) for ie in gen_extractor_classes()\n"
+    "                  if ie.ie_key() != 'Generic') else 1)\n"
+)
+
+
+def yt_dlp_takes(text: str, timeout: int = 30) -> bool | None:
+    """Whether one of yt-dlp's extractors (not the generic one) takes *text*,
+    asked of yt-dlp itself; ``None`` when there is no yt-dlp to ask.
+
+    In this interpreter if yt-dlp is a module here, else in the one its
+    command names on its first line. A single-file release names
+    ``/usr/bin/env python3`` and is itself the archive the module is in, so it
+    goes on ``PYTHONPATH`` too: for a console script that is a text file and
+    Python passes it over.
+    """
+    if importlib.util.find_spec("yt_dlp") is not None:
+        argv, env = [sys.executable], None
+    else:
+        binary = shutil.which("yt-dlp")
+        if not binary:
+            return None
+        python = shebang_of(binary)
+        if not python:
+            return None
+        if Path(python).name == "env":
+            python = shutil.which("python3") or sys.executable
+        argv = [python]
+        env = {**os.environ, "PYTHONPATH": binary}
+    try:
+        done = subprocess.run([*argv, "-c", _SUITABLE, text], capture_output=True,
+                              timeout=timeout, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {0: True, 1: False}.get(done.returncode)
+
+
+def read_input(text: str) -> tuple[str, str] | None:
+    """What yt-dlp would make of *text* on its command line, as ``nibbles
+    <text>`` takes it: ``("url", link)``, ``("search", words)``, or ``None``
+    for something it would not take either.
+
+    A link (with or without its scheme, which is added the way yt-dlp adds
+    it), ``ytsearch…:words`` (the app's own search), or anything one of
+    yt-dlp's extractors takes — a bare video id, for one — asked of yt-dlp.
+    """
+    text = text.strip()
+    if not text:
+        return None
+    found = _YT_SEARCH.match(text)
+    if found:
+        words = found.group(1).strip()
+        return ("search", words) if words else None
+    if looks_like_url(text):
+        return "url", text
+    if _NO_SCHEME.match(text) and " " not in text:
+        return "url", f"https://{text}"
+    if " " not in text and yt_dlp_takes(text):
+        return "url", text
+    return None
 
 
 def search_argv(query: str, count: int = SEARCH_RESULTS) -> list[str]:
@@ -2610,17 +2689,15 @@ def main(argv: list[str] | None = None) -> int:
             examples:
               nibbles                       search, or paste a URL, then pick
               nibbles search crust of rust  search youtube (~0.1 MB)
-              nibbles subs                  browse your subscription feed
               nibbles --list subs           print the feed, write nothing
-              nibbles wl                    browse your watch later playlist
               nibbles --list wl             print watch later, write nothing
               nibbles URL                   probe (~0.1-0.5 MB), pick, queue
               nibbles --now URL             pick, then start it in the background
               nibbles --list URL            print formats and caps, write nothing
               nibbles --list --from-json F  reprint a saved dump; costs no data
 
-            plain file URLs queue with nibbles file URL; the queue itself
-            is nibbles queue, or nibbles (status|list|arm|logs).
+            a plain file URL given to nibbles is queued as a file; the queue
+            itself is nibbles queue, or nibbles (status|list|arm|logs).
             docs: ~/nibbles/docs/ytq.md and ~/nibbles/docs/download-queue.md"""),
     )
     parser.add_argument(
@@ -2661,6 +2738,11 @@ def main(argv: list[str] | None = None) -> int:
         "directory (nibbles dest sets those)",
     )
     parser.add_argument(
+        "--link",
+        action="store_true",
+        help=argparse.SUPPRESS,  # nibbles <x>: the terms are one link yt-dlp takes
+    )
+    parser.add_argument(
         "--from-json",
         metavar="FILE",
         help="use a saved 'yt-dlp -J' dump or search instead of asking again; "
@@ -2690,7 +2772,7 @@ def main(argv: list[str] | None = None) -> int:
             return list_feed(feed=WATCH_LATER)
         if not (first or args.from_json):
             parser.error("--list needs a URL or --from-json")
-        if first and not looks_like_url(first):
+        if first and not (args.link or looks_like_url(first)):
             parser.error("--list prints one video's formats, so it needs a URL")
         return list_formats(first, args.from_json)
 
@@ -2702,6 +2784,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+    if args.link and first:
+        first = LINK_KEY + first
     if args.subs:
         # `--subs` is the flag spelling of the word the entry field already
         # takes, handed to `app` down that one road rather than as a second

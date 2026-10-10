@@ -13,10 +13,10 @@ cost.
 
 Usage::
 
-    nibbles file <url>                    # probe the size, queue it
-    nibbles file <url> --name x.iso       # choose the saved file name
-    nibbles file <url> --probe            # print size and resume support only
-    nibbles file <url> --expect-bytes N   # server states no size: set the cap
+    nibbles <url>                    # probe the size, queue it
+    nibbles <url> --name x.iso       # choose the saved file name
+    nibbles <url> --probe            # print size and resume support only
+    nibbles <url> --expect-bytes N   # server states no size: set the cap
 """
 
 from __future__ import annotations
@@ -118,6 +118,51 @@ def probe(url: str, timeout: int = TIMEOUT) -> tuple[int, bool | None]:
     )
 
 
+#: What a page is, as opposed to a file: these go to yt-dlp, which reads
+#: the page for the video in it; anything else is fetched as it is, by Range.
+PAGE_TYPES = ("text/html", "application/xhtml+xml")
+
+#: Hosts that are only ever pages, so asking them costs nothing at all.
+PAGE_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
+
+
+def kind_of(url: str, timeout: int = TIMEOUT) -> str:
+    """``"page"`` for a page yt-dlp reads, ``"file"`` for a file to fetch.
+
+    ``nibbles <url>`` is one door for both (2026-10-10), so this is the
+    question it asks: YouTube's hosts are pages without asking, and anything
+    else is asked by its headers — HEAD, or where that is refused a GET for
+    ``bytes=0-0`` closed unread, the same two looks :func:`probe` takes — and
+    is a page only when it says it is HTML. A file that names no type is
+    still a file: what is not a page has nothing in it for yt-dlp to find.
+    """
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if any(host == known or host.endswith(f".{known}") for known in PAGE_HOSTS):
+        return "page"
+    headers = None
+    try:
+        request = urllib.request.Request(url, method="HEAD", headers=BASE_HEADERS)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            headers = response.headers
+    except urllib.error.HTTPError:
+        pass  # Plenty of servers refuse HEAD; the ranged GET settles it.
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        raise ProbeError(f"cannot reach {url}: {exc}") from exc
+    if headers is None:
+        request = urllib.request.Request(url, headers={**BASE_HEADERS, "Range": "bytes=0-0"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                headers = response.headers
+        except urllib.error.HTTPError as exc:
+            raise ProbeError(f"HTTP {exc.code} {exc.reason}") from exc
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            raise ProbeError(f"cannot reach {url}: {exc}") from exc
+    if "attachment" in (headers.get("Content-Disposition") or "").lower():
+        return "file"
+    kind = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    return "page" if kind in PAGE_TYPES else "file"
+
+
 def name_from_url(url: str) -> str:
     """A filesystem-safe file name taken from the URL's last path segment."""
     path = urllib.parse.unquote(urllib.parse.urlsplit(url).path)
@@ -184,17 +229,18 @@ sys.exit(expire_dl.run(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="nibbles file",
+        prog="nibbles",
         description=__doc__.split("\n")[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             examples:
-              nibbles file https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop-amd64.iso
-              nibbles file https://x.example/build --name build.tar.gz --sha256 <hex>
-              nibbles file https://x.example/feed --expect-bytes 50000000
+              nibbles https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop-amd64.iso
+              nibbles https://x.example/build --name build.tar.gz --sha256 <hex>
+              nibbles https://x.example/feed --expect-bytes 50000000
 
-            for video pages use nibbles URL; the queue itself is
-            nibbles queue, or nibbles status. docs: ~/nibbles/docs/download-queue.md"""),
+            a video page at the same command goes to its video sheet; the
+            queue itself is nibbles queue, or nibbles status.
+            docs: ~/nibbles/docs/download-queue.md"""),
     )
     parser.add_argument("url", nargs="?", help="the file to download")
     parser.add_argument("--name", help="saved file name (default: from the URL)")
@@ -311,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
                 "       matched by name, not by URL; it may be another file",
                 file=sys.stderr,
             )
-        print("       nibbles file --again queues it a second time", file=sys.stderr)
+        print("       nibbles URL --again queues it a second time", file=sys.stderr)
         return 1
     problem = ytq.validate(path)
     if problem:

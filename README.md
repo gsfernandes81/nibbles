@@ -22,19 +22,19 @@ Queue, More — with buttons first and keys second, laid out for a phone in
 portrait. A tap on a button acts, a drag scrolls, and anything that spends data
 says what it costs on the button that spends it.
 
-**`nibbles` is the one command** (`nibbles help` lists it all). It installs
-no `ytq` or `dlq`, so an old install of either can stay on PATH beside it
-until the move below is done.
+**`nibbles` is the one command** (`nibbles help` lists it all); it installs
+no `ytq` or `dlq`.
 
-- **`nibbles`** opens the app on Search; off a terminal it prints the status.
-  `nibbles subs`, `wl`, `queue` or `more` open another tab.
-- **The YouTube half** (ytq's words): `nibbles search crust of rust` searches,
-  `nibbles <url>` opens that video, `--now` starts it, and `nibbles --list …`
-  prints with no screen at all. `docs/ytq.md` is the guide.
-- **The queue** (dlq's words): `nibbles file <url>` queues a plain file URL,
-  and every verb (`status`, `list`, `settings`, `arm`, `run-now`, `dump`, …)
-  is a `nibbles` verb; dlq's `queue` (the raw item files) is `nibbles files`,
-  because `queue` is the tab. `docs/download-queue.md` is the guide;
+- **`nibbles`** opens the app, on Search; `nibbles queue` or `more` on another
+  tab. Feed and Later are a tap away.
+- **`nibbles <url>`** takes whatever yt-dlp would — a link with or without its
+  scheme, a bare video id, `ytsearch:words` — and a plain file URL too. A video
+  page opens its sheet (`--now` starts it); a file is queued as a download.
+  Which is which is the server's own answer, from its headers (~1 KB), unless
+  a flag already says. `nibbles search crust of rust` searches, and
+  `nibbles --list …` prints with no screen at all. `docs/ytq.md` is the guide.
+- **The queue**: every verb (`status`, `list`, `settings`, `arm`, `run-now`,
+  `dump`, …) is a `nibbles` verb. `docs/download-queue.md` is the guide;
   `queue/README.md` is the item contract.
 
 `design/` holds the agreed design and its mockups, which are the spec the
@@ -85,12 +85,12 @@ so):
 ```
 git clone https://github.com/gsfernandes81/nibbles ~/nibbles
 git clone https://github.com/gsfernandes81/bewitch ~/bewitch    # if not there yet
-dlq cancel                                              # the OLD dlq: stop its job firing
+python3 ~/dlq/expire_sched.py cancel                    # stop the old job firing
 mv ~/dlq/queue/*.py ~/nibbles/queue/                    # pending items
 mv ~/dlq/{work,out,done,failed,logs} ~/nibbles/         # partials + history
 mv ~/dlq/{state.json,config.json} ~/nibbles/ 2>/dev/null
 sed -i 's|/home/dlq|/home/nibbles|g; s|/home/ytq|/home/nibbles|g' ~/nibbles/queue/*.py
-uv tool install --editable ~/nibbles                    # adds nibbles; ytq and dlq stay
+uv tool install --editable ~/nibbles
 ln -sf ~/nibbles/completions/nibbles.fish ~/.config/fish/completions/
 nibbles arm                                                 # register the runner in ~/nibbles
 nibbles status                                              # says what it found
@@ -100,11 +100,10 @@ The `sed` matters: an item spells the absolute paths of the modules it imports
 into its own `sys.path.insert` lines, and an item that cannot import its
 downloader fails every night without spending a byte. `nibbles dump` shows an
 item's head if one does. Keep `~/dlq` and `~/ytq` until a night has gone
-through, then delete them, and the old commands with them: `uv tool uninstall
-dlq; uv tool uninstall ytq`, and their completions (`rm
-~/.config/fish/completions/{dlq,ytq}.fish`). Until then the old `ytq` and
-`dlq` still run, against the old checkouts: nothing they install has a name
-`nibbles` installs.
+through, then delete them, along with the old completions (`rm
+~/.config/fish/completions/{dlq,ytq}.fish`) if they are still there. (The old
+commands are run by path above because they may already be uninstalled:
+`uv tool uninstall dlq; uv tool uninstall ytq` if not.)
 
 ## Checks
 

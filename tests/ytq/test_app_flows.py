@@ -218,3 +218,21 @@ def test_a_video_too_big_for_one_night_says_so_in_words():
     with_listing(app, info=big)
     tap(app, "row")
     assert "nights" in app.compose().plain()
+
+
+def test_a_link_only_yt_dlp_knows_opens_its_sheet_and_probes_it(monkeypatch):
+    """``nibbles dQw4w9WgXcQ``: the bare id reaches the app marked as a link,
+    and is probed as one rather than searched for."""
+    asked = []
+    monkeypatch.setattr(ytq, "probe", lambda url: asked.append(url) or video_info())
+    monkeypatch.setattr(ytq, "search", lambda q: (_ for _ in ()).throw(AssertionError(q)))
+    app = headless()
+    app.yt.route(ytq.LINK_KEY + "dQw4w9WgXcQ")
+    app.compose()
+    assert isinstance(app.sheets[-1], ys.VideoSheet)
+    for job, _ in list(app.jobs):
+        end = time.monotonic() + 5
+        while not job.finished and time.monotonic() < end:
+            time.sleep(0.01)
+        app.handle(tui.Done(job))
+    assert asked == ["dQw4w9WgXcQ"]

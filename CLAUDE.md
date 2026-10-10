@@ -25,8 +25,7 @@ README.
 ytq and dlq are **one buttons-first app on blessed**, drawn by bewitch, since
 2026-10-10: five tabs along the bottom (Search, Feed, Later, Queue, More),
 sheets from the bottom over a dimmed tab, and a status bar on the last row.
-`nibbles` opens it on Search (`nibbles subs` on Feed, `nibbles wl` on Later,
-`nibbles queue` on Queue). **`design/` is the spec**:
+`nibbles` opens it on Search (`nibbles queue` on Queue, `nibbles more` on More). **`design/` is the spec**:
 `design/design.md` holds every decision the owner made, `design/mockups/` the
 mockups (rendered from `design/mock/` with the same recipes, keyboard down and
 up), and `design/divergences.md` every place the build differs or had to fill
@@ -42,18 +41,30 @@ in what nothing draws.
   why — so the owner can approve it or send it back later. A divergence not
   in that file is a bug.
 - **`nibbles` is the one command** (the owner, 2026-10-10). `pyproject`
-  installs only `nibbles`, so an old `ytq` or `dlq` install can stay on PATH
-  beside it and nothing clashes. `nibbles.main` is a door, not a parser:
-  every word ytq and dlq took goes to the module that always answered it —
-  a tab word to the app (`subs`/`wl` through `ytq.main`, which keeps the
-  cookie checks; `queue`/`ui` through `expire_sched`'s `ui`), a URL or a
-  YouTube-only flag to `ytq.main`, `file` to `dlq.main`, and the queue's verbs
-  to `expire_sched.main` (its `queue`, the raw item files, is `files`, since
-  `queue` is the tab). **Words are never a search on their own**: `nibbles
-  search WORDS` searches, and anything else unknown is refused, because a
-  mistyped verb that became a search would spend data. `test_cli.py` (dlq)
-  pins every route. The modules keep their own `main`s for that door and for
-  running a file directly; `expire_sched._me()` names `nibbles`.
+  installs only `nibbles`. `nibbles.main` is a door, not a parser: every word
+  goes to the module that always answered it — `search`/`queue`/`ui`/`more`
+  to the app (`queue` through `expire_sched`'s `ui`, which names a broken
+  checkout first), `--list subs|wl` and `--from-json` to `ytq.main`, the
+  queue's verbs to `expire_sched.main`, and anything else to **what yt-dlp
+  would take** (`ytq.read_input`): a link with or without its scheme,
+  `ytsearch…:words` (the search), or whatever one of yt-dlp's own extractors
+  matches — asked of yt-dlp offline (`ytq.yt_dlp_takes`, in yt-dlp's own
+  interpreter), and handed to the app as `--link` (`LINK_KEY`) when the field
+  would otherwise search for it, a bare video id being the case. A link is
+  then a page or a file (`nibbles._url`): a flag only one of them takes says
+  which, YouTube's hosts are pages, and otherwise **the server's headers
+  decide** (`dlq.kind_of`, ~1 KB; HTML is a page, an attachment or anything
+  else a file) — never the name, and an unreachable server is an error, not
+  a guess. A page goes to `ytq.main`, a file to `dlq.main`. **A bare
+  `nibbles` only ever opens the app**: with no terminal it says it needs one
+  (the owner retired dlq's print-the-status fallback for it). **Words are
+  never a search on their own**: `nibbles search WORDS` searches, and anything
+  unknown is refused, because a mistyped verb that became a search would
+  spend data. There is no word for Feed or Later (a tap away), and none for
+  a file (`nibbles <url>` is both); dlq's raw `queue` listing is gone.
+  `test_cli.py` (dlq) pins every route. The modules keep their own `main`s
+  for that door and for running a file directly; `expire_sched._me()` names
+  `nibbles`.
 - **The layers.** `tui.py` is the one blessed `Terminal` (fullscreen, cbreak,
   hidden cursor, clicks and the wheel in SGR, restored on Ctrl-Z and on any
   exception) and turns what arrives into `Key`, `Tap`, `Scroll` (with the
@@ -111,15 +122,12 @@ in what nothing draws.
 
 ## Decisions that travel with the queue (dlq)
 
-- **A bare `nibbles` opens the screen** (Search; `default_action` is the same
-  rule for `expire_sched.py` run on its own, on Queue), and the other half is
-  the half to keep pinned: with no terminal (a pipe, a script, ssh with no
-  tty) it is `status`, which is what a bare `dlq` always printed.
-- **`nibbles file <url>` queues a direct file download**, uniform with `nibbles <url>`
-  (2026-08-28; it was a separate `dlq` command, then briefly a verb). A URL
-  is routed before the verbs — no verb contains `://` — and `dlq.py` keeps
-  its own module and flags; the dispatch in `expire_sched.main`
-  is only the door.
+- **`expire_sched.py` run on its own opens the screen** — `default_action`,
+  whose other half is still pinned for that file: with no terminal it is
+  `status`. (A bare `nibbles` no longer does this; see the one command.)
+- **`nibbles <url>` queues a direct file download** when the server says it
+  is a file (2026-10-10; before that `dlq <url>`, and once a separate
+  command). `dlq.py` keeps its own module and flags.
 - **The Queue tab is the whole queue.** dlq's listing and its legend row,
   the item screen and the settings page are gone (2026-10-10): the window
   card (the verdict, a bar of what the next window may spend against what
@@ -176,7 +184,7 @@ in what nothing draws.
   the portal is on the vessel's network, so it answering *is* "on vessel
   wifi".
 - **Nothing is queued twice** — items record `# SOURCE:` and `ytq.write_item`
-  is the one door that refuses a duplicate; `nibbles file` goes through it too.
+  is the one door that refuses a duplicate; a file URL goes through it too.
 - **Destinations**: `nibbles dest` holds them; the item always downloads into
   `out/<item>/` and the *runner* moves it at delivery (`shutil.move`, never a
   rename — shared storage is a different filesystem), so an unreachable

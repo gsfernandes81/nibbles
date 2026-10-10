@@ -15,15 +15,18 @@ it somewhere else with `nibbles dest video <dir>`.
 ```
 nibbles            # the app, on its Search tab: search, or paste a URL
 nibbles search crust of rust  # straight to the results
-nibbles subs           # straight to the Feed tab: your subscriptions
-nibbles wl             # straight to the Later tab: your Watch Later
 nibbles <url>          # straight to that video's sheet
 nibbles --now <url>    # its sheet, set to start it now
 ```
 
+`nibbles <url>` takes what yt-dlp itself would take: a link with or without
+its scheme (`youtu.be/dQw4w9WgXcQ`), a bare video id (`dQw4w9WgXcQ` — asked of
+yt-dlp's own extractors, offline), or `ytsearch:words`, which is the search.
+Anything that is not a page — a plain file URL — is queued as a file download
+instead; which it is comes from the server's headers (~1 KB), never the name.
+
 `nibbles` is the one command once installed — see
-[Installing](download-queue.md#installing-the-commands); it installs no `ytq`,
-so an old one can stay on PATH until you remove it. Uninstalled, it is
+[Installing](download-queue.md#installing-the-commands). Uninstalled, it is
 `python3 ~/nibbles/nibbles.py <url>`, and every `nibbles` line below reads the
 same way. `nibbles help` lists every word it takes.
 
@@ -78,8 +81,9 @@ video. The line says which of the two it matched (`same name, done
 2026-08-11`), because they are not equally good evidence.
 
 The check is in the one line every route to a queue item goes through, so it
-covers the search, a pasted URL, `--now` and `--from-json` alike; `nibbles file` is the
-same, keyed on the URL, with `nibbles file --again` for meaning it.
+covers the search, a pasted URL, `--now` and `--from-json` alike; a plain file
+queued by `nibbles <url>` is the same, keyed on the URL, with `--again` for
+meaning it.
 
 When you leave, it prints what the session queued:
 
@@ -147,7 +151,7 @@ matters — see the bot-check section below.
 
 ## Your subscription feed
 
-The Feed tab — or `subs` in the field, `nibbles subs`, or `nibbles --subs` — reads the
+The Feed tab — or `subs` in the field — reads the
 newest 30 videos from the accounts you follow. It reads itself the first time
 you open the tab in a session. The rows are a search's rows, so a video out of
 the feed is picked, sized, marked and queued exactly as a search hit is.
@@ -224,8 +228,8 @@ the feed is picked, sized, marked and queued exactly as a search hit is.
 
 ## Your Watch Later playlist
 
-The Later tab — or `wl` in the field, `watch later`, `nibbles wl`, `nibbles --wl`, or
-the playlist's own URL, `youtube.com/playlist?list=WL` — reads the first 30
+The Later tab — or `wl` in the field, `watch later`, or the playlist's own
+URL (in the field or as `nibbles <url>`), `youtube.com/playlist?list=WL` — reads the first 30
 videos of your Watch Later playlist. Everything in the feed section above
 holds for it too, on the same cookie, the same bound and the same prices: the
 foot goes deeper, thirty at a time to 150, and says the total first; Re-read
@@ -469,8 +473,10 @@ both handled in `~/.config/yt-dlp/config` rather than in `nibbles`:
   and how often you pick each height. It only decides what the sheet opens on
   and which quality buttons it shows. If the video does not offer the format
   you chose last, the closest resolution wins.
-- A plain file URL (not a video page) belongs in `nibbles file` instead — it slices
-  more precisely and skips the per-night metadata overhead.
+- A plain file URL (not a video page) is queued as a file by `nibbles <url>`
+  rather than through yt-dlp — it slices more precisely and skips the
+  per-night metadata overhead. Pasted into the app's field it is still a
+  video sheet's question.
 - Large videos span nights. Each nightly firing re-runs yt-dlp (media URLs
   expire in hours, so they must be re-resolved) at ~0.1–0.5 MB per firing;
   that overhead is already inside the declared cap.

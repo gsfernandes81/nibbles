@@ -23,21 +23,18 @@ end
 # offering nothing. --from-json and the directories ask for their own.
 complete -c nibbles -f
 
-# The app, on a tab. A bare `nibbles` opens Search.
+# The app, on a tab. A bare `nibbles` opens Search; a URL (a video page or a
+# plain file, told apart by its headers) is the other thing it takes.
 complete -c nibbles -n __nibbles_bare -a search   -d "search YouTube for the words after it (~0.1 MB)"
-complete -c nibbles -n __nibbles_bare -a subs     -d "your subscription feed (needs the yt-dlp cookies)"
-complete -c nibbles -n __nibbles_bare -a wl       -d "your Watch Later (needs the yt-dlp cookies)"
 complete -c nibbles -n __nibbles_bare -a queue    -d "the queue: reorder, rename, remove, retry, download now"
 complete -c nibbles -n __nibbles_bare -a more     -d "the settings, destinations and nightly job"
 
 # The commands that answer without the app.
-complete -c nibbles -n __nibbles_bare -a file     -d "queue a direct file download from a URL"
 complete -c nibbles -n __nibbles_bare -a status   -d "queue, budget, window times and job state"
 complete -c nibbles -n __nibbles_bare -a list     -d "every download, and how much of it is here"
 complete -c nibbles -n __nibbles_bare -a path     -d "where a finished download landed"
 complete -c nibbles -n __nibbles_bare -a dest     -d "show or set where finished downloads are put"
 complete -c nibbles -n __nibbles_bare -a settings -d "the window, the reserve, the budget and what is said"
-complete -c nibbles -n __nibbles_bare -a files    -d "just the queued item files"
 complete -c nibbles -n __nibbles_bare -a logs     -d "last 40 lines of the runner log"
 complete -c nibbles -n __nibbles_bare -a dump     -d "everything a bug report needs, in one paste"
 complete -c nibbles -n __nibbles_bare -a run-now  -d "fire the whole queue once, without waiting"
@@ -45,24 +42,31 @@ complete -c nibbles -n __nibbles_bare -a arm      -d "register the nightly job"
 complete -c nibbles -n __nibbles_bare -a cancel   -d "unregister it"
 complete -c nibbles -n __nibbles_bare -a help     -d "every command"
 
-# A video URL as the first word, or the YouTube flags anywhere.
+# A video page's flags.
 complete -c nibbles -l now -d "start it in the background instead of waiting for the window (spends data)"
 complete -c nibbles -l list -d "print the formats and caps (or subs, wl), write nothing"
 complete -c nibbles -l from-json -r -F -d "reuse a saved 'yt-dlp -J' dump or search; costs no data"
-complete -c nibbles -n "not __nibbles_after file" -l dest -r -F \
-    -d "put this one somewhere other than the configured video directory"
+complete -c nibbles -n __nibbles_url -l dest -r -F \
+    -d "put this one somewhere other than the configured directory"
 complete -c nibbles -n "__nibbles_after --list" -a "subs wl"
 
-# `nibbles file URL` queues a direct file download; these flags apply only
-# after `file`, so they never crowd the verb list.
-complete -c nibbles -n "__nibbles_after file" -l name -r -d "saved file name (default: taken from the URL)"
-complete -c nibbles -n "__nibbles_after file" -l number -r -d "queue priority prefix (default: after the last)"
-complete -c nibbles -n "__nibbles_after file" -l sha256 -r -d "verify the finished file before delivery"
-complete -c nibbles -n "__nibbles_after file" -l expect-bytes -r -d "spending cap when the server states no size"
-complete -c nibbles -n "__nibbles_after file" -l dest -r -d "put this one somewhere else"
-complete -c nibbles -n "__nibbles_after file" -l probe -d "print the size and resume support, write nothing"
-complete -c nibbles -n "__nibbles_after file" -l dry-run -d "print the item instead of writing it"
-complete -c nibbles -n "__nibbles_after file" -l again -d "queue it even though it is already queued or done"
+# A plain file URL's flags; offered only once a URL is typed, so they never
+# crowd the verb list. Any of them also says it is a file without asking.
+function __nibbles_url -d "a URL is already typed"
+    for token in (commandline -opc)[2..]
+        string match -q "*://*" -- $token; and return 0
+    end
+    return 1
+end
+
+complete -c nibbles -n __nibbles_url -l name -r -d "saved file name (default: taken from the URL)"
+complete -c nibbles -n __nibbles_url -l number -r -d "queue priority prefix (default: after the last)"
+complete -c nibbles -n __nibbles_url -l sha256 -r -d "verify the finished file before delivery"
+complete -c nibbles -n __nibbles_url -l expect-bytes -r -d "spending cap when the server states no size"
+complete -c nibbles -n __nibbles_url -l dest -r -d "put this one somewhere else"
+complete -c nibbles -n __nibbles_url -l probe -d "print the size and resume support, write nothing"
+complete -c nibbles -n __nibbles_url -l dry-run -d "print the item instead of writing it"
+complete -c nibbles -n __nibbles_url -l again -d "queue it even though it is already queued or done"
 
 # `nibbles names` prints `name<TAB>state`, which is fish's own format for a
 # candidate with a description, so the state shows up beside each name in the

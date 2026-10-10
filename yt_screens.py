@@ -113,6 +113,13 @@ class YouTube:
         text = text.strip()
         if not text:
             return
+        if text.startswith(ytq.LINK_KEY):
+            # A link yt-dlp takes that the field would search for (a bare
+            # video id), handed over by ``nibbles <x>``.
+            link = text[len(ytq.LINK_KEY):]
+            app.switch(0)
+            app.open(VideoSheet(app, link, link, ""))
+            return
         feed = ytq.which_feed(text)
         if feed is not None:
             app.switch(1 if feed is ytq.SUBS else 2)
@@ -716,7 +723,7 @@ class VideoSheet(Sheet):
             app.open(Notice("Nothing to queue", [
                 "no format has a size yt-dlp will state",
                 "nothing can be queued without one",
-                "a plain file URL queues with nibbles file instead: it slices by Range",
+                "nibbles <url> in a shell queues a plain file by Range instead",
             ]))
             return
         remembered = ytq.recalled_format()

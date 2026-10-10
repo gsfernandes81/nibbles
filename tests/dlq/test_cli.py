@@ -329,85 +329,6 @@ def test_the_listing_and_the_completions_show_the_same_downloads(dlq, capsys):
         assert line.count("\t") == 1
 
 
-def test_the_raw_queue_view_is_the_files_and_nothing_else(dlq, capsys):
-    dlq.item("10-thing.py")
-    (dlq.root / "queue" / ".staging").mkdir()
-    assert dlq.sched.main(["queue"]) == 0
-    said = capsys.readouterr().out
-    assert "10-thing.py" in said
-    assert "staging" not in said
-    assert "README" in said  # the raw view really is every file
-
-
-def test_the_destinations_answer_names_every_kind_and_who_fills_it(dlq, capsys):
-    """Three of them, because a film, a song and an installer do not belong in
-    the same folder on a phone."""
-    assert dlq.sched.main(["dest"]) == 0
-    said = capsys.readouterr().out
-    for kind in dlq.runner.DEST_KINDS:
-        assert kind in said
-        assert dlq.sched.FILLED_BY[kind].split(",")[0] in said
-    assert "default" in said
-
-
-def test_a_destination_that_is_not_one_is_refused_by_name(dlq, capsys):
-    assert dlq.sched.main(["dest", "photos", "/tmp"]) == 2
-    said = capsys.readouterr().err
-    for kind in dlq.runner.DEST_KINDS:
-        assert kind in said
-
-
-def test_the_settings_answer_names_every_setting_and_what_it_is(dlq, capsys):
-    dlq.config({"window_minutes": 45})
-    assert dlq.sched.main(["settings"]) == 0
-    said = capsys.readouterr().out
-    for name, spec in dlq.runner.SETTINGS.items():
-        assert name in said
-        assert spec["label"] in said
-    # Spelled the way the runner spells it everywhere, rather than the way
-    # this test would have spelled it: a setting that reads 60 in one place and
-    # 1h in another is two settings as far as anyone reading them is concerned.
-    assert dlq.runner.spell_setting("window", 45) in said
-    assert "set" in said and "default" in said
-
-
-def test_a_setting_the_file_holds_and_the_runner_declines_is_named(dlq, capsys):
-    """A list saying "default" all the way down with nothing explaining it is
-    the version of this screen that gets it rewritten."""
-    dlq.config({"window_minutes": 7})
-    assert dlq.sched.main(["settings"]) == 0
-    said = capsys.readouterr().out
-    assert "7" in said
-    assert "config.json" in said
-
-
-def test_a_config_that_will_not_parse_is_said_once_and_first(dlq, capsys):
-    dlq.config("{oops")
-    assert dlq.sched.main(["settings"]) == 0
-    # Wrapped to the terminal, so it is compared the way it is drawn.
-    said = " ".join(capsys.readouterr().out.split())
-    assert " ".join(dlq.runner.config_problem().split()) in said
-    assert "nothing can be set" in said
-
-
-def test_a_setting_that_is_not_one_is_refused_with_the_list(dlq, capsys):
-    assert dlq.sched.main(["settings", "colour", "blue"]) == 2
-    said = capsys.readouterr().err
-    for name in dlq.runner.SETTINGS:
-        assert name in said
-    # A name on its own is somebody halfway through changing it, not somebody
-    # asking what it is — the bare command already answered that.
-    assert dlq.sched.main(["settings", "window"]) == 2
-    assert "VALUE" in capsys.readouterr().err
-
-
-def test_a_value_the_shell_split_still_reads_as_one(dlq):
-    """``dlq settings window 45 min`` is a sentence, and the shell hands it
-    over in pieces."""
-    assert dlq.sched.main(["settings", "window", "45", "min"]) == 0
-    assert dlq.runner.settings()["window"] == 45
-
-
 def test_the_log_says_so_when_there_is_none_yet(dlq, capsys):
     assert dlq.sched.main(["logs"]) == 0
     assert "not written yet" in capsys.readouterr().out
@@ -783,8 +704,13 @@ def test_nibbles_is_the_only_executable_and_clashes_with_neither():
     assert project["project"]["name"] not in ("ytq", "dlq")
 
 
-def _routes(dlq, monkeypatch):
-    """Every door ``nibbles`` can open, each answering with where it went."""
+def _routes(dlq, monkeypatch, kind="page", takes=None):
+    """Every door ``nibbles`` can open, each answering with where it went.
+
+    *kind* is what a server's headers would say a URL is, and *takes* what
+    yt-dlp's extractors would say of a word — both asked of the network or of
+    yt-dlp for real, so both stood in for here; ``dlq.kind_of`` and
+    ``ytq.read_input`` have tests of their own."""
     import sys
 
     went = []
@@ -792,69 +718,160 @@ def _routes(dlq, monkeypatch):
     monkeypatch.setattr(dlq.queuer, "main", lambda argv: went.append(("file", argv)) or 0)
     monkeypatch.setattr(dlq.sched, "main", lambda argv: went.append(("queue", argv)) or 0)
     monkeypatch.setattr(dlq.app, "run", lambda tab, *a, **k: went.append(("app", tab)) or [])
+    monkeypatch.setattr(dlq.queuer, "kind_of", lambda url, timeout=0: kind)
+    monkeypatch.setattr(dlq.ytq, "yt_dlp_takes", lambda text, timeout=0: takes)
     monkeypatch.setitem(sys.modules, "ytq", dlq.ytq)
     monkeypatch.setitem(sys.modules, "dlq", dlq.queuer)
     monkeypatch.setitem(sys.modules, "expire_sched", dlq.sched)
     return went
 
 
-def test_every_word_ytq_and_dlq_took_reaches_what_answered_it(dlq, monkeypatch):
+def test_every_word_nibbles_takes_reaches_what_answers_it(dlq, monkeypatch):
     went = _routes(dlq, monkeypatch)
-    real_actions = dlq.sched.ACTIONS
     url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     table = [
         (["search", "crust", "of", "rust"], ("ytq", ["crust", "of", "rust"])),
-        (["subs"], ("ytq", ["--subs"])),
-        (["feed", "--list"], ("ytq", ["--subs", "--list"])),
         (["--list", "subs"], ("ytq", ["--subs", "--list"])),
-        (["wl"], ("ytq", ["--wl"])),
-        (["later", "--list"], ("ytq", ["--wl", "--list"])),
+        (["--list", "wl"], ("ytq", ["--wl", "--list"])),
         ([url], ("ytq", [url])),
-        (["--now", url], ("ytq", ["--now", url])),
-        (["--list", url], ("ytq", ["--list", url])),
+        (["--now", url], ("ytq", [url, "--now"])),
+        (["--list", url], ("ytq", [url, "--list"])),
         (["--list", "--from-json", "x.json"], ("ytq", ["--list", "--from-json", "x.json"])),
-        (["file", "https://x.example/a.iso"], ("file", ["https://x.example/a.iso"])),
         (["queue"], ("queue", ["ui"])),
         (["ui"], ("queue", ["ui"])),
         (["status"], ("queue", ["status"])),
-        (["files"], ("queue", ["queue"])),
         (["--list"], ("queue", ["--list"])),
         (["now", "10-thing", "--yes"], ("queue", ["now", "10-thing", "--yes"])),
         (["run-now", "--blind"], ("queue", ["run-now", "--blind"])),
         (["settings", "window", "45"], ("queue", ["settings", "window", "45"])),
+        (["ytsearch5:crust of rust"], ("ytq", ["crust", "of", "rust"])),
     ]
     for argv, where in table:
         went.clear()
         assert dlq.app.main(argv) == 0, argv
         assert went == [where], (argv, went)
-    # Every queue verb has its door, under its own name or its new one.
-    for action in real_actions:
+    # Every queue verb has its door.
+    for action in dlq.sched.ACTIONS:
+        if action in ("ui",):
+            continue
         went.clear()
-        word = {"queue": "files"}.get(action, action)
-        dlq.app.main([word])
+        dlq.app.main([action])
         assert went and went[0][0] == "queue", action
+
+
+def test_the_words_the_owner_took_out_open_nothing(dlq, monkeypatch):
+    """``subs``, ``wl``, ``feed``, ``later``, ``files`` and ``file`` were
+    words once (2026-10-10): Feed and Later are a tap away, and a URL is one
+    door for a page or a file."""
+    went = _routes(dlq, monkeypatch, takes=False)
+    for word in ("subs", "wl", "feed", "later", "files", "file", "--subs", "--wl"):
+        went.clear()
+        assert dlq.app.main([word]) == 2, word
+        assert went == [], (word, went)
+
+
+def test_a_url_is_a_page_or_a_file_by_what_its_server_says(dlq, monkeypatch):
+    url = "https://releases.example/ubuntu.iso"
+    went = _routes(dlq, monkeypatch, kind="file")
+    assert dlq.app.main([url, "--dest", "/tmp/x"]) == 0
+    assert went == [("file", [url, "--dest", "/tmp/x"])]
+    went = _routes(dlq, monkeypatch, kind="page")
+    assert dlq.app.main([url]) == 0
+    assert went == [("ytq", [url])]
+
+
+def test_what_a_flag_says_a_url_is_is_never_asked(dlq, monkeypatch):
+    """A file's own flags make it a file, a video's make it a page, and
+    neither asks the server."""
+    def asked(url, timeout=0):
+        raise AssertionError("the server was asked")
+
+    went = _routes(dlq, monkeypatch)
+    monkeypatch.setattr(dlq.queuer, "kind_of", asked)
+    url = "https://x.example/thing"
+    assert dlq.app.main([url, "--name", "a.bin"]) == 0
+    assert went[-1] == ("file", [url, "--name", "a.bin"])
+    assert dlq.app.main(["--now", url]) == 0
+    assert went[-1][0] == "ytq"
+
+
+def test_a_link_without_its_scheme_is_taken_as_yt_dlp_takes_it(dlq, monkeypatch):
+    went = _routes(dlq, monkeypatch, kind="file")
+    assert dlq.app.main(["releases.example/ubuntu.iso"]) == 0
+    assert went == [("file", ["https://releases.example/ubuntu.iso"])]
+
+
+def test_what_only_yt_dlp_knows_is_a_link_reaches_the_app_as_one(dlq, monkeypatch):
+    """A bare video id: no link to the eye, taken by yt-dlp's YouTube
+    extractor, and handed to the app marked, since the field would search."""
+    went = _routes(dlq, monkeypatch, takes=True)
+    assert dlq.app.main(["dQw4w9WgXcQ"]) == 0
+    assert went == [("ytq", ["--link", "dQw4w9WgXcQ"])]
+
+
+def test_a_server_that_cannot_be_asked_is_an_error_and_not_a_guess(dlq, monkeypatch, capsys):
+    went = _routes(dlq, monkeypatch)
+
+    def unreachable(url, timeout=0):
+        raise dlq.queuer.ProbeError("cannot reach it")
+
+    monkeypatch.setattr(dlq.queuer, "kind_of", unreachable)
+    assert dlq.app.main(["https://x.example/a"]) == 1
+    assert went == [] and "cannot reach" in capsys.readouterr().err
 
 
 def test_a_word_that_is_no_command_is_refused_and_spends_nothing(dlq, monkeypatch, capsys):
     """A mistyped verb must not become a search: a search spends data."""
-    went = _routes(dlq, monkeypatch)
+    went = _routes(dlq, monkeypatch, takes=False)
     assert dlq.app.main(["stauts"]) == 2
     assert went == []
     assert "nibbles search stauts" in capsys.readouterr().err
 
 
-def test_a_bare_nibbles_prints_the_status_off_a_terminal(dlq, monkeypatch):
-    """dlq's half to keep pinned: no terminal, the status."""
+def test_a_bare_nibbles_only_ever_opens_the_app(dlq, monkeypatch, capsys):
+    """Never the status in its place (the owner, 2026-10-10): with no
+    terminal there is no app, and it says so."""
     went = _routes(dlq, monkeypatch)
-    monkeypatch.setattr(dlq.app.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(dlq.app.sys.stdout, "isatty", lambda: True)
     assert dlq.app.main([]) == 0
-    assert went == [("queue", ["status"])]
+    assert went == [("app", "search")]
+    went.clear()
+    monkeypatch.setattr(dlq.app.sys.stdout, "isatty", lambda: False)
+    assert dlq.app.main([]) == 2
+    assert went == [] and "terminal" in capsys.readouterr().err
 
 
 def test_help_names_every_command_it_routes(dlq, capsys):
     assert dlq.app.main(["help"]) == 0
     said = capsys.readouterr().out
-    for word in ("search", "subs", "wl", "queue", "more", "file", "status", "list",
-                 "path", "dest", "settings", "run-now", "arm", "cancel", "logs",
-                 "files", "dump", "--list"):
+    for word in ("search", "queue", "more", "URL", "status", "list", "path", "dest",
+                 "settings", "run-now", "arm", "cancel", "logs", "dump", "--list"):
         assert word in said, word
+    for gone in ("nibbles subs", "nibbles wl", "nibbles file", "nibbles files"):
+        assert gone not in said, gone
+
+
+def test_a_server_says_whether_a_url_is_a_page_or_a_file(dlq, serving):
+    """``kind_of`` against a real server: HTML is a page, anything else a file,
+    an attachment is a file whatever it calls itself, and a server that will
+    not answer HEAD is asked by a ranged GET instead."""
+    serving.payload = b"x" * 100
+    for content_type, kind in (("text/html; charset=utf-8", "page"),
+                               ("application/xhtml+xml", "page"),
+                               ("application/octet-stream", "file"),
+                               ("video/mp4", "file"),
+                               (None, "file")):
+        serving.content_type = content_type
+        assert dlq.queuer.kind_of(serving.url) == kind, content_type
+    serving.content_type, serving.disposition = "text/html", "attachment; filename=a.html"
+    assert dlq.queuer.kind_of(serving.url) == "file"
+    serving.disposition = None
+    serving.head_code = 405
+    assert dlq.queuer.kind_of(serving.url) == "page"
+    assert serving.state_of_the_world["asked"] == ["bytes=0-0"]
+
+
+def test_youtube_is_a_page_without_asking(dlq):
+    for url in ("https://www.youtube.com/watch?v=x", "https://youtu.be/x",
+                "https://m.youtube.com/shorts/x"):
+        assert dlq.queuer.kind_of(url, timeout=0) == "page"
