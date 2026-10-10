@@ -721,10 +721,16 @@ before the reset. Where that figure comes from is the **budget source**,
 
 **What a manual budget may spend** is the allowance, less what the runner
 itself has moved since the last reset, less the reserve, less a margin of 32
-MiB for the bytes that move between two looks at the interface counter. The
-runner keeps its own ledger of what it moved, in `state.json` — every nightly
-item and every `dlq now`, measured off the phone's interface counters, which
-count every byte on the radio and so err high. `dlq status` lays it out:
+MiB for the bytes that move between two looks at a download. The runner keeps
+its own ledger of what it moved, in `state.json` — every nightly item and
+every `dlq now`. **On a phone that count comes from the download itself**:
+Android does not let an app read the interface counters (`/proc/net/dev` is
+permission denied), so the runner reads each download's own progress report
+— the figure `ytq`'s and `dlq`'s items keep, merges and renames included — and
+failing that, how much its files grew on disk, and charges either at 8% over
+for what the wire costs on top. Where the interface counters can be read, they
+are what is used, and they count every byte on the radio. `dlq status` lays it
+out:
 
 ```
 data
@@ -747,7 +753,7 @@ can give, and do nothing here.
 
 While a download runs, the guard is the same projection the portal's floor
 gets between polls: what was left when the item started, less what the
-interface counter says has moved since, stopped before the reserve. There is
+download has moved since by that same count, stopped before the reserve. There is
 no portal to poll and nothing to go dark. And no flag reaches past it:
 `--force` changes *when*, never how much, and `run-now --blind` has no portal
 to do without — on a manual budget it is an ordinary run against the

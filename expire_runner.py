@@ -991,6 +991,79 @@ def iface_bytes() -> int:
     return total
 
 
+def iface_readable() -> bool:
+    """Whether the interface counters can be read at all.
+
+    On an Android phone they cannot: ``/proc/net/dev`` is permission denied to
+    an app, and :func:`iface_bytes` answers that with nought, which every guard
+    built on it would read as "nothing has moved". Asked once per item, and
+    what it decides is which :class:`Meter` reading the guards act on.
+    """
+    try:
+        Path("/proc/net/dev").read_text()
+    except OSError:
+        return False
+    return True
+
+
+def _tree_bytes(*roots: Path) -> int:
+    """Every file's size under *roots*, the item's own progress file aside."""
+    total = 0
+    for root in roots:
+        for path in root.rglob("*") if root.is_dir() else ():
+            if path.name == ".status.json":
+                continue
+            with contextlib.suppress(OSError):
+                if path.is_file():
+                    total += path.stat().st_size
+    return total
+
+
+class Meter:
+    """What one run of an item has moved, where the interface cannot say.
+
+    The runner's own count is the interface counters, device-wide, and where
+    they can be read that is still the only figure used. Where they cannot —
+    every Android phone — two things are left, both read off the disk the item
+    downloads into: **the item's own report** (``payload_bytes_this_slice`` in
+    its ``.status.json``, the figure ``expire_dl`` and ``ytdl_item`` keep with
+    a high-water mark across merges and renames), and failing that, **how much
+    its two directories grew**. Either is payload, so it is charged at
+    :data:`WIRE_FACTOR` for what the wire costs on top.
+
+    The report is preferred to the growth because the growth over-counts a
+    merge — the parts and the merged file are both on disk for a moment — and
+    a guard that stops a download at the very end of it has spent the bytes
+    and struck nothing off the queue. Built before the item is spawned, so
+    what was already on disk is not charged to this run.
+    """
+
+    def __init__(self, work: Path, out: Path, run_id: str) -> None:
+        self.work, self.out, self.run_id = work, out, run_id
+        self.start = _tree_bytes(work, out)
+
+    def claimed(self) -> int | None:
+        """The item's own count of this run's payload, or ``None``."""
+        try:
+            report = json.loads((self.work / ".status.json").read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(report, dict) or report.get("run_id") != self.run_id:
+            return None
+        claim = report.get("payload_bytes_this_slice")
+        return max(0, int(claim)) if isinstance(claim, (int, float)) else None
+
+    def moved(self) -> int:
+        """Bytes this run is charged with so far, wire overhead included."""
+        claim = self.claimed()
+        payload = (
+            claim
+            if claim is not None
+            else max(0, _tree_bytes(self.work, self.out) - self.start)
+        )
+        return int(payload * WIRE_FACTOR)
+
+
 # --------------------------------------------------------------------------- #
 # The clock
 # --------------------------------------------------------------------------- #
@@ -1885,6 +1958,10 @@ def run_item(
     # For the ledger on the one path fire() never hears back from: a run
     # interrupted on its way through watch() returns nothing to be counted.
     began_iface = iface_bytes()
+    counted = iface_readable()
+    meter = Meter(work, out, run_id)
+    if not counted:
+        log("interface counters cannot be read; counting from the item's report")
     with log_path.open("a") as sink:
         sink.write(f"\n===== {stamp()} cap={cap} stop_in={until} =====\n")
         sink.flush()
@@ -1914,6 +1991,9 @@ def run_item(
             start_new_session=True,
         )
 
+    # What watch() counts by where the interface cannot be read: carried on
+    # the child it measures, so the supervisor's signature is the one it was.
+    child.meter = None if counted else meter
     # Not os.getpgid(): the child leads its own session, so this is its group
     # by construction, and it is still the answer if it has already exited.
     pgid = child.pid
@@ -1940,7 +2020,9 @@ def run_item(
         # a manual budget that forgot an interrupted download would spend the
         # same bytes again on the next run. fire() records every run that
         # returns; this is the one that does not.
-        note_spent(state, max(0, iface_bytes() - began_iface))
+        note_spent(
+            state, max(0, iface_bytes() - began_iface) if counted else meter.moved()
+        )
         save_state(state)
         raise
     report = read_status(work, run_id, spent)
@@ -1992,16 +2074,31 @@ def watch(
     poll, because nothing else is keeping count, so there is no portal to go
     dark either.
 
+    **Where the interface counters cannot be read** — every Android phone,
+    where ``/proc/net/dev`` is permission denied — the child carries a
+    :class:`Meter`, and every figure above that was an interface delta is that
+    meter's reading instead: the item's own report of its payload, or its
+    files' growth, at :data:`WIRE_FACTOR`. Without it the byte cap and the
+    projection would both read nought, for every download, for ever.
+
     The floor is re-asked of every fresh reading rather than worked out once at
     the start, because ``reserve-when-paid`` turns on a figure that moves: paid
     data bought mid-run waives the reserve from that poll on, and paid data
     spent to nothing puts it back. A floor decided before the first byte would
     be enforcing an answer to a question nobody asked tonight.
     """
+    meter = getattr(child, "meter", None)
     start_iface = iface_bytes()
+
+    def moved() -> int:
+        # The interface delta where it can be read — the code this always was —
+        # and the item's own report or its files' growth where it cannot.
+        return meter.moved() if meter else max(0, iface_bytes() - start_iface)
+
     last_portal = now()
     remainder = _remainder(doc) if doc else None
     remainder_iface = start_iface
+    remainder_moved = 0
     hard_floor = floor_bytes(doc) + FLOOR_MARGIN
     allowance = cap * 1.15 + 8 * MiB
     portal_dark_since: float | None = None
@@ -2017,7 +2114,7 @@ def watch(
             break
 
         current = now()
-        spent = max(0, iface_bytes() - start_iface)
+        spent = moved()
 
         if current >= stop_by:
             kill_tree(pgid, "deadline reached")
@@ -2030,7 +2127,11 @@ def watch(
         # interface delta, which over-counts — so the floor is approached
         # pessimistically rather than crossed unnoticed.
         if remainder is not None:
-            projected = remainder - max(0, iface_bytes() - remainder_iface)
+            projected = remainder - (
+                max(0, moved() - remainder_moved)
+                if meter
+                else max(0, iface_bytes() - remainder_iface)
+            )
             if projected <= hard_floor:
                 kill_tree(pgid, f"floor reached (projected {human(projected)})")
                 break
@@ -2046,6 +2147,7 @@ def watch(
                 portal_dark_since = None
                 remainder = fresh["today"]["remainder_bytes"]
                 remainder_iface = iface_bytes()
+                remainder_moved = moved() if meter else 0
                 hard_floor = floor_bytes(fresh) + FLOOR_MARGIN
                 if remainder <= hard_floor:
                     kill_tree(pgid, f"floor reached ({human(remainder)} left)")
@@ -2060,7 +2162,7 @@ def watch(
         child.wait(timeout=30)
     except subprocess.TimeoutExpired:
         kill_tree(pgid, "did not exit after signal")
-    return max(0, iface_bytes() - start_iface)
+    return moved()
 
 
 # --------------------------------------------------------------------------- #

@@ -15,6 +15,7 @@ permutation and over random nights, never by one queue that happens to fit.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import itertools
 from types import SimpleNamespace
 
@@ -355,3 +356,71 @@ def test_a_download_stopped_partway_is_still_charged(dlq, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         dlq.runner.run_item(item, 100 * MiB, dlq.runner.NO_DEADLINE, None, state)
     assert dlq.runner.manual_reading()["spent_bytes"] == 40 * MiB
+
+
+# --------------------------------------------------------------------------- #
+# On a phone, where the interface counters cannot be read
+# --------------------------------------------------------------------------- #
+
+
+def test_the_meter_takes_the_items_report_before_its_files(dlq, tmp_path):
+    """The report, at wire cost; a stale report is no report; then the files."""
+    work, out = tmp_path / "work", tmp_path / "out"
+    work.mkdir()
+    out.mkdir()
+    (work / "old.part").write_bytes(b"x" * 1000)  # there before the run
+    meter = dlq.runner.Meter(work, out, "run-1")
+    assert meter.moved() == 0
+
+    (out / "new.bin").write_bytes(b"x" * 2000)
+    assert meter.moved() == int(2000 * dlq.runner.WIRE_FACTOR)
+
+    status = {"run_id": "run-0", "payload_bytes_this_slice": 50}
+    (work / ".status.json").write_text(json.dumps(status))
+    assert meter.moved() == int(2000 * dlq.runner.WIRE_FACTOR)  # not this run's
+
+    status["run_id"] = "run-1"
+    (work / ".status.json").write_text(json.dumps(status))
+    assert meter.moved() == int(50 * dlq.runner.WIRE_FACTOR)
+
+
+def test_on_a_phone_a_firing_charges_what_the_item_reported(dlq, monkeypatch):
+    """A real item, ``/proc/net/dev`` denied: the ledger still hears of its bytes.
+
+    The item writes the report ``expire_dl`` writes, and what the ledger is
+    charged is that report at the wire's cost — not the nought the interface
+    counters read on Android, which would let a manual budget spend for ever.
+    """
+    manual(dlq, 1000)
+    monkeypatch.setattr(dlq.runner, "iface_readable", lambda: False)
+    monkeypatch.setattr(dlq.runner, "iface_bytes", lambda: 0)
+    monkeypatch.setattr(dlq.runner, "notify", lambda *args: None)
+    body = (
+        "import json, os\n"
+        "report = {'run_id': os.environ['EXPIRE_RUN_ID'],\n"
+        "          'payload_bytes_this_slice': 20 * 1024 * 1024, 'part_bytes': 0}\n"
+        "with open(os.path.join(os.environ['EXPIRE_WORK'], '.status.json'), 'w') as f:\n"
+        "    json.dump(report, f)\n"
+    )
+    dlq.script("10-a.py", body, cap=50 * MiB, partial=False)
+    assert dlq.runner.fire(force=True) == 0
+    charged = dlq.runner.manual_reading()["spent_bytes"]
+    assert charged == int(20 * MiB * dlq.runner.WIRE_FACTOR)
+
+
+def test_on_a_phone_a_download_started_now_is_charged_too(dlq, monkeypatch):
+    """``dlq now`` charges the ledger by the same meter when the counters are dark."""
+    manual(dlq, 1000)
+    monkeypatch.setattr(dlq.runner, "iface_readable", lambda: False)
+    monkeypatch.setattr(dlq.runner, "iface_bytes", lambda: 0)
+    body = (
+        "import os\n"
+        "with open(os.path.join(os.environ['EXPIRE_OUT'], 'file.bin'), 'wb') as f:\n"
+        "    f.write(b'x' * 300000)\n"
+    )
+    dlq.script("10-now.py", body)
+    row = dlq.sched.items()[0]
+    assert dlq.sched._run_item(dlq.runner, row, MiB) == 0
+    assert dlq.runner.manual_reading()["spent_bytes"] == int(
+        300_000 * dlq.runner.WIRE_FACTOR
+    )

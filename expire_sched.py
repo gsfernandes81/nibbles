@@ -2221,6 +2221,11 @@ def _run_item(runner, row: dict, slice_bytes: int) -> int:
         # The interface counter either side of the run, for the runner's ledger:
         # a download started now comes out of the same daily allowance a manual
         # budget spends against, and the night must know it has gone.
+        # On a phone the counters cannot be read at all, and the item's own
+        # report (or its files' growth) is the count instead — the runner's
+        # Meter, the same one a nightly firing charges by.
+        counted = runner.iface_readable()
+        meter = runner.Meter(work, out, run_id)
         began = runner.iface_bytes()
         child = subprocess.Popen(
             launch, stdout=sink, stderr=subprocess.STDOUT, env=env, cwd=str(work)
@@ -2228,7 +2233,9 @@ def _run_item(runner, row: dict, slice_bytes: int) -> int:
         try:
             code = _follow(child, work / ".status.json", run_id, row)
         finally:
-            moved = max(0, runner.iface_bytes() - began)
+            moved = (
+                max(0, runner.iface_bytes() - began) if counted else meter.moved()
+            )
 
     state = runner.load_state()
     runner.note_spent(state, moved)

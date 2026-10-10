@@ -229,19 +229,31 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
   source. **A manual budget spends the allowance, less what the runner itself
   moved since the last reset, less the reserve, less `FLOOR_MARGIN`**
   (`manual_spendable`) — the margin for its second reason, the bytes that move
-  between two looks at the interface counter. What it moved is a **ledger**,
+  between two looks at a running download. What it moved is a **ledger**,
   `state["spent"]`, `[epoch, bytes]` entries written by `note_spent` after
   every item `fire()` runs *and* every `dlq now`, kept for both sources so a
   switch mid-day starts from what was spent, and entries rather than a total
-  so "since the reset" is right however the reset is moved. It counts the
-  interface delta, device-wide, which errs high — but it cannot see what the
+  so "since the reset" is right however the reset is moved. **On the phone
+  the interface counters cannot be read** (`/proc/net/dev` is permission
+  denied to an app, and the owner's rule is to assume it is for everyone), and
+  `iface_bytes` answers that with nought, so every guard built on it read
+  "nothing moved": a manual ledger that never grew, and on zwana a byte cap
+  and a floor projection that never fired, with only the minute's portal poll
+  left. So `iface_readable()` is asked per item, and where it is false the
+  child carries a **`Meter`**: the item's own `payload_bytes_this_slice` for
+  this run id, else how much its `work/` and `out/` grew, at `WIRE_FACTOR`.
+  The report wins over the growth because the growth over-counts a merge, and
+  a cap that stops a download at its last second has spent the bytes for
+  nothing. `watch()`, an interrupted run, `fire()`'s ledger and `dlq now` all
+  charge by it; where the counters can be read nothing changes. The interface
+  delta, where there is one, errs high — but neither count can see what the
   rest of the phone used, which is why the reserve is **never waived** on a
   manual reading (`reserve-when-paid` turns on a paid figure only the portal
   has) and why the status screen says so under the figures. A ledger that
   cannot be read — `state.json` that will not parse, `spent` not a list —
   reads as the whole allowance spent, because forgetting a day's spending
   reads as an allowance nobody touched. In flight, `watch()` projects the
-  manual remainder down by the interface counter exactly as it projects the
+  manual remainder down by that same count exactly as it projects the
   portal's between polls, with nothing to poll and no portal to go dark.
   **`gate()` gains one verdict, `unset`, after `empty` and before `early`**:
   a standing setting rather than a moment, like `off`, so it is the answer at
@@ -495,7 +507,7 @@ One file per guarantee, and each says which:
 | `test_layout.py` | every line fits, at 32, 40, 80 and swept between |
 | `test_cli.py` | what a bare `dlq` does, and where each word goes |
 | `test_item_contract.py` | every way an item can fail to declare itself is a reason and never an exception |
-| `test_in_flight.py` | the guards that act while the bytes are moving: the byte cap, the floor, the deadline, a portal gone dark |
+| `test_in_flight.py` | the guards that act while the bytes are moving: the byte cap, the floor, the deadline, a portal gone dark — and all of them again with the interface counters dark, as on a phone |
 | `test_dump.py` | `dlq dump` finishes on the broken trees it exists for |
 | `test_screens.py`, `test_settings_screen.py` | the two screens, on a pty |
 
