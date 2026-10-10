@@ -446,7 +446,7 @@ def row_entry(row: dict, got: int, at: str, live: str = "", progress=None,
             sub = [w.Span(row["last"] or row["error"] or "gave up", w.Pen(fg=T.fg_more_subtle))]
         else:
             got_file = row["files"][0].name if row["files"] else ""
-            where = "deleted since" if row.get("lost") == "gone" else got_file
+            where = "deleted" if row.get("lost") == "gone" else got_file
             figure = shell.size(row["have"] or row["total"])
             sub = [w.Span(" · ".join(p for p in (figure, where) if p),
                           w.Pen(fg=T.fg_more_subtle))]

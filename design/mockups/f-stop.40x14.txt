@@ -2,7 +2,7 @@
 ╭────────────────────────────╮╭────────╮
 │ crust of rust              ││  ⏎ Go  │
 ╰────────────────────────────╯╰────────╯
-⣻ searching ~0.1 MB             x stop  
+⢿ searching ~0.1 MB             x stop  
 Recent ────────────────── free to reopen
                                        ┃
                                        ┃
@@ -11,4 +11,4 @@ Recent ────────────────── free to reopen
 ────────────────────────────────────────
  Search   Feed   Later   Queue    More  
                                         
- WAITING  opens 03:00                8h 
+ WAITING  opens 03:00                7h 

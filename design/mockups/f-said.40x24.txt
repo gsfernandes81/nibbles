@@ -21,4 +21,4 @@ queued Crust of Rust - Subtyping and Va…
 ────────────────────────────────────────
  Search   Feed   Later   Queue    More  
                                         
- WAITING  opens 03:00                8h 
+ WAITING  opens 03:00                7h 

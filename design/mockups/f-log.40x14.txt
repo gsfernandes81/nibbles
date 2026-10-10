@@ -2,7 +2,7 @@
  w window                       60 min ┃
    ahead of the reset, at 04:00 here   ┃
  r reserve                      100 MB ┃
-   kept back, never spent              ┃
+   kept back, never spent              │
 ╭──────────────────────────────────────╮
 │ Runner log ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
 │ 2026-10-09 23:00:04Z firing: window  │

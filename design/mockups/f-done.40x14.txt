@@ -1,4 +1,4 @@
- nibbles ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ queue • 19:28 
+ nibbles ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ queue • 19:43 
 ╭─────────────────────────╮╭───────────╮
 │ waiting · 636/763 MiB   ││ n Run now │
 ╰─────────────────────────╯╰───────────╯
@@ -6,9 +6,9 @@
 │  Queued 3  ││  Failed 1  ││  Done 1  │
 ╰────────────╯╰────────────╯╰──────────╯
  ✓ Crust of Rust - Lifetimes            
-   92 MiB · deleted since               
+   92 MiB · deleted                     
                                         
 ────────────────────────────────────────
  Search   Feed   Later   Queue    More  
                                         
- WAITING  opens 03:00                8h 
+ WAITING  opens 03:00                7h 

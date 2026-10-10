@@ -378,7 +378,7 @@ def build() -> list[dict]:
         "A failed download's second line is its last error; the mark is `×`.",
     ], group(1))
     add("f-done", "Words: the Done group", [
-        "A finished one's is its size and the file it delivered (or `deleted since`); the mark is `✓`.",
+        "A finished one's is its size and the file it delivered (or `deleted`); the mark is `✓`.",
     ], group(2))
     add("f-before", "Words: before the first reading", [
         "The window is `the window` until the queue's reading lands, never a made-up time.",

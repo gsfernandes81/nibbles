@@ -5,11 +5,11 @@
    kept back, never spent              ┃
  p reserve when paid             ◉ yes ┃
    keep it when paid data is there     ┃
+ b budget                        zwana ┃
+   what says how much may be spent     ┃
  a auto                           ◉ on ┃
    the nightly job downloads           ┃
  n notify blocked                 ◉ on ┃
-   say when a firing is blocked        ┃
- c skip codecs                    none ┃
 ╭──────────────────────────────────────╮
 │ skip codecs ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
 │ ╭──────────────────────────────────╮ │

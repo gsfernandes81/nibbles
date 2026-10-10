@@ -5,20 +5,20 @@
    kept back, never spent              ┃
  p reserve when paid             ◉ yes ┃
    keep it when paid data is there     ┃
+ b budget                        zwana ┃
+   what says how much may be spent     ┃
  a auto                           ◉ on ┃
    the nightly job downloads           ┃
  n notify blocked                 ◉ on ┃
    say when a firing is blocked        ┃
  c skip codecs                    none ┃
    the quality buttons pass these over ┃
- h quality chips               240-720 ┃
-   learned from what you pick          ┃
- d destinations                    out ┃
+ h quality chips               240-720 │
+   learned from what you pick          │
+ d destinations                    out │
    where finished files land           │
- j nightly job                   armed │
-   every 15m in the window             │
                                         
 ────────────────────────────────────────
  Search   Feed   Later   Queue    More  
                                         
- WAITING  opens 03:00                8h 
+ WAITING  opens 03:00                7h 

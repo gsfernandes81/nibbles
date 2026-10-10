@@ -2,13 +2,13 @@
  w window                       60 min ┃
    ahead of the reset, at 04:00 here   ┃
  r reserve                      100 MB ┃
-   kept back, never spent              ┃
+   kept back, never spent              │
  p reserve when paid             ◉ yes │
 ╭──────────────────────────────────────╮
 │ Destinations ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
-│    video · /tmp/nibbles-fillins-_y…  │
+│    video · /tmp/nibbles-fillins-oy…  │
 │    default, used by ytq              │
-│    audio · /tmp/nibbles-fillins-_y…  │
+│    audio · /tmp/nibbles-fillins-oy…  │
 │    default, used by ytq, audio only  │
-│    file · /tmp/nibbles-fillins-_yr…  │
+│    file · /tmp/nibbles-fillins-oyf…  │
 │    default, used by dlq              │

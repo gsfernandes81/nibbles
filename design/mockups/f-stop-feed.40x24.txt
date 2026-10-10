@@ -1,5 +1,5 @@
  nibbles ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ subscriptions 
- ⣻ reading subscriptions   ╭───────────╮
+ ⢿ reading subscriptions   ╭───────────╮
  0.2 MB · x stop           │ r Re-read │
                            ╰───────────╯
                                         
@@ -21,4 +21,4 @@
 ────────────────────────────────────────
  Search   Feed   Later   Queue    More  
                                         
- WAITING  opens 03:00                8h 
+ WAITING  opens 03:00                7h 

@@ -98,6 +98,11 @@ for the same approval.
 
 # Filled in where the spec is silent
 
+**Status: approved 2026-10-10, all of them**, from the rendered page
+(`design/mockups/fillins.html`, drawn by the real app), with one change the
+owner asked for: a Done download whose file was removed says `deleted`, not
+`deleted since`.
+
 ## The status bar for every verdict — 2026-10-10
 
 - Spec: `WAITING` (primary) when idle and `↓ 18%` (attention) while something
@@ -176,7 +181,7 @@ for the same approval.
 ## Words where no mockup has any — 2026-10-10
 
 - A failed download's second line is its last error; a finished one's is its
-  size and the file it delivered (or `deleted since`).
+  size and the file it delivered (or `deleted`).
 - Before the first reading lands the window is `the window` (`Queue for the
   window`), never a made-up time.
 - An empty group says so: `nothing queued — Search or Feed adds something`,
