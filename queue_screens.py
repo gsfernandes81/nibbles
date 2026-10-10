@@ -722,7 +722,12 @@ class QueueTab(Screen):
             return
         offer = job.result
         if offer["verdict"] not in ("go", "blind"):
-            app.say(offer["detail"])
+            # The runner's own words carry its UTC clock; the screen says the
+            # same refusal in its own, on the phone's clock (design §6).
+            said = ui.VERDICT_WORDS.get(offer["verdict"], offer["detail"])
+            if offer["verdict"] == "early":
+                said += f" · opens {shell.clock(offer['window_open'])}"
+            app.say(f"not run: {said}")
             return
         app.open(run_sheet(app, offer))
 

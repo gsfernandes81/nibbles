@@ -365,6 +365,19 @@ class ListView:
             pick = self.selectable()
             self.cursor = min(pick, key=lambda i: abs(i - self.cursor)) if pick else -1
 
+    def settle(self) -> None:
+        """Bounds, then the cursor back on screen by moving the view: what a
+        list that grew, shrank or was resized hands back is a place the
+        screen draws."""
+        self.clamp()
+        if self.cursor < 0 or not self.entries:
+            return
+        if self.cursor < self.top:
+            self.top = self.cursor
+        while self.top < self.cursor and self.cursor >= self.top + max(1, self.visible()):
+            self.top += 1
+        self.clamp()
+
     def _near(self, index: int, step: int) -> int:
         """The selectable entry nearest *index* going *step* (±1), or -1."""
         i = index
@@ -482,7 +495,7 @@ class ListView:
         """The visible entries, each a target *id* with its index, and the
         scrollbar in the last column."""
         self.y, self.height, self.width = y, height, width
-        self.clamp()
+        self.settle()
         self.shown = []
         row = y
         for i in range(self.top, len(self.entries)):
