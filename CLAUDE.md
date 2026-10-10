@@ -9,21 +9,27 @@ would expire anyway, and never more — and the screens are built for a
 ytq (the YouTube front end) and dlq (the expiring-quota download queue and its
 runner) were split out of the `or3` monorepo's `termux/expire/` on 2026-08-28
 and **merged into this repo on 2026-10-10**, histories kept. The modules are
-flat at the root and import each other by bare name; the only sibling checkout
-left is **zwana-quota** (the portal client and quota widget the runner reads
-its guard figures through): `$ZWANA_HOME`, a clone beside this repo, then
-`~/zwana-quota`. `expire_sched._zwana_root` predicts the runner's resolution so
+flat at the root and import each other by bare name. Two sibling checkouts
+are left: **zwana-quota** (the portal client and quota widget the runner reads
+its guard figures through: `$ZWANA_HOME`, a clone beside this repo, then
+`~/zwana-quota`) and **bewitch** (the Lip Gloss port every screen is drawn
+with: `$BEWITCH_HOME`, beside, then `~/bewitch`; `tui._bewitch_root`). The one
+installed dependency is **blessed**, which owns the terminal. `expire_sched._zwana_root` predicts the runner's resolution so
 `dlq status` can name a missing checkout instead of letting an import
 traceback. The phone's move from `~/dlq` + `~/ytq` to `~/nibbles` is in the
 README.
 
-## The rebuild in progress, and its spec
+## The app, and its spec
 
-Both screens are being rebuilt as **one buttons-first app on blessed**, drawn
-by bewitch (a sibling checkout: `$BEWITCH_HOME`, a clone beside this repo,
-then `~/bewitch`). **`design/` is the spec**: `design/design.md` holds every
-decision the owner made, and `design/mockups/` holds the mockups, rendered
-from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
+ytq and dlq are **one buttons-first app on blessed**, drawn by bewitch, since
+2026-10-10: five tabs along the bottom (Search, Feed, Later, Queue, More),
+sheets from the bottom over a dimmed tab, and a status bar on the last row.
+`ytq` opens it on Search (`ytq subs` on Feed, `ytq wl` on Later), `dlq` on
+Queue, and a bare `nibbles` on Search. **`design/` is the spec**:
+`design/design.md` holds every decision the owner made, `design/mockups/` the
+mockups (rendered from `design/mock/` with the same recipes, keyboard down and
+up), and `design/divergences.md` every place the build differs or had to fill
+in what nothing draws.
 
 - **Follow the mockups very closely.** Layout, wording, glyphs, colours by
   role, button sizes and what gives way first are all decisions, not
@@ -34,10 +40,60 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
   `design/divergences.md` — what the spec said, what was built instead, and
   why — so the owner can approve it or send it back later. A divergence not
   in that file is a bug.
-- The decisions below describe the screens as they are **today**; where the
-  spec replaces one (two hint sets, "a flick scrolls; only a keypress spends",
-  the four-screen ytq, the listing's legend row, `p spot`), the spec wins once
-  the rebuild lands, and the note goes when its code does.
+- **The layers.** `tui.py` is the one blessed `Terminal` (fullscreen, cbreak,
+  hidden cursor, clicks and the wheel in SGR, restored on Ctrl-Z and on any
+  exception) and turns what arrives into `Key`, `Tap`, `Scroll` (with the
+  cell the drag *began* on), `Resize` or `Done`; a mouse report is never a
+  key. `widgets.py` is bewitch-only drawing — button, dock, segmented,
+  checkbox, field, tab bar, status bar, sheet, dim — each returning a `Piece`
+  (a Block and its tap targets), and the `HitMap` taps are looked up in (last
+  composed wins); it reads no keys and is kept separable so it can move into
+  bewitch. `shell.py` is what the screens share: the words (`size`, `left`,
+  `clock`), the `ListView`, `Sheet`, `Confirm`, `Notice`. `nibbles.py` is the
+  loop. `yt_screens.py` and `queue_screens.py` are the screens. **bewitch
+  draws; it does not read the keyboard** — that is blessed's, here.
+- **Every button calls what its key and its command call** — `write_item`,
+  `do_reorder`, `do_remove`, `do_rename`, `do_requeue`, `do_clear_tries`,
+  `set_setting`, `set_dest`, `do_arm`, `do_cancel`, `queue_run_argv` — and
+  `queue_screens` is imported by the app when it starts, never at a module's
+  top, because `expire_ui` imports `expire_sched`, which imports `ytq`. **One
+  blessed session**: the queue's tabs draw into the same one.
+- **A tap is a tap; a drag is a scroll.** Termux decides before the app hears
+  anything: a tap is a press and a release sent on lift, only if the finger
+  did not move; a drag is wheel events, one per row, every one stamped with
+  where it began; a long press is Termux's selection. A button acts on the
+  press and fills for one frame (`tui.PRESSED`). `tui.Guard`: every tap is
+  dropped for 100 ms after a screen or sheet appears, and one on the same cell
+  for the rest of the 300 ms double-tap window. The last three columns of a
+  list are its bar: a tap there jumps, a drag that starts there moves the
+  thumb a row per row (`ListView.bar_drag`). The selection rides one item in
+  from the edge (Helix's scrolloff, `ListView.ride`/`follow`).
+- **Fetches run in the background, and only a deliberate act spends.** A
+  search, a format probe (one tap on a row), the feed's first read on first
+  opening its tab, Re-read, and the deeper look are `tui.Job`s; inside one,
+  `ytq.ask` runs yt-dlp through `tui.run_child`, which hands the child to the
+  job so `x` (Stop) can kill it, and outside one (the printing paths, the
+  tests) it is the plain `subprocess.run` it always was. **A fling's momentum
+  never fetches**: the deeper look takes a tap on `↓ 30 more`, ↓ on the last
+  row, or a *fresh* drag down after the list has rested at its end for
+  `yt_screens.REST`; momentum is an unbroken stream of wheel events, so it can
+  never produce the rest and then more (a pty test flings and then pulls).
+- **An idle screen writes nothing.** Everything goes through
+  `bewitch.screen.Frame`, which writes only changed lines and nothing for an
+  unchanged screen, and the loop blocks in `Session.read` until something
+  happens. Only a running fetch's spinner, the selected title's marquee, a
+  download's progress and the status bar's countdown wake it, and only while
+  they are changing (`App.next_wake`).
+- **Words** (design §6): the phone's clock and never UTC (`shell.clock`; the
+  runner's own `clock()` writes UTC for its log and is not shown on a screen),
+  no "tonight", nothing free or paid unless it is, time left in one unit
+  (`shell.left`), sizes in three figures (`shell.size`), and **one name
+  everywhere**: a video's download is its title cleaned only of what Android's
+  shared storage refuses (`ytq.title_name`), behind the `NN-`.
+- **Pause is SIGINT, both kinds**: `Firing.stop` (the whole queue) always was,
+  and `ytq.Running.stop` (one `dlq now`) is now too — it used to send SIGTERM;
+  the interrupt is the ctrl-c it replaces, and it reaches yt-dlp in the same
+  process group, which closes its part file.
 
 ## Decisions that travel with the queue (dlq)
 
@@ -49,20 +105,19 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
   is routed before the verbs — no verb contains `://` — and `dlq.py` keeps
   its own module and flags; the dispatch in `expire_sched.main`
   is only the door.
-- **The listing is the whole queue.** The old second-level queue screen is
-  gone (2026-09-02) — `dlq`'s listing is the only screen there is, and its
-  legend keys (`n` run now, `s` settings, `l` runner log) and the settings
-  page's (`d` destinations, `j` arm/cancel) reach everything that screen used
-  to. Every verb that lives at both ends is still **one function called by
+- **The Queue tab is the whole queue.** dlq's listing and its legend row,
+  the item screen and the settings page are gone (2026-10-10): the window
+  card (the verdict, a bar of what the next window may spend against what
+  expires, Run now), the Queued/Failed/Done filters and the rows are the tab,
+  a tap on a row opens its sheet with `actions_for`'s actions as buttons, and
+  More holds the settings, the destinations, the nightly job and the runner
+  log. Every verb that lives at both ends is still **one function called by
   both** — `do_arm`, `do_cancel`, `set_dest`, `queue_run_argv` — because a
   screen and a command that disagree about whether arming worked leave
-  nobody able to tell. It is also **ytq's screen**: `pick_place` is this
-  listing holding a phantom — a video not written yet, drawn and *planned*
-  through the same `preview`/`tonight_plan`/`cut_index`/`compose_rows` the
-  main screen uses (`holding` is the one held-item loop, `m` and the picker
-  both), so the cut line answers with the new item counted in the place it is
-  being dragged to; it writes nothing, and `place` takes the place afterwards
-  through `do_reorder`.
+  nobody able to tell. **Ordering lives only here**: Move holds a download as
+  a `◆` row, the window card and the cut line re-planned at every step through
+  `preview`, and drops it through `do_reorder`; ytq queues last and has no
+  place picker any more (the phantom row and write-then-place went with it).
 - **Done is newest first** (2026-10-08) — `_paths` orders `done/` by
   `_finished_order`: the day directory, then the item file's `st_ctime`
   (it arrives by rename, so that is when it finished — which is what lets
@@ -118,35 +173,25 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
   the alternative is a nightly job firing faithfully onto an empty queue,
   saying nothing. The Installing section of `docs/download-queue.md` explains it.
 
-- **A flick scrolls; only a keypress spends** (2026-08-28). The listing
-  takes wheel events — which is what Termux turns a touch drag into — through
-  `ytq.enable_touch_scroll`/`ytq.read_wheel` (one copy, in ytq): the cursor
-  in the list, the held item's position while moving. Wheels only, on
-  purpose: a tap must never press a key on a screen whose keys fire
-  downloads.
-- **One reading feeds the word, the figures and the bar** (2026-08-28). The
-  item screen showed a download's size twice — the head from `row["have"]`,
-  counted off the disk when the listing was read, and the foot from the
-  download's own `.status.json`, read fresh at draw time — so a second apart
-  they disagreed and nothing said which was stale. `item_screen` now asks
-  once per draw and hands the same reading to `_with_live` (head) and
-  `progress_bar` (foot), and the foot is a bar rather than a second copy of
-  the numbers. A live line naming a *different* item stays: that is the only
-  place that says so. Two rules travel with it: **`where` is the directory,
-  not the activity** — an item being downloaded is still in `queue/`, which
-  is why the head said "queued" over a download in flight, so the word is
-  now chosen by `Queue.downloading` while `where` goes on deciding
-  everything else; and **an unstated total is never invented**, because
-  `_of` prints the declared cap with a `≤` until a server states a size.
-  The bar is `=` against `·` like `quota_widget`'s, never block glyphs —
-  they are East-Asian ambiguous width and a phone may draw them double.
+- **One reading feeds the word, the figures and the bar** (2026-08-28). A
+  download's size was once shown twice, from two readings a second apart that
+  disagreed. The running download's sheet asks `QueueModel.progress` once per
+  draw and hands that one reading to the line, the figures and the bar. Two
+  rules travel with it: **`where` is the directory, not the activity** — an
+  item being downloaded is still in `queue/`, so the word is chosen by what
+  is downloading while `where` decides everything else; and **an unstated
+  total is never invented**, because `queue_screens.amount` (like `_of` for
+  the printed listing) shows the declared cap with a `≤` until a server
+  states a size, and a bar with no total stays empty. The bar is bewitch's
+  `█` against `░`, both one column in Termux (checked on the phone,
+  2026-10-10, design §10).
 - **`dlq dump [NAME]` is the bug report** (2026-08-28): environment, how the
   queue root and zwana-quota resolved, gate verdicts, state rows, failing
   items' heads and the newest logs, every section guarded so it finishes on
   the broken trees it exists for. (The `ytdl_item.py` shim pre-split items
   imported off the queue root went with the merge: the real module is at the
   queue root now.)
-- **`dlq settings` / `s` on the main screen** (2026-09-02): the window, the
+- **`dlq settings` / the More tab** (2026-09-02): the window, the
   reserve, `reserve-when-paid`, `paid-min`, `auto` and `notify-blocked` live
   in `config.json` beside the destinations, and are read at the moment they
   are used, never cached — `expire_runner.SETTINGS` is the one spec, and both
@@ -161,30 +206,21 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
   at the top of a firing nobody is watching, and a stray character typed into
   the file must not be able to stop a night's downloads or take out the
   reserve on its way past — `dlq settings` and `dlq dump` name what they
-  declined instead. **A change stays on the page and is said there**: the
-  screen used to return on the first one, which put somebody back on the
-  listing they had not asked for, one keypress into a page of six settings,
-  with the change's own sentence — 67 columns of it — clipped onto the row the
-  legend keys sit on. Both pages stay now, redraw, and say what happened in a
-  **said area** under the rows (`said_lines`, wrapped, in the flash tone); the
-  foot goes on carrying the hints and nothing but each screen's own one-line
-  refusals, so no sentence is ever both clipped and whole. What comes back is
-  the **receipts** — a list, `dest_screen`'s handed up to `settings_screen`
-  and `settings_screen`'s extending the listing's — and the tonight reading is
-  re-asked once, on the way out, rather than at every change. **Reading a
+  declined instead. **A change stays on the page and is said there**: More
+  is a tab, a switch flips where it sits, a number opens a sheet that closes
+  on Set, and what the change did is said on the line above the tabs; every
+  change that took is also a receipt printed once the terminal is given back.
+  Every setting in `SETTINGS` is a row, in its order, with a key in
+  `queue_screens.SETTING_KEYS` (a test fails until a new one has one), and
+  `paid-min` is a row only while the waiver is on. **Reading a
   broken `config.json` is forgiving; writing over one is refused** —
   `load_config` answers a file that will not parse with an empty dict, so a
   save on top of it would be a fresh file holding only the new key, with the
   destinations and the other settings gone under a line saying it worked.
   `config_problem` is the one line that says so:
-  `set_setting` and `set_dest` refuse with it and write nothing, and both
-  screens and the dump print it. Six settings do not fit a 20-row phone, so
-  `settings_body` — the one rule, checked rather than trusted — gives up the
-  blank lines between the blocks first, then the grey line saying what each
-  setting means, and last the said area, never a setting's name, its value or
-  a red line naming a stored value being ignored. The said area goes last of
-  the three and not first: dropping it first would leave the 20-row phone that
-  most needs the sentence the one screen that never shows it. And **whether a
+  `set_setting` and `set_dest` refuse with it and write nothing, and More, the
+  command and the dump all print it (ytq's own preferences, `ytq_prefs`, are
+  refused the same way by `ytq.save_prefs`). And **whether a
   stored value is in force is one function's answer** — `setting_state`, keyed
   on the key being *present*, because the three places that show the settings
   each used to decide it and a file holding `null` read as refused on the
@@ -212,6 +248,10 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
   periodic job — a window that is not a multiple of one would buy nothing
   beyond the nearest firing below it.
 - **The cut line in the queued list is computed, never an item** (2026-09-02).
+  It is an entry the cursor cannot stop on and no tap can open — not
+  selectable and with no name — between the rows `queue_entries` builds, and
+  it says `the window ends here · 480 MiB` (or `nothing in the window · why`;
+  `── window · 480 MiB` at 32 columns), never "tonight".
   `expire_runner.admit()` is the one admission rule — what a single item may
   take in a firing, and why not — and `fire()` calls it instead of carrying
   its own copy of the arithmetic; `plan()` is the one projection, walking a
@@ -226,11 +266,11 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
   every firing lands, which is the same bias the README already names for
   the pre-midnight window itself — Doze can still defer a firing the plan
   counted on. Two things the line cannot say on its own, and both are said
-  beside it: **the item the line falls inside of** carries `· 46 MiB tonight`
+  beside it: **the item the line falls inside of** carries `· 46 MiB at 03:00`
   on its own row (`_tonight_share`, off the same projection the line is drawn
-  from — one plan per draw, handed to both — and on a line of its own where a
-  phone cannot hold it beside the figures), because a resumable download
-  above the line is not the same thing as one that finishes tonight; and
+  from — `queue_screens.queue_entries` asks `tonight_plan` once and hands it
+  to `cut_index` and the rows), because a resumable download above the line
+  is not the same thing as one that finishes in the window; and
   **why there is nothing** is answered from as far up as it goes — a verdict
   that stops the night, then `_nothing_to_spend` where there is no budget at
   all, and only then the first item's own refusal, since with nothing to
@@ -239,34 +279,33 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
 
 ## Decisions that travel with the YouTube front end (ytq)
 
-- **`ytq` is a four-screen curses app**: search, results, formats, confirm.
-  The search is one flat `ytsearch` request — the only place it spends data
-  unasked — with `--extractor-args youtubetab:approximate_date`, which is why
-  every age it prints is marked `~`.
-- **The entry field's third answer is `subs`, the subscription feed** —
-  `looks_like_feed` is asked *before* `looks_like_url` because the feed's URL
-  passes that test too. It is not a fifth screen: `results()` draws both.
-  `--playlist-end` is the whole cost argument (a test must pin `subs_argv`
-  beside the search's); **↓ at the last row goes further back and every look
-  re-buys the listing** (2026-08-28: the down arrow is the only key that asks
-  — the `m` alias it took over from is gone; `feed_cost` is the total, never
-  the increment, and `feed_meta` puts it on screen before the key is pressed);
-  fewer rows back than asked for is the end of the feed, told apart from
-  `SUBS_MAX` in words; the depth commits only on a fetch that came back
-  (`subs_want` vs `subs_asked`).
-- **Watch Later (`wl`) is the feed's twin, not another screen** (2026-09-27).
-  Everything that differs between the two signed-in lists is one `Feed`
-  (`SUBS`, `WATCH_LATER`, keyed in `FEEDS`): the URL, the banner, the noun,
-  what the end of it is called, and what empty means — `empty_later_advice`
-  says *both* things an empty Watch Later can be, because unlike the feed it
-  can really be empty. `which_feed` routes; `looks_like_feed` is it as a bool,
-  still asked before `looks_like_url`. `WL_PAGE` matches only the
-  `/playlist?list=WL` page — a video opened from the list carries `&list=WL`
-  and is that video. The app's `subs_asked`/`subs_want` are per list, so one
-  list's deeper look never re-buys the other. `later_argv` is pinned beside
-  `subs_argv`; the pty test drives `wl` to a listing through a stand-in
-  `yt_dlp` module on `PYTHONPATH`, which `ytdl_argv` prefers, so a real one is
-  never asked.
+- **`ytq` opens the app on its Search tab.** The search is one flat
+  `ytsearch` request (`⏎ Go`, ~0.1 MB), with `--extractor-args
+  youtubetab:approximate_date`, which is why every age it prints is marked
+  `~`. The field takes three things: words, a URL (its video sheet opens), or
+  a feed word (`subs`, `wl`: the Feed and Later tabs) — `looks_like_feed` is
+  asked *before* `looks_like_url` because the feed's URL passes that test too.
+  Recent lists this session's searches and feeds, which reopen for free.
+- **Feed and Later read themselves on first opening their tab** (~0.2 MB),
+  and **every deeper look re-buys the listing**: `feed_cost` is the total,
+  never the increment, and it is on the `↓ 30 more · 0.6 MB in all` button
+  before anything is spent. `--playlist-end` is the whole cost argument (a
+  test must pin `subs_argv` beside the search's); fewer rows back than asked
+  for is the end of the feed, told apart from `SUBS_MAX` in words; the depth
+  commits only on a fetch that came back (`YouTube.want` vs `.asked`, per
+  list); and `bumped_place` puts the cursor on the first new row when ↓ on
+  the last one asked.
+- **Watch Later (`wl`) is the feed's twin** (2026-09-27). Everything that
+  differs between the two signed-in lists is one `Feed` (`SUBS`,
+  `WATCH_LATER`, keyed in `FEEDS`): the URL, the noun, what the end of it is
+  called, and what empty means — `empty_later_advice` says *both* things an
+  empty Watch Later can be, because unlike the feed it can really be empty.
+  `which_feed` routes; `WL_PAGE` matches only the `/playlist?list=WL` page —
+  a video opened from the list carries `&list=WL` and is that video. The two
+  lists' depths are kept apart, so one list's deeper look never re-buys the
+  other. The pty tests drive `wl` to a listing through a stand-in `yt_dlp`
+  module on `PYTHONPATH`, which `ytdl_argv` prefers, so a real one is never
+  asked.
 - **The cookie is asked about before anything is spent** — `cookie_state`
   reads yt-dlp's own config with `shlex`, and refuses on a missing
   `--cookies` line or a jar not on disk. **An empty feed is never reported as
@@ -276,44 +315,46 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
 - **A format list holding nothing but 360p says why** — `withheld` reads the
   RAW formats, deliberately not `choices()`'s output, scoped to
   `ADAPTIVE_ALWAYS` because the claim is only true of YouTube. Said twice on
-  purpose: a full notice once a session and `withheld_note` on every list it
-  applies to, measured at three widths, no `⚠` (ambiguous-width).
-- **The results screen hands its place back** — `results` takes and returns
-  `(cursor, top)`, keyed by query, and `viewport` is what makes a restored
-  place safe on a list that grew, shrank or was resized, and it wants a test
-  driving a spread of restores. `←`/`→` alias page up/down and are in neither hint set — no room
-  at 38 columns; `docs/ytq.md` carries them.
+  purpose: a full notice once a session and `withheld_note` on every video
+  sheet it applies to, measured at three widths, no `⚠` (ambiguous-width).
+- **One tap opens a row** — selected, its video sheet up, its format probe
+  going (~0.3 MB) — and the probe is kept for the session: closing the sheet
+  does not cancel it, and the sheet opens on it at once next time. Each
+  listing keeps its own `ListView` (cursor and view) for the session, and
+  `ListView.settle` is what makes a restored place safe on a list that grew,
+  shrank or was resized.
+- **The video sheet is the formats, the confirm and the duplicate screen.**
+  The tier buttons are the heights you use (`ytq.chip_heights`: set by hand in
+  More, else the three you pick most, else 240/480/720) plus `audio`;
+  Smallest/Largest picks inside a tier (`ytq.pick_in_tier`), passing over the
+  codec families More's `skip codecs` names but never emptying a tier, and
+  saying `skipped vp9` only when it passed one over that would have won. The
+  rule is remembered per kind and the last format with it (`ytq.learn`, in
+  `config.json`'s `ytq_prefs` and `ytq_last_format`). The size is the one
+  figure, on the button; Now makes the button the one yes. A duplicate is the
+  `✓` line directly above `a Queue it again anyway`, pinned with it.
 - **The selected title scrolls; nothing else does, and an idle screen still
-  blocks.** `marquee` holds at the start of each lap; `title_room` is the one
-  place that decides both drawing and waking, and a screen of short titles
-  emits **zero** bytes over three idle seconds — the property the loop was
-  written for.
-- **`message()` may never lose its own way out** — `message_body` is pure and
-  bounded, says what it dropped, and every notice is measured against 40x24
-  whole. `wrapped()` sets `break_on_hyphens=False` because a path broken
-  across two lines is a path retyped wrong.
-- **Two hint sets** — `HINTS` at 38 columns and `TIGHT_HINTS` at 30 — because
-  a hint clipped at the floor is usually the way out that got clipped.
+  blocks.** `marquee` holds at the start of each lap; `yt_screens.overflows`
+  is the one place that decides both drawing it moving and waking to move it,
+  and a screen of short titles emits **zero** bytes over two idle seconds —
+  the property the loop was written for, held by a pty test.
+- **A notice never loses its own way out** — what the old full-page messages
+  said is a `shell.Notice` sheet whose body scrolls and whose `esc OK` is
+  pinned; a sweep holds it at every size. `wrapped()` sets
+  `break_on_hyphens=False` because a path broken across two lines is a path
+  retyped wrong.
 - **`ytq.write_item` is the one door and refuses duplicates**
   (`ytq.Duplicate`), keyed on extractor and id rather than URL; the search,
   a pasted URL, `--now`, `--from-json` and `dlq` all end there. The
   results list marks what the queue already holds — before the probe is
   spent.
-- **`p` on the confirm screen is dlq's listing, not a copy of it**
-  (2026-09-02). The video does not exist yet, so `expire_ui.pick_place` holds a
-  phantom row and gives back a **position**; ytq writes the item last exactly
-  as it always did and then asks `expire_ui.place` to put it there, so the
-  numbering rule, the cut line and the refusal all stay on dlq's side and
-  nothing is renamed before the file exists. **`expire_ui` is imported inside
-  the key handler and never at module top** — it binds `ytq._addstr` while it
-  loads, and at ytq's top that name is 1800 lines away: expire_ui imports
-  expire_sched, which imports this half-built module back, so the screen would
-  die at the import rather than at the key. `item_name` is the one spelling of
-  the name `write_item` makes, because a picker handed a second f-string is
-  holding a file nobody writes. A number typed with `e` and a place picked with
-  `p` are exclusive and the row shows the one in force; `n` drops the place,
-  because what starts now runs from the file under the name it was written
-  with. A refused move is a receipt line, never a traceback and never a retry.
+- **A download is named after its title** (2026-10-10, design §6) —
+  `ytq.title_name`, the title cleaned only of `/ \ : * ? " < > |` and capped
+  well under 255 bytes, so `40-Crust of Rust - Subtyping and Variance.py` is
+  in the queue and `Crust of Rust - Subtyping and Variance.mp4` in Downloads.
+  `item_name` is the one spelling of the file name `write_item` makes, and
+  Rename on a download's sheet goes through the same cleaning. ytq queues
+  last; Move on the Queue tab is the only place an order is chosen.
 - **`next_number` caps at `MAX_PRIORITY`** — the runner sorts file names, so
   a third digit puts an item at the front, not the back.
 - **Downloading now spawns a detached `dlq now`** (by path under the queue
@@ -322,24 +363,12 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
 - **`Choice.kind` decides an item's destination** — never the file extension
   (at queue time there is no file); `ytq.dest_for` is the one place, `--dest`
   wins over both.
-- **The format list's columns carry the codec family; the selected row says
+- **The Formats sheet's rows carry the codec family; the selected row says
   it exactly** (2026-08-28) — `Choice.codecs` keeps yt-dlp's full strings
-  (`_exact_codec`, beside `_codec` which truncates for the columns) and the
-  formats screen draws them for the cursor row alone on the line above the
-  hints. `c` there copies the page URL through `to_clipboard`
-  (termux-clipboard-set; its answer flashes on the same line), and the fetch
-  wait is `spinner_while`'s box over the calling screen, never a page of its
-  own — nothing erases, so the results stay visible behind it.
-
-- **A flick scrolls; only a keypress spends** (2026-08-28). The results and
-  formats screens take wheel events — what Termux turns a touch drag into —
-  via `enable_touch_scroll` (wheels only: a tap must never press a key, and
-  some keys here spend data) and `read_wheel`/`wheel_step`, which dlq's
-  screen imports rather than re-spelling. The wheel deliberately does NOT
-  trigger the feed's deeper look at the bottom: ↓ is a decision, a flick is
-  momentum. And the deeper look completes the ↓ that asked for it —
-  `bumped_place` steps the cursor onto the first new row once the longer
-  listing lands.
+  (`_exact_codec`, beside `_codec` which truncates for the printed columns),
+  grouped by tier, smallest first, opened at the tier the video sheet was on.
+  `c` on the video sheet copies the page URL through `to_clipboard`
+  (termux-clipboard-set; its answer is said above the tabs).
 - **A run with no stop time must never be formatted with `int()`**
   (2026-08-28, and it had been broken since long before the split). `dlq
   now` and `run-now --blind` both set `EXPIRE_STOP_EPOCH=0` on purpose —
@@ -350,7 +379,9 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
   do, leaving `unhandled error: OverflowError` in a log nobody opens — while
   file downloads through `expire_dl` worked, because that module only ever
   compares. `time_left()` is the one place that phrase is built now, and it
-  says "no stop time" in words.
+  says "no stop time" in words; on the screens, `shell.clock` and
+  `shell.left` say it (or nothing) for an endless deadline rather than put it
+  through a clock.
 
 ## Checks
 
@@ -358,8 +389,17 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
 hook runs it. It runs **two suites as two pytest processes**, `tests/ytq` and
 `tests/dlq` — the two repos' suites, kept as they were — because each conftest
 owns the environment and `sys.modules` for its whole session. Offline: nothing
-reaches YouTube or the portal. Needs the zwana-quota checkout, and a shallow
-clone path — a deep worktree is itself the width the screens cannot fit.
+reaches YouTube or the portal. Needs the zwana-quota and bewitch checkouts,
+and a shallow clone path — a deep worktree is itself the width the screens
+cannot fit.
+
+**The pty tests stand in for Termux** (`tests/termux_pty.py`, shared by both
+suites): they answer blessed's startup queries the way Termux does — a
+cursor-position request with `ESC[1;1R`, a DECRQM query with `ESC[?<mode>;2$y`
+— because without the first blessed waits out a five-second timeout and
+without the second it never decodes a mouse report; and they send a tap as
+Termux does (press and release at one cell) and a drag as wheel events stamped
+with the cell it began on. pyte is taught `CSI S` and `CSI T` there too.
 
 **Both suites run the modules out of a copy.** This checkout's own
 `expire_runner` anchors its root on its own directory, which is the real queue,
@@ -396,16 +436,16 @@ stray `ROOT` would fail.
 **A screen is checked on a screen.** The front ends *are* their screens, and
 the failures worth catching there — a page that leaves when it should stay, a
 sentence clipped over the keys, a move that says it happened and renames
-nothing — do not show in a return value. `tests/dlq/test_screens.py` and
-`tests/dlq/test_settings_screen.py` open the real `dlq ui` on a pty and read it
-back through `pyte`, and assert on the *shape*: which screen is up by its title
-bar, that a row for a download exists, that the legend keys are on the key row,
-that after `m ↓ ⏎` the file on disk has a smaller number than its neighbour.
-`pyte` answers neither `CSI S` nor `CSI T`, which is how ncurses scrolls a
-region to reuse lines, so `tests/dlq/_pty.py` teaches it both: without them the
-emulator keeps text a terminal has already scrolled away and the assertions
-read a page nobody was ever shown. They are marked `tui` and are most of the
-suite's wall clock.
+nothing — do not show in a return value. `tests/dlq/test_screens.py` opens the
+real `dlq ui` on a pty through `termux_pty` and taps and presses what somebody
+would, and asserts on the *shape*: which tab is up by its header, that a row
+for a download exists, that the tabs are on their row, that a tap outside
+every button changes nothing, that after Move, ↓, Put here the file on disk
+has a smaller number than its neighbour. The headless half builds the real
+`nibbles.App` with no terminal (`App(None, tab, size=...)`), sets its reading,
+and composes it: the Queue tab's rows, the sheets' buttons and the More tab's
+rows are asked of the screen that draws them. The pty tests are marked `tui`
+and are most of the suite's wall clock.
 
 **What is pinned is behaviour, never wording.** A reworded refusal, a
 rearranged screen and a renamed helper are all things this code does; a test
@@ -430,13 +470,13 @@ One file per guarantee, and each says which:
 | `test_downloader.py` | `expire_dl` against a loopback server: a file smaller than one chunk is *fetched* |
 | `test_listing.py` | the reader: `gone` vs `away`, and every download listed once |
 | `test_ui_moves.py` | the moves and removals on a real queue: bytes never lose their item |
-| `test_cut_line.py` | the cut line is computed, drawn as a heading, and moves without moving the budget |
-| `test_layout.py` | every line fits, at 32, 40, 80 and swept between |
+| `test_cut_line.py` | the cut line is computed, an entry nothing can select, and moves without moving the budget |
+| `test_layout.py` | every line fits, at 32, 40, 80 and swept between; every verdict has a word and a status label; every action and every setting has its row |
 | `test_cli.py` | what a bare `dlq` does, and where each word goes |
 | `test_item_contract.py` | every way an item can fail to declare itself is a reason and never an exception |
 | `test_in_flight.py` | the guards that act while the bytes are moving: the byte cap, the floor, the deadline, a portal gone dark |
 | `test_dump.py` | `dlq dump` finishes on the broken trees it exists for |
-| `test_screens.py`, `test_settings_screen.py` | the two screens, on a pty |
+| `test_screens.py` | the Queue and More tabs, on a pty |
 
 **`make mutants` is the suite's own check.** poodle changes one operator,
 literal or comparison at a time and runs the tests against it; a mutant that
@@ -444,10 +484,11 @@ survives is a line nothing was asserting anything about, which is the question
 coverage cannot answer. `poodle_config.py` carries the whole arrangement and
 the reasons — the flat layout, the sibling checkout a worker's copy cannot
 find for itself, and the copy filters that keep this device's `state.json` and
-`config.json` out of a run that exists to be independent of them. The curses
-event loops in `expire_ui.py` are fenced `# nomut: start` / `# nomut: end`: a
-mutant inside one does not fail a test, it hangs a terminal until the timeout
-kills it, and what those loops do is checked under a pty instead. It is a
+`config.json` out of a run that exists to be independent of them. The app's
+event loops (`nibbles.App.run`, `tui.Session.read`) are fenced `# nomut:
+start` / `# nomut: end`: a mutant inside one does not fail a test, it hangs a
+terminal until the timeout kills it, and what those loops do is checked under
+a pty instead. It is a
 **ratchet and never a gate** — some mutants are equivalent, and a good few are
 a message reworded, which this suite declines to pin on purpose — so
 `--fail_under` sits under the score already reached and goes up when the score
@@ -524,9 +565,9 @@ runner's own over the snapshot's own figures, blind flag and free disk included;
 and the settings page is cut to the screen it is drawn on, giving up the blanks,
 then the meanings, then the sentence, and never a row.
 
-`expire_ui`'s remaining survivors cluster in `draw_list`, `confirm`, `ask` and
-`run_now` — the curses screens, whose event loops are fenced but whose drawing
-is not, and which are checked under a pty instead. `_reindex`'s cluster is its
+`expire_ui`'s survivors clustered in `draw_list`, `confirm`, `ask` and
+`run_now` — the curses screens, which went with the rebuild (2026-10-10), so
+that figure overstates what is left. `_reindex`'s cluster is its
 parking path and its `# pragma: no cover` guard: the orders it produces are
 pinned by a property test over random sequences of moves, and what survives
 inside it is set algebra that a two-item cycle cannot tell apart.
@@ -537,25 +578,25 @@ does not touch most of the code. `POODLE_TESTS` narrows it, and pairs with
 poodle's own `--only`:
 
 ```
-POODLE_TESTS="tests/dlq/test_gate.py tests/test_tonight_budget.py" \
+POODLE_TESTS="tests/dlq/test_gate.py tests/dlq/test_tonight_budget.py" \
     uv run --group mutants poodle --only expire_runner.py
 ```
 
 The three the figures above came from, so the next run is the same run:
 
 ```
-POODLE_TESTS="tests/dlq/test_gate.py tests/test_tonight_budget.py tests/test_firing.py
-              tests/dlq/test_settings.py tests/test_clock.py tests/test_item_contract.py
+POODLE_TESTS="tests/dlq/test_gate.py tests/dlq/test_tonight_budget.py tests/dlq/test_firing.py
+              tests/dlq/test_settings.py tests/dlq/test_clock.py tests/dlq/test_item_contract.py
               tests/dlq/test_in_flight.py"                      --only expire_runner.py
-POODLE_TESTS="tests/dlq/test_settings.py tests/test_listing.py tests/test_cli.py
-              tests/dlq/test_dump.py tests/test_layout.py"      --only expire_sched.py
-POODLE_TESTS="tests/dlq/test_ui_moves.py tests/test_cut_line.py
+POODLE_TESTS="tests/dlq/test_settings.py tests/dlq/test_listing.py tests/dlq/test_cli.py
+              tests/dlq/test_dump.py tests/dlq/test_layout.py"      --only expire_sched.py
+POODLE_TESTS="tests/dlq/test_ui_moves.py tests/dlq/test_cut_line.py
               tests/dlq/test_layout.py"                         --only expire_ui.py
 ```
 
-`test_settings_screen.py` is deliberately not in the third of those: it is a
-pty test, it is a large share of the suite's wall clock, and what it drives is
-the fenced event loop rather than anything a mutant reaches.
+No pty test is in any of those: they are a large share of the suite's wall
+clock, and what they drive is the fenced event loop rather than anything a
+mutant reaches.
 
 Same mutants, same verdicts, a fraction of the wall clock — and a survivor
 list short enough to read.
@@ -574,10 +615,12 @@ builds a throwaway queue root in a temp directory, **copies** this checkout's mo
 into it (copies and not symlinks — `expire_runner` anchors its own root on
 `Path(__file__).resolve().parent`, and a symlink resolves back to the real
 checkout and its `config.json`), imports `ytq` from the copy, and points
-`EXPIRE_HOME`, `ZWANA_HOME` and `$HOME` at temp directories. An autouse
-fixture empties the root between tests.
+`EXPIRE_HOME`, `ZWANA_HOME` and `$HOME` at temp directories, and
+`BEWITCH_HOME` at the real bewitch checkout. An autouse fixture empties the
+root between tests. The app's own modules are in the copy too, so this suite
+also carries the app's pieces and its layout sweep.
 
-The eight files, and what each is for:
+The files, and what each is for:
 
 - `test_item_bytes.py` — the metering. The merge case above all: a rename is
   not new bytes, two names for one stream are one high-water mark, the freeze
@@ -600,25 +643,34 @@ The eight files, and what each is for:
   `choices`'s `unsized`, and where the cursor opens.
 - `test_queue_items.py` — the one door. The item the runner has to be able to
   read (asked of `expire_runner.parse_item`), the duplicate refusal keyed on
-  id and the weaker fallback on name, two-digit names, and the picker's
-  write-then-place path with `expire_ui.place` stubbed — the stub checks the
-  file is on disk *before* dlq is asked to move it.
-- `test_layout.py` — the widths, 32 columns up, as properties: every hint set
-  in its stated room, every row inside the terminal, `viewport` always handing
-  back a place the screen draws, `message_body` never growing past its own way
-  out, and the marquee filling its room exactly.
+  id and the weaker fallback on name, two-digit names, and the duplicate's
+  verdict fitting the narrowest sheet.
+- `test_layout.py` — the printed rows, 32 columns up, as properties: every
+  row inside the terminal, the marquee filling its room exactly, wrapping
+  never losing a word.
 - `test_cli.py` — the paths with no terminal: the flag combinations that are
   refused, `--list --from-json` printing and writing nothing, the feed
-  refusing without a cookie, and the receipts printed after curses is gone.
-- `test_screens.py` — the curses screens under a pty, read back with `pyte`.
-  Marked `tui`. Structure only — which screen is up, that a row for a video
-  exists, that the hint line still names a way out — never whole-line
-  literals. Arrows go as `\x1bOA`/`\x1bOB` because keypad mode is on. It
-  drives what costs nothing: the entry field, the cookie refusal, a listing
-  and a format list from a saved dump, the confirmation, and the whole road
-  from a dump to a written item. **The idle-screen property is here**: a
-  screen of short titles emits zero bytes over two seconds and one with a
-  title too long for its room does not.
+  refusing without a cookie, `subs`/`wl` reaching the app by the one road,
+  and the receipts printed after the app gives the terminal back.
+- `test_app_pieces.py` — the app's pieces with no terminal: a mouse report is
+  never a key, the two tap guards, the hit map, a row of buttons filling its
+  width exactly, one-unit time, the phone's clock, title names, tier picks
+  and the skipped codec, the learned heights, and the list's scrolloff and
+  draggable bar.
+- `test_app_layout.py` — **the layout sweep** (design §8): every tab and every
+  sheet at widths 32 to 80 and heights 11 to 30 — every line exactly the
+  width, no two targets overlapping, buttons three rows, the pinned answers
+  and `esc ×` always on screen, the five tabs always there.
+- `test_screens.py` — the app under a pty through `termux_pty`, marked `tui`.
+  Structure only — which tab is up, that a row for a video exists, that the
+  button carries the price — never whole-line literals. It drives what costs
+  nothing (the field, the cookie refusal on Feed and Later, a listing and a
+  video sheet from a saved dump, Now, the duplicate line, the whole road from
+  a dump to a written item) and, through a stand-in `yt_dlp`, Watch Later and
+  **momentum never fetching**: a fling far past the end asks nothing, a
+  rested pull asks once. **The idle-screen property is here**: a screen of
+  short titles, selected or not, emits zero bytes over two seconds, and a
+  selected title too long for its row does not.
 
 Two helpers deleted with the old self-tests are back as tests rather than as
 code: the shebang question (`test_the_runner_admits_what_ytq_writes` expects
@@ -661,12 +713,13 @@ test could hold down. What is left over is where the next test goes.
   `GUARD_FLOOR`, and `state.pop("zero_firings", None)` whose default is never
   returned.
 
-The curses event loops in `ytq.py` are fenced with `# nomut: start` /
-`# nomut: end`, and that is the only thing in the code that exists for the
-mutation run: a mutant inside one does not fail a test, it hangs a terminal
-until the timeout kills it. Those loops are checked under a pty instead, which
-is also why the mutation command skips the `tui` mark — that code is not
-mutated and those tests are most of the suite's wall clock.
+The event loops (`nibbles.App.run` and `tui.Session.read`, as the curses loops
+in `ytq.py` were) are fenced with `# nomut: start` / `# nomut: end`, and that is
+the only thing in the code that exists for the mutation run: a mutant inside
+one does not fail a test, it hangs a terminal until the timeout kills it.
+Those loops are checked under a pty instead, which is also why the mutation
+command skips the `tui` mark — that code is not mutated and those tests are
+most of the suite's wall clock.
 
 **A surviving mutant is a question, not a failure.** Read it: either it names
 a behaviour nobody pinned, and the answer is a test, or it is equivalent, and
@@ -674,6 +727,7 @@ the answer is to say so.
 
 ### Mutation testing since the merge
 
-`poodle_config.py` is the two old configs merged, and **it has not been run
-since the merge**: the figures above are the two old repos', and the first
-whole run here sets the notch.
+`poodle_config.py` is the two old configs merged, with the app's modules
+added, and **it has not been run since the merge or the rebuild**: the figures
+above are the two old repos', and the first whole run here sets the notch.
+(The ytq figure counted the curses screens as ~535 survivors; they are gone.)

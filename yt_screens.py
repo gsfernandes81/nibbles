@@ -34,8 +34,11 @@ REST = 0.5
 
 
 def feed_mb(count: int) -> str:
-    """What reading *count* videos off a feed costs, the total: ``0.6 MB``."""
-    return f"{count / ytq.SUBS_RESULTS * ytq.SUBS_PAGE_MB:.1f} MB"
+    """What reading *count* videos off a feed costs, the total: ``0.6 MB``.
+
+    ``ytq.feed_cost``'s figure (the total, never the increment), drawn as the
+    mockup draws it, without the estimate's ``~``."""
+    return ytq.feed_cost(count).lstrip("~")
 
 
 def byline(r: ytq.Result) -> str:
@@ -510,8 +513,9 @@ class FeedTab(Screen):
         view = yt.view(self.key_)
         yt.landed(self.key_, hits)
         yt.asked[self.key_] = count
-        if deeper and self.bump and view.cursor == old - 1 and len(hits) > old:
-            view.cursor = old
+        if deeper and self.bump:
+            # The deeper look completes the ↓ that asked for it.
+            view.cursor, _ = ytq.bumped_place((view.cursor, view.top), old)
         self.bump = False
 
     def cancelled(self, app, job) -> None:
@@ -777,6 +781,11 @@ class VideoSheet(Sheet):
         n = len(tier_options)
         if not (short and self.clash is not None):
             parts.append(w.section("Quality", width, f"{label} · {n} format{'s' if n != 1 else ''}"))
+        info = self.info
+        if info is not None and ytq.withheld(info):
+            # Said on every sheet it applies to; the whole notice is once a
+            # session. ytq measures it against the whole screen, frame and all.
+            parts.append(w.text(ytq.withheld_note(width + 4), width, T.warning))
         parts.append(self.tier_row(app, width))
         side = 11
         parts.append(w.hstack(

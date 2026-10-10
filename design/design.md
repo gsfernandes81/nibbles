@@ -158,7 +158,7 @@ All drawn with bewitch; the proposed recipes are in `mock/kit.py`.
 - **A checkbox is drawn the way Charm's huh draws one**: a full-width
   three-row box; off is a grey `•` and grey label; ticked is a green `✓`
   (`success`), a bold label and a `success` outline. Used for "Open it when
-  done". bewitch has no recipe yet: gsfernandes81/bewitch#1 proposes one.
+  done". bewitch draws it: `bubbles.huh.checkbox`, boxed (gsfernandes81/bewitch#1).
 - **List rows are two lines** (title, then a grey line), a one-column mark
   before the title (`✓` have it, `×` failed, `↓` downloading, `◆` held, a
   spinner while fetching), the selection a filled `primary` bar.

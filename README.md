@@ -10,43 +10,62 @@ floor for the morning (100 MB, by default) and never touching the paid
 reserve. Everything says what it costs before it spends anything.
 
 ytq and dlq were two repos until 2026-10-10; this is both of them, with their
-histories. The two commands keep their names for now:
+histories, and **one app**: five tabs along the bottom — Search, Feed, Later,
+Queue, More — with buttons first and keys second, laid out for a phone in
+portrait. A tap on a button acts, a drag scrolls, and anything that spends data
+says what it costs on the button that spends it.
 
-- **`ytq`**: search YouTube (or paste a URL, or open your subscriptions or
-  Watch Later), pick a quality, queue it. `docs/ytq.md` is the guide.
-- **`dlq`**: the queue itself. Bare on a terminal it opens the queue's screen;
-  off one it prints status. `dlq <url>` queues a plain file URL.
+- **`nibbles`** opens the app on Search (`nibbles queue`, `feed`, `later` or
+  `more` on another tab).
+- **`ytq`** opens it on Search too, and keeps its words: `ytq crust of rust`
+  searches, `ytq <url>` opens that video, `ytq subs` and `ytq wl` open Feed
+  and Later, and `ytq --list …` prints with no screen at all.
+  `docs/ytq.md` is the guide.
+- **`dlq`** opens it on Queue on a terminal; off one it prints status.
+  `dlq <url>` queues a plain file URL, and every `dlq` verb (`status`, `list`,
+  `settings`, `arm`, `now`, `run-now`, `dump`, …) still works.
   `docs/download-queue.md` is the guide; `queue/README.md` is the item
   contract.
 
-A one-app, buttons-first rebuild of both screens on blessed is in progress:
-`design/` holds the agreed design and its mockups, and they are the spec.
+`design/` holds the agreed design and its mockups, which are the spec the
+screens follow; `design/divergences.md` lists where the build differs.
 
 ## Layout
 
-- `ytq.py`: the YouTube front end. `ytdl_item.py`: what the items it writes
-  download through.
+- `nibbles.py`: the app's loop. `tui.py`: the terminal (blessed), read as
+  taps, drags and keys. `widgets.py`: the buttons, sheets and bars, drawn with
+  bewitch. `shell.py`: what the screens share. `yt_screens.py`: Search, Feed,
+  Later and the video sheet. `queue_screens.py`: Queue and More.
+- `ytq.py`: the YouTube half's logic and the `ytq` command. `ytdl_item.py`:
+  what the items it writes download through.
 - `expire_runner.py`: the scheduled runner. `expire_dl.py`: the shared
   downloader. `expire_sched.py`, `expire_ui.py`, `dlq.py`: the `dlq` command
-  and its screen.
+  and the queue's actions.
 - `queue/`: the queue, with the item contract in `queue/README.md`.
-- `~/zwana-quota`, a separate checkout: the portal client and quota widget the
-  runner reads every guard figure through. Found as `$ZWANA_HOME`, then a clone
-  beside this one, then `~/zwana-quota`.
+- Two separate checkouts, each found as its variable, then a clone beside this
+  one, then under `~`: **`~/zwana-quota`** (`$ZWANA_HOME`), the portal client
+  and quota widget the runner reads every guard figure through, and
+  **`~/bewitch`** (`$BEWITCH_HOME`), the styling library every screen is drawn
+  with.
+- One installed dependency: **blessed**, which owns the terminal.
 
 The queue root is this checkout (`$EXPIRE_HOME` overrides), never an installed
 copy's own directory, so an installed `ytq` or `dlq` still works the real queue.
 
 ## Install
 
-Optional: `python3 ~/nibbles/ytq.py` and `python3 ~/nibbles/expire_sched.py`
-work as they are.
+`git clone https://github.com/gsfernandes81/bewitch ~/bewitch` beside it. Then
+either install the commands (which brings blessed with them):
 
 ```
 uv tool install --editable ~/nibbles
 ln -s ~/nibbles/completions/ytq.fish ~/.config/fish/completions/
 ln -s ~/nibbles/completions/dlq.fish ~/.config/fish/completions/
 ```
+
+or run the files as they are, after `pip install blessed`:
+`python3 ~/nibbles/nibbles.py`, `python3 ~/nibbles/ytq.py`,
+`python3 ~/nibbles/expire_sched.py`.
 
 ## Moving the phone from ~/dlq and ~/ytq (one-time)
 
@@ -56,6 +75,7 @@ so):
 
 ```
 git clone https://github.com/gsfernandes81/nibbles ~/nibbles
+git clone https://github.com/gsfernandes81/bewitch ~/bewitch    # if not there yet
 dlq cancel                                              # stop the old job firing
 mv ~/dlq/queue/*.py ~/nibbles/queue/                    # pending items
 mv ~/dlq/{work,out,done,failed,logs} ~/nibbles/         # partials + history
@@ -87,12 +107,15 @@ There are two suites, `tests/ytq` and `tests/dlq`, from the two repos, run as
 two pytest processes. Each builds its own queue root under a temporary
 directory, copies this checkout's modules into it, points `EXPIRE_HOME` and
 `HOME` at it and imports from there, so the checks never read or write the
-queue this checkout manages and never reach the network. The screens are
-opened on a pty and read back with `pyte`.
+queue this checkout manages and never reach the network. The app is opened on a
+pty that answers blessed's startup queries the way Termux does
+(`tests/termux_pty.py`), tapped and dragged the way Termux sends a finger, and
+read back with `pyte`; and every tab and sheet is composed at every width from
+32 to 80 and every height from 11 to 30.
 
 Two failures that are not regressions: a long checkout path (the screens check
 every line fits 32 columns, and the root is on the status screen), and a
-missing zwana-quota checkout.
+missing zwana-quota or bewitch checkout.
 
 `make mutants` runs poodle; it is a ratchet, outside the checks, and
 `poodle_config.py` says how it is arranged.

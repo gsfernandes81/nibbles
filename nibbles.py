@@ -257,12 +257,15 @@ class App:
 
     def run(self) -> list[str]:
         assert self.session is not None
+        # nomut: start — a mutant in the loop does not fail a test, it hangs a
+        # terminal until the timeout kills it; the loop is checked on a pty.
         while not self.done:
             self.queue.tick()
             self.session.show(self.compose())
             event = self.session.read(self.next_wake(), self.running())
             if event is not None:
                 self.handle(event)
+        # nomut: end
         self.queue.closing()
         return self.receipts
 

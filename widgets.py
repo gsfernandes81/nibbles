@@ -369,12 +369,21 @@ def segmented(
     return hstack(*parts)
 
 
+try:  # bewitch's own recipe (bewitch#1), when the checkout has it
+    from bewitch.bubbles.huh import checkbox as _huh_checkbox
+except ImportError:  # an older bewitch checkout: the same look, drawn here
+    _huh_checkbox = None
+
+
 def checkbox(word: str, on: bool, width: int, id: str = "") -> Piece:
-    """A checkbox the way Charm's huh draws one: a green ``✓``, a bold label
-    and a ``success`` outline when ticked; a quiet ``•`` when not."""
+    """A checkbox the way Charm's huh draws one, as a full-width three-row
+    tap target: a green ``✓`` and a ``success`` outline when ticked, a quiet
+    ``•`` when not. bewitch's ``bubbles.huh.checkbox``, boxed."""
+    if _huh_checkbox is not None:
+        return piece(_huh_checkbox(word, on, width, boxed=True), id or None)
     glyph = to_row(("✓" if on else glyphs.BULLET) + " ",
                    Pen(fg=T.success if on else T.fg_most_subtle))
-    row = glyph + to_row(word, Pen(fg=T.fg_base if on else T.fg_more_subtle, bold=on or None))
+    row = glyph + to_row(word, Pen(fg=T.success if on else T.fg_base))
     inner = width - 2
     row = truncate_row(row, inner)
     pad = inner - row_width(row)

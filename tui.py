@@ -393,6 +393,7 @@ class Session:
         a resize, a job finishing. That is what keeps an idle screen silent.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
+        # nomut: start — checked on a pty, where a terminal answers it.
         while True:
             for job in jobs:
                 if job.finished:
@@ -435,6 +436,7 @@ class Session:
                 event = event_of(ks)
                 if event is not None:
                     return event
+        # nomut: end
 
 
 # --------------------------------------------------------------------------- #
