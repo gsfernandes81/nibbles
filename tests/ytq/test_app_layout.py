@@ -125,9 +125,11 @@ def test_moving_a_download_fits_every_size(app):
 
 def video(app, **state):
     sheet = ys.VideoSheet(app, app.url, "Crust of Rust: Lifetime Annotations", "Jon Gjengset")
+    app.sheets[:] = [sheet]
+    sheet.shown(app)
+    assert sheet.tier is not None, "the sheet is ready on a kept probe"
     for key, value in state.items():
         setattr(sheet, key, value)
-    app.sheets[:] = [sheet]
     return sheet
 
 

@@ -86,6 +86,7 @@ class QueueModel:
         self.note = ""
         self.job: tui.Job | None = None
         self.read_at = 0.0
+        self.taken = 0.0
         self.samples: dict[str, list[tuple[float, int]]] = {}
         self.read()
         self.refresh()
@@ -103,9 +104,15 @@ class QueueModel:
         self.live = sched._running_now([row["name"] for row in self.rows])
         self.read_at = time.monotonic()
 
-    def refresh(self) -> None:
-        """Ask for a fresh reading of the window, unless one is on its way."""
+    #: How old a reading may get before looking at the Queue tab asks again.
+    STALE = 60.0
+
+    def refresh(self, force: bool = True) -> None:
+        """Ask for a fresh reading of the window, unless one is on its way
+        (or, unforced, unless the one on screen is still fresh)."""
         if self.job is not None and not self.job.finished:
+            return
+        if not force and self.facts and time.monotonic() - self.taken < self.STALE:
             return
         self.job = tui.Job(lambda: ui.tonight_facts(), "asking zwana", key="facts")
         self.app.start(self.job, self)
@@ -113,6 +120,7 @@ class QueueModel:
     def done(self, app, job) -> None:
         if job is self.job:
             self.job = None
+            self.taken = time.monotonic()
             if job.error is None:
                 self.facts = job.result
                 self.note = ""
@@ -442,7 +450,7 @@ class QueueTab(Screen):
 
     def shown(self, app) -> None:
         app.queue.read()
-        app.queue.refresh()
+        app.queue.refresh(force=False)
 
     def wake(self, app) -> float | None:
         app.queue.tick()

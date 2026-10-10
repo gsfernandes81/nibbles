@@ -185,7 +185,12 @@ class ProbeOwner(Screen):
             sheet.ready(app)
 
     def cancelled(self, app, job) -> None:
+        """Stopped: the sheet waiting for it closes, and says so."""
         self.yt.probing.pop(self.url, None)
+        sheet = next((s for s in app.sheets if isinstance(s, VideoSheet) and s.url == self.url), None)
+        if sheet is not None:
+            app.close(sheet)
+            app.say("stopped asking for its formats")
 
 
 # --------------------------------------------------------------------------- #
@@ -677,19 +682,23 @@ class VideoSheet(Sheet):
         self.when = 1 if app.yt.now else 0
         self.clash: ytq.Duplicate | None = None
         self.checked = False
+        self._app = app
         app.yt.probe(url, self)
-        if url in app.yt.probed:
+
+    def shown(self, app) -> None:
+        """On top: if the formats are already in (a probe kept from earlier,
+        or a saved dump), the sheet is ready now, and any notice it raises
+        opens over it rather than under it."""
+        self._app = app
+        if self.url in app.yt.probed and not self.checked:
             self.ready(app)
 
     # State ----------------------------------------------------------------
 
     @property
     def info(self) -> dict | None:
-        got = self._app.yt.probed.get(self.url) if hasattr(self, "_app") else None
+        got = self._app.yt.probed.get(self.url)
         return got[0] if got else None
-
-    def shown(self, app) -> None:
-        self._app = app
 
     def ready(self, app) -> None:
         """The probe is in: the title, the tier the sheet opens on, the
