@@ -7,13 +7,16 @@ requires-python = ">=3.11"
 # rather than importing it, and everything else is stdlib. quota_widget is
 # reached as the zwana-quota CHECKOUT (~/zwana-quota or $ZWANA_HOME), never as
 # an installed package, so installing this pulls nothing from the internet.
-dependencies = []
+dependencies = [
+    "blessed>=1.50",
+]
 
 [project.scripts]
-# Both resolve the queue root (this checkout, or $EXPIRE_HOME) rather than
+# All three resolve the queue root (this checkout, or $EXPIRE_HOME) rather than
 # trusting __file__, so an installed copy still queues into, and manages, the
-# real queue. ytq and dlq were two repos until 2026-10-10; the commands keep
-# their names until the one-app shell replaces them.
+# real queue. One app since 2026-10-10: ytq opens it on Search, dlq on Queue,
+# and nibbles on Search; ytq and dlq keep their command-line words.
+nibbles = "nibbles:main"
 ytq = "ytq:main"
 dlq = "expire_sched:main"
 
@@ -31,7 +34,13 @@ only-include = [
     "expire_runner.py",
     "expire_sched.py",
     "expire_ui.py",
+    "nibbles.py",
+    "queue_screens.py",
+    "shell.py",
+    "tui.py",
+    "widgets.py",
     "ytdl_item.py",
+    "yt_screens.py",
     "ytq.py",
 ]
 sources = ["."]

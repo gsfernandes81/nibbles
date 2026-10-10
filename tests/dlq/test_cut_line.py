@@ -40,15 +40,6 @@ def order_of(dlq, facts=None):
     return [item["name"] for item in (facts or facts_for(dlq))["items"]]
 
 
-def rows_of(entries):
-    """Just the download rows, as ``(index, first line)``."""
-    return [(index, lines[0]) for index, lines in entries if index is not None]
-
-
-def headings(entries):
-    return [lines[0] for index, lines in entries if index is None]
-
-
 # --------------------------------------------------------------------------- #
 # Where it falls
 # --------------------------------------------------------------------------- #
@@ -66,7 +57,7 @@ def test_the_line_falls_after_the_last_download_tonight_reaches(dlq):
     facts = facts_for(dlq, free=400 * MiB)
     order = order_of(dlq, facts)
     planned = dlq.ui.tonight_plan(order, facts)
-    reaches, ruled = dlq.ui.cut_index(order, facts, 40, planned)
+    reaches, ruled = dlq.ui.cut_index(order, facts, planned)
 
     got = {entry["name"]: entry["bytes"] for entry in planned}
     assert got["10-one.py"] and got["20-two.py"] and not got["30-three.py"]
@@ -82,12 +73,13 @@ def test_a_night_that_reaches_everything_still_gets_a_line(dlq):
     three(dlq, caps=(MiB, MiB, MiB))
     facts = facts_for(dlq, free=600 * MiB)
     order = order_of(dlq, facts)
-    reaches, ruled = dlq.ui.cut_index(order, facts, 40)
+    reaches, ruled = dlq.ui.cut_index(order, facts)
     assert reaches == len(order)
     assert ruled.strip()
     # Drawn at the foot of the queued group rather than dropped.
-    entries = dlq.ui.compose_rows(dlq.sched.items(), 40, cut=(reaches, ruled))
-    assert entries[-1][1] == [ruled]
+    entries = dlq.qs.queue_entries(dlq.sched.items(), facts)
+    assert not entries[-1].selectable and entries[-1].key is None
+    assert ruled in entries[-1].draw(40, False).plain()
 
 
 def test_a_night_that_reaches_only_the_first_download_still_falls_under_it(dlq):
@@ -104,7 +96,7 @@ def test_a_night_that_reaches_only_the_first_download_still_falls_under_it(dlq):
     got = {entry["name"]: entry["bytes"] for entry in planned}
     assert got["10-one.py"] and not got["20-two.py"] and not got["30-three.py"]
 
-    reaches, ruled = dlq.ui.cut_index(order, facts, 40, planned)
+    reaches, ruled = dlq.ui.cut_index(order, facts, planned)
     assert reaches == 1
     # And it is the line that says how much, not the one that says none.
     assert dlq.ytq.human(100 * MiB) in ruled
@@ -156,7 +148,8 @@ def test_the_row_the_line_falls_inside_of_says_how_much_of_it_goes_tonight(dlq):
     """
     share = dlq.ui._tonight_share
     row = {"cap": 200 * MiB, "have": 0}
-    assert share(row, 46 * MiB) == f"{dlq.ytq.human(46 * MiB)} tonight"
+    # Named by when the window opens on the phone's clock, never "tonight".
+    assert share(row, 46 * MiB, "03:00") == f"{dlq.ytq.human(46 * MiB)} at 03:00"
     # It finishes tonight: the line above it has already said so.
     assert share(row, 200 * MiB) == ""
     assert share(row, 300 * MiB) == ""
@@ -171,8 +164,8 @@ def test_no_reading_yet_means_no_line_at_all(dlq):
     """An honest listing with no line beats a line drawn from figures nobody
     has."""
     three(dlq)
-    assert dlq.ui.cut_index(order_of(dlq), None, 40) == (None, "")
-    assert dlq.ui.cut_index([], facts_for(dlq), 40) == (None, "")
+    assert dlq.ui.cut_index(order_of(dlq), None) == (None, "")
+    assert dlq.ui.cut_index([], facts_for(dlq)) == (None, "")
     assert dlq.ui.tonight_plan(["10-one.py"], None) == []
 
 
@@ -188,8 +181,8 @@ def test_moving_an_item_moves_the_line_and_never_the_budget(dlq):
     before = order_of(dlq, facts)
     after = [before[0], before[2], before[1]]
 
-    reaches_before, _ = dlq.ui.cut_index(before, facts, 40)
-    reaches_after, _ = dlq.ui.cut_index(after, facts, 40)
+    reaches_before, _ = dlq.ui.cut_index(before, facts)
+    reaches_after, _ = dlq.ui.cut_index(after, facts)
     assert reaches_before == reaches_after == 2
 
     spent = lambda order: sum(  # noqa: E731
@@ -221,9 +214,9 @@ def test_why_there_is_nothing_is_answered_from_as_far_up_as_it_goes(dlq):
     dlq.config({"auto": False})
     facts = dlq.facts(portal=dlq.reading())
     assert facts["verdict"] == "off"
-    reaches, ruled = dlq.ui.cut_index(order_of(dlq, facts), facts, 40)
+    reaches, ruled = dlq.ui.cut_index(order_of(dlq, facts), facts)
     assert reaches == 0
-    assert dlq.ui.TONIGHT_SHORT["off"].split()[0] in ruled
+    assert dlq.ui.VERDICT_WORDS["off"] in ruled
 
 
 def test_a_night_with_no_budget_blames_the_budget_and_not_the_first_item(dlq):
@@ -235,9 +228,9 @@ def test_a_night_with_no_budget_blames_the_budget_and_not_the_first_item(dlq):
     three(dlq)
     facts = dlq.facts(portal=None, force=True, blind=False)
     assert facts["spendable"] == 0
-    reaches, ruled = dlq.ui.cut_index(order_of(dlq, facts), facts, 80)
+    reaches, ruled = dlq.ui.cut_index(order_of(dlq, facts), facts)
     assert reaches == 0
-    assert "portal" in ruled
+    assert dlq.ui.VERDICT_WORDS["no-portal"] in ruled
     assert "minimum" not in ruled
 
 
@@ -249,20 +242,21 @@ def test_a_night_that_can_spend_but_cannot_fit_anything_quotes_the_item(dlq):
     order = order_of(dlq, facts)
     planned = dlq.ui.tonight_plan(order, facts)
     reason = next(entry["reason"] for entry in planned if entry["reason"])
-    _, ruled = dlq.ui.cut_index(order, facts, 80, planned)
+    _, ruled = dlq.ui.cut_index(order, facts, planned)
     assert reason.split(" (")[0][:20] in ruled
 
 
 @pytest.mark.parametrize("width", WIDTHS)
-def test_the_line_never_says_tonight_twice(dlq, width):
-    """Several verdicts say it themselves — "done for tonight" — and after a
-    lead-in that has just said it they read as a stammer."""
+def test_the_line_never_says_tonight_and_always_fits(dlq, width):
+    """The window is named by when it opens on the phone's clock, never
+    "tonight" (design §6), and the drawn rule is exactly the row it is on."""
     three(dlq)
     for verdict in dlq.runner.GATE_STATES:
         facts = dict(facts_for(dlq), verdict=verdict, spendable=0)
-        _, ruled = dlq.ui.cut_index(order_of(dlq, facts), facts, width)
-        assert ruled.count("tonight") <= 1, (verdict, ruled)
-        assert len(ruled) <= width
+        _, ruled = dlq.ui.cut_index(order_of(dlq, facts), facts)
+        assert "tonight" not in ruled, (verdict, ruled)
+        drawn = dlq.qs.rule_block(ruled, width)
+        assert drawn.width == width and drawn.height == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -270,43 +264,56 @@ def test_the_line_never_says_tonight_twice(dlq, width):
 # --------------------------------------------------------------------------- #
 
 
+def queue_tab(dlq, width, facts):
+    """The real Queue tab, headless, with *facts* as its reading."""
+    app = dlq.app.App(None, 3, size=(width, 24))
+    app.queue.facts = facts
+    return app, app.tabs[3]
+
+
 @pytest.mark.parametrize("width", WIDTHS)
 def test_every_download_appears_exactly_once_whatever_the_width(dlq, width):
     """A download missing from this screen looks exactly like a download that
-    is not there — and this is the screen someone removes things from."""
+    is not there — and this is the screen someone removes things from. Across
+    the three groups the Queue tab filters by, every one is there once."""
     three(dlq)
     dlq.item("40-failed.py", where="failed")
     dlq.item("50-done.py", where="done/2026-09-01")
-    rows = dlq.sched.items()
-    facts = facts_for(dlq)
-    order = [row["name"] for row in rows if row["where"] == "queued"]
-    cut = dlq.ui.cut_index(order, facts, width)
-    entries = dlq.ui.compose_rows(rows, width, cut=cut)
-
-    indexes = [index for index, _ in rows_of(entries)]
-    assert sorted(indexes) == list(range(len(rows)))
+    app, tab = queue_tab(dlq, width, facts_for(dlq))
+    shown = [e.key for group in dlq.qs.GROUPS for e in tab.entries(app, group)
+             if e.selectable]
+    assert sorted(shown) == sorted(row["name"] for row in dlq.sched.items())
 
 
 @pytest.mark.parametrize("width", WIDTHS)
 def test_the_cut_line_is_emitted_as_a_heading(dlq, width):
-    """Index ``None``, exactly like ``queued (3)``.
+    """An entry the cursor cannot stop on and no tap can open, with no name.
 
     That is the whole of how it stays computed rather than becoming an item:
-    the cursor skips it, :func:`landed_index` cannot land on it, and no row's
-    index moves because it is there.
+    the cursor skips it, :func:`landed_index` cannot land on it, and no row
+    moves because it is there.
     """
     three(dlq)
     rows = dlq.sched.items()
     facts = facts_for(dlq, free=400 * MiB)
     order = [row["name"] for row in rows if row["where"] == "queued"]
-    reaches, ruled = dlq.ui.cut_index(order, facts, width)
+    reaches, ruled = dlq.ui.cut_index(order, facts)
 
-    plain = dlq.ui.compose_rows(rows, width)
-    ruled_entries = dlq.ui.compose_rows(rows, width, cut=(reaches, ruled))
+    plain = dlq.qs.queue_entries(rows, None)
+    ruled_entries = dlq.qs.queue_entries(rows, facts)
 
-    assert ruled in headings(ruled_entries)
-    # The rows are the same rows, at the same indexes, in the same order.
-    assert rows_of(plain) == rows_of(ruled_entries)
+    lines = [e for e in ruled_entries if not e.selectable]
+    assert len(lines) == 1 and lines[0].key is None
+    # The figure after the dot survives every width; the lead-in shortens.
+    assert ruled.rpartition(" · ")[2] in lines[0].draw(width, False).plain()
+    assert ruled_entries.index(lines[0]) == reaches
+    # The rows are the same rows, in the same order.
+    assert [e.key for e in plain] == [e.key for e in ruled_entries if e.selectable]
+    # And the cursor steps over it.
+    view = dlq.qs.ListView(entries=ruled_entries, height=24)
+    for _ in range(len(ruled_entries) + 2):
+        view.move(1)
+        assert view.entries[view.cursor].selectable
 
 
 def test_the_cursor_never_lands_on_the_line(dlq):
@@ -337,10 +344,11 @@ def test_the_row_that_straddles_the_line_says_how_much_of_it_comes_tonight(dlq):
     assert 0 < share < GiB
 
     rows = dlq.sched.items()
-    entries = dlq.ui.compose_rows(rows, 80, tonight=planned)
-    drawn = " ".join(line for _, lines in entries for line in lines)
-    assert "tonight" in drawn
-    assert dlq.ui._tonight_share(rows[0], share).endswith("tonight")
+    entries = dlq.qs.queue_entries(rows, facts, "03:00")
+    drawn = " ".join(e.draw(80, False).plain() for e in entries)
+    said = dlq.ui._tonight_share(rows[0], share, "03:00")
+    assert said.endswith("at 03:00")
+    assert said in drawn
 
 
 def test_nothing_is_said_on_a_row_the_night_finishes_or_never_reaches(dlq):
@@ -353,52 +361,8 @@ def test_nothing_is_said_on_a_row_the_night_finishes_or_never_reaches(dlq):
 
 
 # --------------------------------------------------------------------------- #
-# A download that does not exist yet
+# Moving
 # --------------------------------------------------------------------------- #
-
-
-def test_a_phantom_is_planned_like_any_other_item_and_writes_nothing(dlq):
-    """ytq's picker holds a video it has not written on this listing.
-
-    The worth of showing it here is that the cut line and the shares are worked
-    out **with it in**, in the place it is being dragged to — so it has to be
-    an item the runner's own projection would accept.
-    """
-    three(dlq)
-    before = sorted((dlq.root / "queue").glob("*"))
-    row, item = dlq.ui.phantom_of("15-new-video.py", 200 * MiB, True)
-
-    assert row["where"] == "queued" and row["phantom"] is True
-    assert row["have"] == 0 and row["stated"] == 0  # nobody has measured it
-    facts = facts_for(dlq, free=600 * MiB)
-    facts = {**facts, "items": [*facts["items"], item]}
-    order = ["10-one.py", "15-new-video.py", "20-two.py", "30-three.py"]
-    planned = dlq.ui.tonight_plan(order, facts)
-    assert [entry["name"] for entry in planned] == order
-    assert next(e for e in planned if e["name"] == "15-new-video.py")["bytes"]
-
-    # Nothing was written: an answer of None and an answer of 3 leave exactly
-    # the same queue behind.
-    assert sorted((dlq.root / "queue").glob("*")) == before
-
-
-def test_the_held_keys_are_one_spelling_for_both_things_that_are_held(dlq):
-    """An item being moved and a video ytq has not written yet are held by the
-    same two arrows; a picker that answered ⏎ differently would be two screens
-    that look identical disagreeing about what enter means."""
-    import curses
-
-    held = dlq.ui.held_key
-    assert held(curses.KEY_UP, 2, 5)[0] == 1
-    assert held(curses.KEY_DOWN, 2, 5)[0] == 3
-    assert held(curses.KEY_HOME, 2, 5)[0] == 0
-    assert held(curses.KEY_END, 2, 5)[0] == 5
-    assert held(10, 2, 5) == (2, "take")
-    assert held(27, 2, 5) == (2, "leave")
-    assert held(ord("z"), 2, 5) == (2, "")
-    # Never off the end of the queue, in either direction.
-    assert held(curses.KEY_UP, 0, 5)[0] == 0
-    assert held(curses.KEY_DOWN, 5, 5)[0] == 5
 
 
 def test_a_preview_moves_the_row_and_leaves_the_queue_alone(dlq):
