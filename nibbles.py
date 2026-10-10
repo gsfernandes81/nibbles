@@ -2,9 +2,10 @@
 """nibbles: queue YouTube videos and files, fetch them before the data expires.
 
 One app, five tabs along the bottom: **Search · Feed · Later · Queue · More**.
-``ytq`` opens on Search, ``ytq subs`` on Feed, ``ytq wl`` on Later, ``dlq`` on
-Queue, and a bare ``nibbles`` on Search. Buttons first, keys second, laid out
-for a phone in portrait: ``design/design.md`` is the spec this follows.
+``nibbles`` opens on Search, ``nibbles subs`` on Feed, ``nibbles wl`` on Later
+and ``nibbles queue`` on Queue; it is the one command (``nibbles help``).
+Buttons first, keys second, laid out for a phone in portrait:
+``design/design.md`` is the spec this follows.
 
 This module is the loop: one :class:`tui.Session`, the screen on top, the
 guards on taps, the pressed flash, sheets over a dimmed tab, and the status
@@ -281,21 +282,121 @@ def run(start: str = "search", first: str | None = None, preloaded: dict | None 
             return app.receipts
 
 
+USAGE = """\
+usage: nibbles [WHERE | COMMAND | URL] ...
+
+the app, opened on a tab:
+  nibbles                    Search (no terminal: the status, printed)
+  nibbles search WORDS       search YouTube for WORDS (~0.1 MB)
+  nibbles subs               your subscriptions (alias: feed)
+  nibbles wl                 your Watch Later (alias: later)
+  nibbles queue              the queue (alias: ui)
+  nibbles more               the settings
+  nibbles URL                that video's sheet; --now starts it
+
+with no app:
+  nibbles --list URL         a video's formats and caps; writes nothing
+  nibbles --list subs | wl   print the feed or Watch Later
+  nibbles file URL           queue a direct file download
+  nibbles status             what happens next, and what it turns on
+  nibbles list               every download, and how much of it is here
+  nibbles path NAME          where a finished download landed
+  nibbles dest | settings    show or set where files go, and the window
+  nibbles run-now [--blind]  run the whole queue now
+  nibbles arm | cancel       register or unregister the nightly job
+  nibbles logs | files | dump
+
+docs: ~/nibbles/docs/ytq.md and ~/nibbles/docs/download-queue.md"""
+
+#: The tab words, and what each opens. ``subs``/``wl`` and ``ui`` are the
+#: words ytq and dlq used for the same places.
+TAB_WORDS = {"search": "search", "feed": "feed", "subs": "feed", "later": "later",
+             "wl": "later", "queue": "queue", "ui": "queue", "more": "more"}
+
+#: Flags only the YouTube side takes. Any of them, or a URL anywhere, sends the
+#: whole line to ``ytq.main``.
+YT_FLAGS = ("--from-json", "--subs", "--wl", "--watch-later", "--dest")
+
+#: The queue's printing verbs, as the queue's own command line spells them;
+#: ``files`` is its ``queue`` (the item files), renamed because ``queue`` is
+#: the tab.
+QUEUE_WORDS = {"files": "queue"}
+
+
+def _youtube(argv: list[str]) -> bool:
+    return any("://" in arg or arg.split("=")[0] in YT_FLAGS for arg in argv)
+
+
 def main(argv: list[str] | None = None) -> int:
-    """``nibbles``: the app, opened on Search (or the tab named)."""
-    argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] in START:
-        start, argv = argv[0], argv[1:]
-    else:
-        start = "search"
-    if argv:
-        print("usage: nibbles [search|feed|later|queue|more]", file=sys.stderr)
-        print("       ytq and dlq take the old arguments", file=sys.stderr)
+    """``nibbles``: the one command. Every word ytq and dlq took is here, and
+    each goes to the module that always answered it; what changed is only the
+    door (2026-10-10, the owner's: one executable, never clashing with an old
+    ``ytq`` or ``dlq`` still installed)."""
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if not argv:
+        if not sys.stdout.isatty():
+            # dlq's half to keep pinned: with no terminal, the status.
+            import expire_sched
+
+            return expire_sched.main(["status"])
+        for line in run("search"):
+            print(line)
+        return 0
+    head, rest = argv[0], argv[1:]
+    if head in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    if head == "file":
+        import dlq
+
+        return dlq.main(rest)
+    if head in TAB_WORDS:
+        return _open(TAB_WORDS[head], rest)
+    if _youtube(argv):
+        import ytq
+
+        return ytq.main(argv)
+    if "--list" in argv and any(arg in TAB_WORDS for arg in argv):
+        # ``nibbles --list subs``: the feed printed, the same as ``subs --list``.
+        word = next(arg for arg in argv if arg in TAB_WORDS)
+        return _open(TAB_WORDS[word], [arg for arg in argv if arg != word])
+    import expire_sched
+
+    words = [arg for arg in argv if arg != "--yes"]
+    verb = QUEUE_WORDS.get(words[0], words[0]) if words else ""
+    if verb in expire_sched.ACTIONS or verb in expire_sched.HIDDEN or verb in expire_sched.ALIASES:
+        if words and words[0] in QUEUE_WORDS:
+            argv = [verb if arg == words[0] else arg for arg in argv]
+        return expire_sched.main(argv)
+    print(f"nibbles: {head!r} is not a command; nibbles search {' '.join(argv)} "
+          "searches YouTube for it", file=sys.stderr)
+    print("         nibbles help lists the commands", file=sys.stderr)
+    return 2
+
+
+def _open(tab: str, rest: list[str]) -> int:
+    """The app on *tab*, through the module that has always opened it, so the
+    cookie checks, ``--list`` and the receipts are theirs."""
+    if tab in ("feed", "later"):
+        import ytq
+
+        flag = "--subs" if tab == "feed" else "--wl"
+        return ytq.main([flag, *rest])
+    if tab == "search":
+        import ytq
+
+        return ytq.main(rest)
+    if rest:
+        print(f"nibbles {tab} takes nothing after it", file=sys.stderr)
         return 2
+    if tab == "queue":
+        import expire_sched
+
+        return expire_sched.main(["ui"])
     if not sys.stdout.isatty():
-        print("nibbles needs a terminal; dlq status and ytq --list print", file=sys.stderr)
+        print("nibbles needs a terminal; nibbles help lists what prints", file=sys.stderr)
         return 2
-    for line in run(start):
+    for line in run(tab):
         print(line)
     return 0
 

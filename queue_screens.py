@@ -287,7 +287,7 @@ class QueueModel:
     # Starting things -------------------------------------------------------
 
     def start_now(self, name: str) -> list[str] | None:
-        """Hand *name* to a detached ``dlq now``; the reasons not to, or None."""
+        """Hand *name* to a detached ``nibbles now``; the reasons not to, or None."""
         if self.running.alive:
             return [f"{display(self.running.name)} is already downloading",
                     f"{display(name)} is queued and will follow"]

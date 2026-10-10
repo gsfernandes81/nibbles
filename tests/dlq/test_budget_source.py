@@ -1,14 +1,14 @@
 """Which budget source answers is a setting, and manual needs no zwana-quota.
 
-Two sources, one seam. ``dlq settings budget`` chooses between the zwana
+Two sources, one seam. ``nibbles settings budget`` chooses between the zwana
 portal and a manual allowance, the runner's :data:`SETTINGS` is the one spec
 for it and for the two figures the manual source is described by, and
 :func:`expire_runner.snapshot` says which of them answered — in keys added
 beside the ones the screens already read, never in place of them.
 
 The last half of this file is the promise that makes the manual source worth
-having on a phone with no portal: the runner, ``dlq status``, ``dlq settings``
-and ``dlq dump`` all run on a checkout with no zwana-quota beside it, and
+having on a phone with no portal: the runner, ``nibbles status``, ``nibbles settings``
+and ``nibbles dump`` all run on a checkout with no zwana-quota beside it, and
 ``quota_widget`` is never imported on the way.
 """
 

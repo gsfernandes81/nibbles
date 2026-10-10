@@ -414,16 +414,17 @@ def test_the_log_says_so_when_there_is_none_yet(dlq, capsys):
 
 
 def test_the_command_names_itself_the_way_it_was_invoked(dlq, monkeypatch):
-    """``dlq`` on PATH and ``expire_sched.py`` in the checkout — printing the
-    other one sends people to the wrong place."""
-    monkeypatch.setattr(dlq.sched.sys, "argv", ["dlq", "status"])
-    assert dlq.sched._me() == "dlq"
+    """``nibbles`` on PATH and ``expire_sched.py`` in the checkout — printing
+    the other one sends people to the wrong place. (``dlq`` until nibbles
+    became the one command.)"""
+    monkeypatch.setattr(dlq.sched.sys, "argv", ["nibbles", "status"])
+    assert dlq.sched._me() == "nibbles"
     monkeypatch.setattr(dlq.sched.sys, "argv", ["expire_sched.py"])
     assert dlq.sched._me() == "expire_sched.py"
     # A front end drawing this module's screens still names this module's
     # commands, because that is whose commands they are.
     monkeypatch.setattr(dlq.sched.sys, "argv", ["expire_runner.py", "--status"])
-    assert dlq.sched._me() in ("dlq", "expire_sched.py")
+    assert dlq.sched._me() in ("nibbles", "expire_sched.py")
 
 
 # --------------------------------------------------------------------------- #
@@ -765,3 +766,95 @@ def test_a_state_file_that_will_not_parse_is_not_a_crash(dlq):
     assert dlq.runner.load_state() == {}
     (dlq.root / "state.json").write_text(json.dumps(["a", "list"]))
     assert dlq.sched._state_items() == {}
+
+
+# --------------------------------------------------------------------------- #
+# nibbles: the one command
+# --------------------------------------------------------------------------- #
+
+
+def test_nibbles_is_the_only_executable_and_clashes_with_neither():
+    """An old ``ytq`` or ``dlq`` install can stay on PATH beside this one."""
+    import tomllib
+    from pathlib import Path
+
+    project = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
+    assert project["project"]["scripts"] == {"nibbles": "nibbles:main"}
+    assert project["project"]["name"] not in ("ytq", "dlq")
+
+
+def _routes(dlq, monkeypatch):
+    """Every door ``nibbles`` can open, each answering with where it went."""
+    import sys
+
+    went = []
+    monkeypatch.setattr(dlq.ytq, "main", lambda argv: went.append(("ytq", argv)) or 0)
+    monkeypatch.setattr(dlq.queuer, "main", lambda argv: went.append(("file", argv)) or 0)
+    monkeypatch.setattr(dlq.sched, "main", lambda argv: went.append(("queue", argv)) or 0)
+    monkeypatch.setattr(dlq.app, "run", lambda tab, *a, **k: went.append(("app", tab)) or [])
+    monkeypatch.setitem(sys.modules, "ytq", dlq.ytq)
+    monkeypatch.setitem(sys.modules, "dlq", dlq.queuer)
+    monkeypatch.setitem(sys.modules, "expire_sched", dlq.sched)
+    return went
+
+
+def test_every_word_ytq_and_dlq_took_reaches_what_answered_it(dlq, monkeypatch):
+    went = _routes(dlq, monkeypatch)
+    real_actions = dlq.sched.ACTIONS
+    url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    table = [
+        (["search", "crust", "of", "rust"], ("ytq", ["crust", "of", "rust"])),
+        (["subs"], ("ytq", ["--subs"])),
+        (["feed", "--list"], ("ytq", ["--subs", "--list"])),
+        (["--list", "subs"], ("ytq", ["--subs", "--list"])),
+        (["wl"], ("ytq", ["--wl"])),
+        (["later", "--list"], ("ytq", ["--wl", "--list"])),
+        ([url], ("ytq", [url])),
+        (["--now", url], ("ytq", ["--now", url])),
+        (["--list", url], ("ytq", ["--list", url])),
+        (["--list", "--from-json", "x.json"], ("ytq", ["--list", "--from-json", "x.json"])),
+        (["file", "https://x.example/a.iso"], ("file", ["https://x.example/a.iso"])),
+        (["queue"], ("queue", ["ui"])),
+        (["ui"], ("queue", ["ui"])),
+        (["status"], ("queue", ["status"])),
+        (["files"], ("queue", ["queue"])),
+        (["--list"], ("queue", ["--list"])),
+        (["now", "10-thing", "--yes"], ("queue", ["now", "10-thing", "--yes"])),
+        (["run-now", "--blind"], ("queue", ["run-now", "--blind"])),
+        (["settings", "window", "45"], ("queue", ["settings", "window", "45"])),
+    ]
+    for argv, where in table:
+        went.clear()
+        assert dlq.app.main(argv) == 0, argv
+        assert went == [where], (argv, went)
+    # Every queue verb has its door, under its own name or its new one.
+    for action in real_actions:
+        went.clear()
+        word = {"queue": "files"}.get(action, action)
+        dlq.app.main([word])
+        assert went and went[0][0] == "queue", action
+
+
+def test_a_word_that_is_no_command_is_refused_and_spends_nothing(dlq, monkeypatch, capsys):
+    """A mistyped verb must not become a search: a search spends data."""
+    went = _routes(dlq, monkeypatch)
+    assert dlq.app.main(["stauts"]) == 2
+    assert went == []
+    assert "nibbles search stauts" in capsys.readouterr().err
+
+
+def test_a_bare_nibbles_prints_the_status_off_a_terminal(dlq, monkeypatch):
+    """dlq's half to keep pinned: no terminal, the status."""
+    went = _routes(dlq, monkeypatch)
+    monkeypatch.setattr(dlq.app.sys.stdout, "isatty", lambda: False)
+    assert dlq.app.main([]) == 0
+    assert went == [("queue", ["status"])]
+
+
+def test_help_names_every_command_it_routes(dlq, capsys):
+    assert dlq.app.main(["help"]) == 0
+    said = capsys.readouterr().out
+    for word in ("search", "subs", "wl", "queue", "more", "file", "status", "list",
+                 "path", "dest", "settings", "run-now", "arm", "cancel", "logs",
+                 "files", "dump", "--list"):
+        assert word in said, word

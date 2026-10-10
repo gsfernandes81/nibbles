@@ -13,10 +13,10 @@ cost.
 
 Usage::
 
-    dlq <url>                    # probe the size, queue it
-    dlq <url> --name x.iso       # choose the saved file name
-    dlq <url> --probe            # print size and resume support only
-    dlq <url> --expect-bytes N   # server states no size: set the cap
+    nibbles file <url>                    # probe the size, queue it
+    nibbles file <url> --name x.iso       # choose the saved file name
+    nibbles file <url> --probe            # print size and resume support only
+    nibbles file <url> --expect-bytes N   # server states no size: set the cap
 """
 
 from __future__ import annotations
@@ -184,17 +184,17 @@ sys.exit(expire_dl.run(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="dlq",
+        prog="nibbles file",
         description=__doc__.split("\n")[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             examples:
-              dlq https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop-amd64.iso
-              dlq https://x.example/build --name build.tar.gz --sha256 <hex>
-              dlq https://x.example/feed --expect-bytes 50000000
+              nibbles file https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop-amd64.iso
+              nibbles file https://x.example/build --name build.tar.gz --sha256 <hex>
+              nibbles file https://x.example/feed --expect-bytes 50000000
 
-            for video pages use ytq; the queue itself is dlq — bare for
-            the screen, or dlq status. docs: ~/nibbles/docs/download-queue.md"""),
+            for video pages use nibbles URL; the queue itself is
+            nibbles queue, or nibbles status. docs: ~/nibbles/docs/download-queue.md"""),
     )
     parser.add_argument("url", nargs="?", help="the file to download")
     parser.add_argument("--name", help="saved file name (default: from the URL)")
@@ -211,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
         "--dest",
         metavar="DIR",
         help="put this one somewhere other than the configured file directory "
-        "(dlq dest sets that)",
+        "(nibbles dest sets that)",
     )
     parser.add_argument(
         "--expect-bytes",
@@ -311,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
                 "       matched by name, not by URL; it may be another file",
                 file=sys.stderr,
             )
-        print("       dlq --again queues it a second time", file=sys.stderr)
+        print("       nibbles file --again queues it a second time", file=sys.stderr)
         return 1
     problem = ytq.validate(path)
     if problem:

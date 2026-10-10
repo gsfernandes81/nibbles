@@ -1,6 +1,6 @@
 [project]
 name = "nibbles"
-version = "0.3.0"
+version = "0.4.0"
 description = "Queue YouTube videos and file downloads on your phone, and fetch them with data that would otherwise expire"
 requires-python = ">=3.11"
 # Deliberately empty for now. ytq shells out to the yt-dlp *binary* on PATH
@@ -12,13 +12,13 @@ dependencies = [
 ]
 
 [project.scripts]
-# All three resolve the queue root (this checkout, or $EXPIRE_HOME) rather than
-# trusting __file__, so an installed copy still queues into, and manages, the
-# real queue. One app since 2026-10-10: ytq opens it on Search, dlq on Queue,
-# and nibbles on Search; ytq and dlq keep their command-line words.
+# One command (2026-10-10). The old ytq and dlq installs each put an
+# executable of their own name on PATH, so this one only adds `nibbles` and
+# never clashes with either while they are still installed; every word they
+# took is a word `nibbles` takes (`nibbles help`). It resolves the queue root
+# (this checkout, or $EXPIRE_HOME) rather than trusting __file__, so an
+# installed copy still queues into, and manages, the real queue.
 nibbles = "nibbles:main"
-ytq = "ytq:main"
-dlq = "expire_sched:main"
 
 [build-system]
 requires = ["hatchling"]

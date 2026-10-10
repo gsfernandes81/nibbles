@@ -16,7 +16,7 @@ source reads its guard figures through; a manual budget needs none:
 (the Lip Gloss port every screen is drawn with: `$BEWITCH_HOME`, beside, then
 `~/bewitch`; `tui._bewitch_root`). The one installed dependency is
 **blessed**, which owns the terminal. `expire_sched._zwana_root` predicts the runner's resolution so
-`dlq status` can name a missing checkout instead of letting an import
+`nibbles status` can name a missing checkout instead of letting an import
 traceback. The phone's move from `~/dlq` + `~/ytq` to `~/nibbles` is in the
 README.
 
@@ -25,8 +25,8 @@ README.
 ytq and dlq are **one buttons-first app on blessed**, drawn by bewitch, since
 2026-10-10: five tabs along the bottom (Search, Feed, Later, Queue, More),
 sheets from the bottom over a dimmed tab, and a status bar on the last row.
-`ytq` opens it on Search (`ytq subs` on Feed, `ytq wl` on Later), `dlq` on
-Queue, and a bare `nibbles` on Search. **`design/` is the spec**:
+`nibbles` opens it on Search (`nibbles subs` on Feed, `nibbles wl` on Later,
+`nibbles queue` on Queue). **`design/` is the spec**:
 `design/design.md` holds every decision the owner made, `design/mockups/` the
 mockups (rendered from `design/mock/` with the same recipes, keyboard down and
 up), and `design/divergences.md` every place the build differs or had to fill
@@ -41,6 +41,19 @@ in what nothing draws.
   `design/divergences.md` — what the spec said, what was built instead, and
   why — so the owner can approve it or send it back later. A divergence not
   in that file is a bug.
+- **`nibbles` is the one command** (the owner, 2026-10-10). `pyproject`
+  installs only `nibbles`, so an old `ytq` or `dlq` install can stay on PATH
+  beside it and nothing clashes. `nibbles.main` is a door, not a parser:
+  every word ytq and dlq took goes to the module that always answered it —
+  a tab word to the app (`subs`/`wl` through `ytq.main`, which keeps the
+  cookie checks; `queue`/`ui` through `expire_sched`'s `ui`), a URL or a
+  YouTube-only flag to `ytq.main`, `file` to `dlq.main`, and the queue's verbs
+  to `expire_sched.main` (its `queue`, the raw item files, is `files`, since
+  `queue` is the tab). **Words are never a search on their own**: `nibbles
+  search WORDS` searches, and anything else unknown is refused, because a
+  mistyped verb that became a search would spend data. `test_cli.py` (dlq)
+  pins every route. The modules keep their own `main`s for that door and for
+  running a file directly; `expire_sched._me()` names `nibbles`.
 - **The layers.** `tui.py` is the one blessed `Terminal` (fullscreen, cbreak,
   hidden cursor, clicks and the wheel in SGR, restored on Ctrl-Z and on any
   exception) and turns what arrives into `Key`, `Tap`, `Scroll` (with the
@@ -92,16 +105,17 @@ in what nothing draws.
   everywhere**: a video's download is its title cleaned only of what Android's
   shared storage refuses (`ytq.title_name`), behind the `NN-`.
 - **Pause is SIGINT, both kinds**: `Firing.stop` (the whole queue) always was,
-  and `ytq.Running.stop` (one `dlq now`) is now too — it used to send SIGTERM;
+  and `ytq.Running.stop` (one `nibbles now`) is now too — it used to send SIGTERM;
   the interrupt is the ctrl-c it replaces, and it reaches yt-dlp in the same
   process group, which closes its part file.
 
 ## Decisions that travel with the queue (dlq)
 
-- **`dlq` typed on its own opens the screen** — `default_action`, whose other
-  half is the half to keep pinned: with no terminal (a pipe, a script, ssh
-  with no tty) it is `status`, which is what a bare `dlq` always printed.
-- **`dlq <url>` queues a direct file download**, uniform with `ytq <url>`
+- **A bare `nibbles` opens the screen** (Search; `default_action` is the same
+  rule for `expire_sched.py` run on its own, on Queue), and the other half is
+  the half to keep pinned: with no terminal (a pipe, a script, ssh with no
+  tty) it is `status`, which is what a bare `dlq` always printed.
+- **`nibbles file <url>` queues a direct file download**, uniform with `nibbles <url>`
   (2026-08-28; it was a separate `dlq` command, then briefly a verb). A URL
   is routed before the verbs — no verb contains `://` — and `dlq.py` keeps
   its own module and flags; the dispatch in `expire_sched.main`
@@ -132,7 +146,7 @@ in what nothing draws.
   the download is the runner *unwinding* — `run_item` kills the item's tree on
   the way past — and only an interrupt does that. SIGTERM leaves yt-dlp
   spending data with nothing watching it.
-- **`dlq run-now --blind`** is the bargain when `ic.zwana.io` cannot be
+- **`nibbles run-now --blind`** is the bargain when `ic.zwana.io` cannot be
   reached at all: every guard the runner carries is a portal figure, so a
   blind run has none and is bounded by what the items declared
   (`blind_budget`, called by the front end rather than re-derived). **Nothing
@@ -140,11 +154,11 @@ in what nothing draws.
   the same bytes again; `NO_DEADLINE` is the one spelling of "no stop time".
   A blind run that finds the portal up is an ordinary run with the floor
   intact.
-- **`dlq status` leads with the verdict**, and the verdict is
+- **`nibbles status` leads with the verdict**, and the verdict is
   `expire_runner.gate()` — the same function the firing gates on, so a screen
   saying "waiting for the window" cannot be a night the runner stopped for
   some other reason. A test must pin the *order* the gate answers in.
-- **`dlq ui` is the only thing in the queue that changes anything**, and an
+- **`nibbles queue` is the only thing in the queue that changes anything**, and an
   item is *four* things — the file in `queue/`, the partial in `work/<item>/`,
   anything finished in `out/<item>/`, and its record in `state.json`.
   `expire_ui.belongings` is the only place that decides that; every move and
@@ -162,15 +176,15 @@ in what nothing draws.
   the portal is on the vessel's network, so it answering *is* "on vessel
   wifi".
 - **Nothing is queued twice** — items record `# SOURCE:` and `ytq.write_item`
-  is the one door that refuses a duplicate; `dlq` goes through it too.
-- **Destinations**: `dlq dest` holds them; the item always downloads into
+  is the one door that refuses a duplicate; `nibbles file` goes through it too.
+- **Destinations**: `nibbles dest` holds them; the item always downloads into
   `out/<item>/` and the *runner* moves it at delivery (`shutil.move`, never a
   rename — shared storage is a different filesystem), so an unreachable
   destination leaves the file safe.
-- **Both commands anchor to the checkout, not an installed copy** —
+- **Every command line anchors to the checkout, not an installed copy** —
   `ytq._root()` resolves the queue root (`$EXPIRE_HOME`, else this file's own
-  directory *only when it holds `queue/README.md`*, else `~/nibbles`) and `dlq`
-  takes the same answer, so an installed copy still manages the real queue;
+  directory *only when it holds `queue/README.md`*, else `~/nibbles`) and the queue's
+  commands take the same answer, so an installed copy still manages the real queue;
   the alternative is a nightly job firing faithfully onto an empty queue,
   saying nothing. The Installing section of `docs/download-queue.md` explains it.
 
@@ -186,13 +200,13 @@ in what nothing draws.
   states a size, and a bar with no total stays empty. The bar is bewitch's
   `█` against `░`, both one column in Termux (checked on the phone,
   2026-10-10, design §10).
-- **`dlq dump [NAME]` is the bug report** (2026-08-28): environment, how the
+- **`nibbles dump [NAME]` is the bug report** (2026-08-28): environment, how the
   queue root and zwana-quota resolved, gate verdicts, state rows, failing
   items' heads and the newest logs, every section guarded so it finishes on
   the broken trees it exists for. (The `ytdl_item.py` shim pre-split items
   imported off the queue root went with the merge: the real module is at the
   queue root now.)
-- **`dlq settings` / the More tab** (2026-09-02): the window, the
+- **`nibbles settings` / the More tab** (2026-09-02): the window, the
   reserve, `reserve-when-paid`, `paid-min`, `auto` and `notify-blocked` live
   in `config.json` beside the destinations, and are read at the moment they
   are used, never cached — `expire_runner.SETTINGS` is the one spec, and both
@@ -206,7 +220,7 @@ in what nothing draws.
   that fails its rule reads as the default rather than raising: this is read
   at the top of a firing nobody is watching, and a stray character typed into
   the file must not be able to stop a night's downloads or take out the
-  reserve on its way past — `dlq settings` and `dlq dump` name what they
+  reserve on its way past — `nibbles settings` and `nibbles dump` name what they
   declined instead. **A change stays on the page and is said there**: More
   is a tab, a switch flips where it sits, a number opens a sheet that closes
   on Set, and what the change did is said on the line above the tabs; every
@@ -243,7 +257,7 @@ in what nothing draws.
   that one repeats every ~15 minutes on a phone off the vessel's wifi, which
   is how a person learns to ignore notifications, while a malformed item and
   an item that has run out of nights each happen once and still need somebody;
-  off leaves the log line and `dlq status` exactly as they were, and the
+  off leaves the log line and `nibbles status` exactly as they were, and the
   switch is asked in `say_blocked`, not inside `notify`. And the window is a
   multiple of 15 minutes because that is JobScheduler's own floor for a
   periodic job — a window that is not a multiple of one would buy nothing
@@ -258,7 +272,7 @@ in what nothing draws.
   code it was. zwana is the default wherever `quota_widget` can be *found*
   (`ZWANA_IMPORTABLE`, a `find_spec`, decided at import — a firing is a
   process of its own) and manual otherwise; **`quota_widget` is imported
-  lazily, by `_qw()`**, so the runner, `dlq status`, `dlq settings` and `dlq
+  lazily, by `_qw()`**, so the runner, `nibbles status`, `nibbles settings` and `nibbles
   dump` run on a phone with no zwana-quota at all, and the four presentation
   helpers the front ends borrowed off `runner.qw` (`Paint`, `countdown`,
   `since`, `grade`) are the runner's now, taken from `quota_widget` when it
@@ -268,7 +282,7 @@ in what nothing draws.
   (`manual_spendable`) — the margin for its second reason, the bytes that move
   between two looks at a running download. What it moved is a **ledger**,
   `state["spent"]`, `[epoch, bytes]` entries written by `note_spent` after
-  every item `fire()` runs *and* every `dlq now`, kept for both sources so a
+  every item `fire()` runs *and* every `nibbles now`, kept for both sources so a
   switch mid-day starts from what was spent, and entries rather than a total
   so "since the reset" is right however the reset is moved. **On the phone
   the interface counters cannot be read** (`/proc/net/dev` is permission
@@ -281,7 +295,7 @@ in what nothing draws.
   this run id, else how much its `work/` and `out/` grew, at `WIRE_FACTOR`.
   The report wins over the growth because the growth over-counts a merge, and
   a cap that stops a download at its last second has spent the bytes for
-  nothing. `watch()`, an interrupted run, `fire()`'s ledger and `dlq now` all
+  nothing. `watch()`, an interrupted run, `fire()`'s ledger and `nibbles now` all
   charge by it; where the counters can be read nothing changes. The interface
   delta, where there is one, errs high — but neither count can see what the
   rest of the phone used, which is why the reserve is **never waived** on a
@@ -302,7 +316,7 @@ in what nothing draws.
   "Spent for today" is **the existing `spent`** in its existing place, with
   its own sentence: it is the same night (nothing above the reserve until the
   reset), so the screens already say it. A manual reading is always `usable`,
-  so `--blind` never flies on one, and `dlq run-now --blind` on a manual
+  so `--blind` never flies on one, and `nibbles run-now --blind` on a manual
   budget runs the ordinary run and says why. **`snapshot()` only gains keys**:
   `source`, `allowance` (the manual reading, or `None`) and `expiring` (the
   portal's free grant left, or `None` — a manual source cannot know what
@@ -352,7 +366,7 @@ in what nothing draws.
 
 ## Decisions that travel with the YouTube front end (ytq)
 
-- **`ytq` opens the app on its Search tab.** The search is one flat
+- **`nibbles` opens the app on its Search tab.** The search is one flat
   `ytsearch` request (`⏎ Go`, ~0.1 MB), with `--extractor-args
   youtubetab:approximate_date`, which is why every age it prints is marked
   `~`. The field takes three things: words, a URL (its video sheet opens), or
@@ -430,7 +444,7 @@ in what nothing draws.
   last; Move on the Queue tab is the only place an order is chosen.
 - **`next_number` caps at `MAX_PRIORITY`** — the runner sorts file names, so
   a third digit puts an item at the front, not the back.
-- **Downloading now spawns a detached `dlq now`** (by path under the queue
+- **Downloading now spawns a detached `nibbles now`** (by path under the queue
   root: `HERE / "expire_sched.py"`), so ytq stays open and the download
   outlives the screen.
 - **`Choice.kind` decides an item's destination** — never the file extension
@@ -443,7 +457,7 @@ in what nothing draws.
   `c` on the video sheet copies the page URL through `to_clipboard`
   (termux-clipboard-set; its answer is said above the tabs).
 - **A run with no stop time must never be formatted with `int()`**
-  (2026-08-28, and it had been broken since long before the split). `dlq
+  (2026-08-28, and it had been broken since long before the split). `nibbles
   now` and `run-now --blind` both set `EXPIRE_STOP_EPOCH=0` on purpose —
   they are deliberately outside the window — and `expire_dl.Env.deadline`
   spells that `+inf`. Every *comparison* against it is right; the banner's
@@ -489,7 +503,7 @@ About half a minute; `make mutants` is the slow half and is deliberately not
 in it.
 
 **The suite has one seam and it is the queue root.** Every module here anchors
-to a checkout rather than to `__file__` — that is what keeps an installed `dlq`
+to a checkout rather than to `__file__` — that is what keeps an installed `nibbles`
 managing the real queue — so the only honest way to test one is to build a
 checkout somewhere else and run the modules out of *it*. `tests/dlq/conftest.py`
 copies this checkout's modules into a temporary directory, points
@@ -510,7 +524,7 @@ stray `ROOT` would fail.
 the failures worth catching there — a page that leaves when it should stay, a
 sentence clipped over the keys, a move that says it happened and renames
 nothing — do not show in a return value. `tests/dlq/test_screens.py` opens the
-real `dlq ui` on a pty through `termux_pty` and taps and presses what somebody
+real `nibbles queue` on a pty through `termux_pty` and taps and presses what somebody
 would, and asserts on the *shape*: which tab is up by its header, that a row
 for a download exists, that the tabs are on their row, that a tap outside
 every button changes nothing, that after Move, ↓, Put here the file on disk
@@ -537,7 +551,7 @@ One file per guarantee, and each says which:
 |---|---|
 | `test_tonight_budget.py` | the sum `plan()` promises is never more than the budget, for any ordering; every refusal `admit()` gives has a sentence on it |
 | `test_gate.py` | the order `gate()` answers in — two things wrong at once, and which is reported — including where a manual budget's `unset` sits |
-| `test_manual_budget.py` | a manual budget never spends past the allowance or into the reserve: the arithmetic, the ledger since the reset, `plan()` by permutation, firings in a row, `watch()` in flight, `dlq now` charged |
+| `test_manual_budget.py` | a manual budget never spends past the allowance or into the reserve: the arithmetic, the ledger since the reset, `plan()` by permutation, firings in a row, `watch()` in flight, `nibbles now` charged |
 | `test_budget_source.py` | the source is a setting with the runner's spec; `snapshot()` only gains keys; the runner, `status`, `settings` and `dump` run with no zwana-quota and never import it |
 | `test_firing.py` | `fire()` admits through `admit()`; SIGINT and not SIGTERM; an item leads its own session |
 | `test_settings.py` | a bad stored value reads as the default; a broken `config.json` is never written over; what waives the reserve |
@@ -547,10 +561,10 @@ One file per guarantee, and each says which:
 | `test_ui_moves.py` | the moves and removals on a real queue: bytes never lose their item |
 | `test_cut_line.py` | the cut line is computed, an entry nothing can select, and moves without moving the budget |
 | `test_layout.py` | every line fits, at 32, 40, 80 and swept between; every verdict has a word and a status label; every action and every setting has its row |
-| `test_cli.py` | what a bare `dlq` does, and where each word goes |
+| `test_cli.py` | what a bare `nibbles` does, and where each word goes — every route `nibbles` has, and that it is the only executable |
 | `test_item_contract.py` | every way an item can fail to declare itself is a reason and never an exception |
 | `test_in_flight.py` | the guards that act while the bytes are moving: the byte cap, the floor, the deadline, a portal gone dark — and all of them again with the interface counters dark, as on a phone |
-| `test_dump.py` | `dlq dump` finishes on the broken trees it exists for |
+| `test_dump.py` | `nibbles dump` finishes on the broken trees it exists for |
 | `test_queue_flows.py` | the tabs' flows headless: Remove keeps the bytes unless told, Rename moves everything, a setting set from its presets, a refused value written nowhere, a broken config never written over |
 | `test_screens.py` | the Queue and More tabs, on a pty |
 
@@ -600,7 +614,7 @@ only the first was acted on:
   spare, finished once, and not offered again; an item's own refusal not
   stopping the queue behind it; a stall that is not a strike and a strike that
   is not the last one. In `expire_sched`: **nothing spends without a yes**, and
-  what `dlq now` says it will spend is what is left to fetch rather than the
+  what `nibbles now` says it will spend is what is left to fetch rather than the
   whole declaration.
 * **A message reworded.** The largest heap by far — a third of the runner's
   survivors and better than half of `expire_sched`'s sit on a line that is a
@@ -630,7 +644,7 @@ to pin. Better than a third of `expire_sched`'s survivors and better than a
 third of `expire_ui`'s are on a line that is a printed message or a drawn row,
 and `String` alone is the largest mutator in both. What was worth taking out of
 them was the handful of lines that decide money or lose bytes: **nothing spends
-without a yes** and the figure `dlq now` quotes is what is *left* to fetch; a
+without a yes** and the figure `nibbles now` quotes is what is *left* to fetch; a
 download's bytes on disk are every payload file added up; a destination that
 exists is used and a missing parent is refused; the status screen's reserve line
 is the reserve that applies tonight, and a waived one does not read the same as

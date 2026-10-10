@@ -88,8 +88,10 @@ proposed recipes), drawn with bewitch at the real terminal size.
 ## 2. The shell: tabs, sheets, the status bar
 
 **One app, five tabs** along the bottom: **Search · Feed · Later · Queue ·
-More**. `ytq` opens on Search, `ytq subs` on Feed, `ytq wl` on Later and `dlq`
-on Queue. There are no Back buttons between tabs: the only depth is a sheet,
+More**. `nibbles` opens on Search, `nibbles subs` on Feed, `nibbles wl` on
+Later and `nibbles queue` on Queue: one command (the owner, 2026-10-10), which
+installs no `ytq` or `dlq` and so clashes with neither while the old ones are
+still installed. There are no Back buttons between tabs: the only depth is a sheet,
 and a sheet closes. `q` quits from anywhere; Quit is also a row in More.
 
 The foot of every tab screen is four rows:

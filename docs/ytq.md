@@ -1,33 +1,35 @@
 # ytq — find a video and queue it for overnight download
 
-`ytq` searches YouTube and queues what you pick for the
+(ytq is the YouTube half of nibbles; its command is `nibbles` now.)
+
+`nibbles` searches YouTube and queues what you pick for the
 [overnight download queue](download-queue.md). It asks yt-dlp for **metadata
 only** (~0.1–0.5 MB, no media), shows every format with the size yt-dlp states
 for it, and writes a queue item with that measured size as its spending cap.
 The video itself downloads during the nightly window and appears in your video
 download directory — on the phone that is Android's Downloads until you point
-it somewhere else with `dlq dest video <dir>`.
+it somewhere else with `nibbles dest video <dir>`.
 
 ## Use
 
 ```
-nibbles            # the app, on its Search tab
-ytq                # the same: search, or paste a URL, in the same field
-ytq crust of rust  # straight to the results
-ytq subs           # straight to the Feed tab: your subscriptions
-ytq wl             # straight to the Later tab: your Watch Later
-ytq <url>          # straight to that video's sheet
-ytq --now <url>    # its sheet, set to start it now
+nibbles            # the app, on its Search tab: search, or paste a URL
+nibbles search crust of rust  # straight to the results
+nibbles subs           # straight to the Feed tab: your subscriptions
+nibbles wl             # straight to the Later tab: your Watch Later
+nibbles <url>          # straight to that video's sheet
+nibbles --now <url>    # its sheet, set to start it now
 ```
 
-`ytq` and `nibbles` are the command names once installed — see
-[Installing](download-queue.md#installing-the-commands). Uninstalled, it is
-`python3 ~/nibbles/ytq.py <url>`, and every `ytq` line below reads the
-same way.
+`nibbles` is the one command once installed — see
+[Installing](download-queue.md#installing-the-commands); it installs no `ytq`,
+so an old one can stay on PATH until you remove it. Uninstalled, it is
+`python3 ~/nibbles/nibbles.py <url>`, and every `nibbles` line below reads the
+same way. `nibbles help` lists every word it takes.
 
-`ytq` opens one app with five tabs along the bottom — **Search · Feed · Later
+`nibbles` opens one app with five tabs along the bottom — **Search · Feed · Later
 · Queue · More** — on Search. The first three are YouTube; Queue is the queue
-itself, which is what `dlq` opens. How the app works as a whole — sheets,
+itself, which is what `nibbles queue` opens. How the app works as a whole — sheets,
 buttons that show their key, taps and drags, the scrollbar, the status bar —
 is in [The app](download-queue.md#the-app). What matters here:
 
@@ -76,8 +78,8 @@ video. The line says which of the two it matched (`same name, done
 2026-08-11`), because they are not equally good evidence.
 
 The check is in the one line every route to a queue item goes through, so it
-covers the search, a pasted URL, `--now` and `--from-json` alike; `dlq` is the
-same, keyed on the URL, with `dlq --again` for meaning it.
+covers the search, a pasted URL, `--now` and `--from-json` alike; `nibbles file` is the
+same, keyed on the URL, with `nibbles file --again` for meaning it.
 
 When you leave, it prints what the session queued:
 
@@ -88,12 +90,12 @@ queued 50-Some Talk.py — 487 MiB (1080p mp4), cap 506 MiB
 **A download is named after its title**, cleaned only of the characters
 Android's shared storage refuses (`/ \ : * ? " < > |`). The download then runs
 on the next night(s) with allowance to spare, and the finished file appears in
-the video download directory as `Some Talk.mp4`. `dlq list` shows progress and
-`dlq path "some talk"` says where it went.
+the video download directory as `Some Talk.mp4`. `nibbles list` shows progress and
+`nibbles path "some talk"` says where it went.
 
 ```
-dlq dest video ~/storage/movies   # change it for everything
-ytq --dest ~/storage/dcim <url>    # or for this one only
+nibbles dest video ~/storage/movies   # change it for everything
+nibbles --dest ~/storage/dcim <url>    # or for this one only
 ```
 
 ## Where it goes in the queue
@@ -109,7 +111,7 @@ download's own sheet.
 ## Searching
 
 One search is a single request — about 0.1 MB, the same order as the metadata
-extraction `ytq` already runs, so it is not asked about separately. Nothing is
+extraction `nibbles` already runs, so it is not asked about separately. Nothing is
 downloaded until you press the button on a video's sheet.
 
 ```
@@ -121,7 +123,7 @@ downloaded until you press the button on a video's sheet.
 ```
 
 - **The age is approximate, and says so.** YouTube's search page gives a
-  rounded phrase ("4 months ago"), not a date, so `ytq` shows `~4mo` rather
+  rounded phrase ("4 months ago"), not a date, so `nibbles` shows `~4mo` rather
   than inventing a day. `<1d` is anything posted today; `?` means the answer
   came back with no date at all, which happens.
 - **The views are shortened the way YouTube does it**: `842`, `1.2K`, `34M`,
@@ -145,7 +147,7 @@ matters — see the bot-check section below.
 
 ## Your subscription feed
 
-The Feed tab — or `subs` in the field, `ytq subs`, or `ytq --subs` — reads the
+The Feed tab — or `subs` in the field, `nibbles subs`, or `nibbles --subs` — reads the
 newest 30 videos from the accounts you follow. It reads itself the first time
 you open the tab in a session. The rows are a search's rows, so a video out of
 the feed is picked, sized, marked and queued exactly as a search hit is.
@@ -195,7 +197,7 @@ the feed is picked, sized, marked and queued exactly as a search hit is.
 - **It needs the stored cookie**, and the Feed and Later tabs are the only
   ones that do. The feed is a signed-in page; the jar is the same
   `~/.config/yt-dlp/cookies.txt` the bot-check section below is about, wired in
-  by the `--cookies` line in `~/.config/yt-dlp/config`. `ytq` reads that config
+  by the `--cookies` line in `~/.config/yt-dlp/config`. `nibbles` reads that config
   itself and refuses **before** spending anything if there is no cookie line,
   or the file it names is not there — the tab says which, in place of the list.
 - **An empty feed is never reported as "nothing new."** YouTube answers a
@@ -215,14 +217,14 @@ the feed is picked, sized, marked and queued exactly as a search hit is.
   queue already holds before anything is probed — which on a feed is worth more
   than on a search, because the feed shows you the same videos every day until
   you do something about them.
-- `ytq --list --subs` prints the first page and writes nothing, for a pipe or
+- `nibbles --list subs` prints the first page and writes nothing, for a pipe or
   an ssh session with no terminal. Going deeper is a screen thing: it is a
   decision with a price on it, and a price belongs on a screen somebody is
   looking at.
 
 ## Your Watch Later playlist
 
-The Later tab — or `wl` in the field, `watch later`, `ytq wl`, `ytq --wl`, or
+The Later tab — or `wl` in the field, `watch later`, `nibbles wl`, `nibbles --wl`, or
 the playlist's own URL, `youtube.com/playlist?list=WL` — reads the first 30
 videos of your Watch Later playlist. Everything in the feed section above
 holds for it too, on the same cookie, the same bound and the same prices: the
@@ -253,7 +255,7 @@ not re-buy the other.
 - **Queueing from it does not remove anything from it.** ytq only reads.
 - The 0.2 MB a look is the feed's estimate carried over, not a measurement;
   a playlist page holds more rows than a feed page, so it may well be less.
-- `ytq --list --wl` prints the first 30 and writes nothing.
+- `nibbles --list wl` prints the first 30 and writes nothing.
 
 ## The video sheet and the Formats sheet
 
@@ -344,10 +346,10 @@ opened at the height you were on:
 ## Without the picker
 
 ```
-ytq --list <url>            # print the table, write nothing
-ytq --list --subs           # print the subscription feed, write nothing
-ytq --list --wl             # print Watch Later, write nothing
-ytq --from-json dump.json   # reuse a saved 'yt-dlp -J' dump —
+nibbles --list <url>            # print the table, write nothing
+nibbles --list subs           # print the subscription feed, write nothing
+nibbles --list wl             # print Watch Later, write nothing
+nibbles --from-json dump.json   # reuse a saved 'yt-dlp -J' dump —
                             # changing your mind costs no data
 ```
 
@@ -384,13 +386,13 @@ even when a later run finishes it.
 
 Only one at a time: the queue takes an exclusive lock, so asking for a second
 while one is going says so and leaves the second queued. It still writes the
-queue item first either way, so it shows up in `dlq list`, and
-`dlq path <name>` says where it landed.
+queue item first either way, so it shows up in `nibbles list`, and
+`nibbles path <name>` says where it landed.
 
 ## When YouTube says "Sign in to confirm you're not a bot"
 
 Nothing to do with the video — YouTube is refusing the extraction. Two causes,
-both handled in `~/.config/yt-dlp/config` rather than in `ytq`:
+both handled in `~/.config/yt-dlp/config` rather than in `nibbles`:
 
 - **No JavaScript runtime.** YouTube's "n" challenge has to be solved or the
   formats are withheld. yt-dlp only enables `deno` by default and this device
@@ -408,7 +410,7 @@ both handled in `~/.config/yt-dlp/config` rather than in `ytq`:
   here, and a stale copy produces exactly this symptom with a perfectly correct
   config — that is what happened on 2026-08-28, where 2026.7.4's authenticated
   default client had stopped working and the fix had been released nine days
-  earlier. `ytq`'s own notice leads with the version and the right upgrade
+  earlier. `nibbles`'s own notice leads with the version and the right upgrade
   command for how it is installed; by hand it is:
 
   ```
@@ -436,9 +438,9 @@ both handled in `~/.config/yt-dlp/config` rather than in `ytq`:
   That is what working looks like. `JS runtimes: none` means the challenge
   cannot be solved; a missing `yt_dlp_ejs` means the solver scripts are not
   installed **for the yt-dlp that actually runs**. That last part is the trap:
-  `ytq` is a `uv` tool whose venv declares no dependencies on purpose, so it
+  `nibbles` is a `uv` tool whose venv does not carry yt-dlp, on purpose, so it
   falls back to the `yt-dlp` binary on `PATH` — and `yt-dlp-ejs` has to be
-  installed alongside *that* one, not alongside `ytq`. `yt-dlp -v` reports for
+  installed alongside *that* one, not alongside `nibbles`. `yt-dlp -v` reports for
   whichever it is, which is why the check is that rather than a `pip list`.
 
   Where to install it depends on where that yt-dlp came from — the same
@@ -454,7 +456,7 @@ both handled in `~/.config/yt-dlp/config` rather than in `ytq`:
   The same jar is what the **subscription feed** (and **Watch Later**) signs in with, and it is the
   louder alarm of the two: a search with stale cookies still returns something,
   where the feed returns nothing at all. So an empty feed and a short format
-  list are the same fault, and `ytq` says so on both rather than leaving
+  list are the same fault, and `nibbles` says so on both rather than leaving
   "no new videos" to be believed.
 
 ## Notes
@@ -467,7 +469,7 @@ both handled in `~/.config/yt-dlp/config` rather than in `ytq`:
   and how often you pick each height. It only decides what the sheet opens on
   and which quality buttons it shows. If the video does not offer the format
   you chose last, the closest resolution wins.
-- A plain file URL (not a video page) belongs in `dlq` instead — it slices
+- A plain file URL (not a video page) belongs in `nibbles file` instead — it slices
   more precisely and skips the per-night metadata overhead.
 - Large videos span nights. Each nightly firing re-runs yt-dlp (media URLs
   expire in hours, so they must be re-resolved) at ~0.1–0.5 MB per firing;

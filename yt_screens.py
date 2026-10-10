@@ -716,7 +716,7 @@ class VideoSheet(Sheet):
             app.open(Notice("Nothing to queue", [
                 "no format has a size yt-dlp will state",
                 "nothing can be queued without one",
-                "a plain file URL queues with dlq instead: it slices by Range",
+                "a plain file URL queues with nibbles file instead: it slices by Range",
             ]))
             return
         remembered = ytq.recalled_format()
