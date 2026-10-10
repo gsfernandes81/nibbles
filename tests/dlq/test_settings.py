@@ -424,7 +424,12 @@ def test_every_setting_is_reachable_and_has_a_sentence(dlq):
     what just happened.
     """
     assert set(dlq.sched.SETTING_SAYS) == set(dlq.runner.SETTINGS)
-    assert set(dlq.qs.SETTING_KEYS) == set(dlq.runner.SETTINGS)
+    assert set(dlq.runner.SETTINGS) <= set(dlq.qs.SETTING_KEYS)
+    # And every one of them is a row on More in some state of the others.
+    every = {"reserve-when-paid": False, "budget": "manual"}
+    values = {**dlq.runner.settings(), **{k: v for k, v in every.items()
+                                          if k in dlq.runner.SETTINGS}}
+    assert set(dlq.qs.shown_settings(values)) == set(dlq.runner.SETTINGS)
     assert len(set(dlq.qs.SETTING_KEYS.values())) == len(dlq.qs.SETTING_KEYS)
     for name in dlq.runner.SETTINGS:
         said = dlq.sched._setting_said(name, dlq.runner.settings()[name])

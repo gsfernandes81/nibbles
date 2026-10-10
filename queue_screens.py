@@ -58,6 +58,7 @@ STATUS = {
     "go": ("OPEN", "success"),
     "late": ("DONE", "primary"),
     "empty": ("IDLE", "primary"),
+    "unset": ("SET UP", "warn"),
     "off": ("OFF", "warn"),
     "spent": ("SPENT", "primary"),
     "blind": ("RUNNING", "warn"),
@@ -317,7 +318,7 @@ def verdict_line(model: QueueModel, room: int) -> list[tuple]:
     word = ui.VERDICT_WORDS.get(f["verdict"], f["detail"])
     seconds = model.countdown()
     tails = []
-    if f["verdict"] not in ("empty", "off", "no-portal", "stale", "blind"):
+    if f["verdict"] not in ("empty", "unset", "off", "no-portal", "stale", "blind"):
         at = f["stop_by"] if f["verdict"] == "go" else model.next_open()
         if at is not None and not math.isinf(at):
             tails = [f" · {shell.clock(at)} ({shell.left(seconds)})", f" · {shell.left(seconds)}"]
@@ -335,12 +336,28 @@ def figures(model: QueueModel, room: int) -> tuple[float, str]:
         # A reading that failed says so where its figures would be.
         return 0.0, model.note
     spend = max(0, f["spendable"])
+    if f.get("source") == "manual":
+        # A manual allowance: spent against what is left of it, never against
+        # what "expires", which nothing can know when the rest of the phone's
+        # use is not counted.
+        allowance = f.get("allowance") or {}
+        if not allowance.get("allowance_bytes"):
+            return 0.0, "no daily allowance set"
+        left = max(0, allowance.get("left_bytes") or 0)
+        a, b = shell.size(spend), shell.size(left)
+        for text in (f"{a} of {b} left to spend", f"{a} of {b} left", f"{a}/{b}"):
+            if len(text) <= room:
+                return (spend / left if left else 0.0), text
+        return (spend / left if left else 0.0), f"{a}/{b}"
     doc = f.get("portal")
     if doc is None:
         if f.get("blind"):
             return 0.0, f"≤{shell.size(spend)} declared"
         return 0.0, "no reading, nothing to spend"
-    expires = max(0, (doc.get("free") or {}).get("left_bytes") or 0)
+    expires = f.get("expiring")
+    if expires is None:
+        expires = (doc.get("free") or {}).get("left_bytes") or 0
+    expires = max(0, expires)
     frac = spend / expires if expires else 0.0
     a, b = shell.size(spend), shell.size(expires)
     # One unit said once when both figures share it: 480/763 MiB.
@@ -1262,7 +1279,33 @@ SETTING_KEYS = {
     "paid-min": "m",
     "auto": "a",
     "notify-blocked": "n",
+    # The budget source's (where the runner has one): b for budget, g for
+    # the allowance in GB-ish figures (l is the runner log), t for the time
+    # it resets.
+    "budget": "b",
+    "allowance": "g",
+    "reset": "t",
 }
+
+#: The order the settings are listed in on More, where it is not
+#: ``SETTINGS``' own: the budget source sits under the reserve (its proposal
+#: in design/divergences.md). Anything not named keeps its place after these.
+ORDER = ("window", "reserve", "reserve-when-paid", "paid-min", "budget", "allowance",
+         "reset", "auto", "notify-blocked")
+
+
+def shown_settings(values: dict) -> list[str]:
+    """Which settings are rows, in order: ``paid-min`` only while the waiver
+    is on, ``allowance`` and ``reset`` only while the budget is manual."""
+    names = [n for n in ORDER if n in values] + [n for n in values if n not in ORDER]
+    out = []
+    for name in names:
+        if name == "paid-min" and values.get("reserve-when-paid", True):
+            continue
+        if name in ("allowance", "reset") and values.get("budget", "manual") != "manual":
+            continue
+        out.append(name)
+    return out
 
 #: And the rows below the settings, by what they do.
 PAGE_KEYS = {"skip": "c", "chips": "h", "dests": "d", "job": "j", "log": "l", "quit": "q"}
@@ -1272,11 +1315,16 @@ PRESETS = {
     "window": [("30m", "30"), ("45m", "45"), ("1h", "60"), ("2h", "120")],
     "reserve": [("0", "0"), ("50 MB", "50"), ("100 MB", "100"), ("250 MB", "250")],
     "paid-min": [("0", "0"), ("50 MB", "50"), ("100 MB", "100"), ("500 MB", "500")],
+    "allowance": [("500 MB", "500"), ("1 GB", "1000"), ("2 GB", "2000"), ("5 GB", "5000")],
 }
 
 
-def reset_word() -> str:
-    """When the allowance resets (00:00 UTC), on the phone's clock."""
+def reset_word(values: dict | None = None) -> str:
+    """When the allowance resets, on the phone's clock: the manual budget's
+    own reset where there is one, else 00:00 UTC (the portal's day)."""
+    values = values or {}
+    if values.get("budget") == "manual" and "reset" in values:
+        return runner().spell_setting("reset", values["reset"])
     now = time.time()
     midnight = (int(now // 86400) + 1) * 86400
     return time.strftime("%H:%M", time.localtime(midnight))
@@ -1319,17 +1367,15 @@ class MoreTab(Screen):
         r = runner()
         values = r.settings()
         out = []
-        for name, spec in r.SETTINGS.items():
-            # paid-min only while the waiver is on: reserve-when-paid "no".
-            if name == "paid-min" and values.get("reserve-when-paid", True):
-                continue
+        for name in shown_settings(values):
+            spec = r.SETTINGS[name]
             value = r.spell_setting(name, values[name])
             if spec["kind"] == "bool":
                 on = bool(values[name])
                 value = f"{w.glyphs.RADIO_ON if on else w.glyphs.RADIO_OFF} {value}"
             meaning = MEANINGS.get(name, spec["label"])
             if name == "window":
-                meaning = f"ahead of the reset, at {reset_word()} here"
+                meaning = f"ahead of the reset, at {reset_word(values)} here"
             stored, problem, _ = r.setting_state(name)
             out.append((SETTING_KEYS.get(name, ""), name.replace("-", " "), value, meaning, None, ("setting", name),
                         f"config.json says {stored!r}: {problem}" if problem else ""))
@@ -1413,9 +1459,15 @@ class MoreTab(Screen):
         if what == "setting":
             name = action[1]
             spec = r.SETTINGS[name]
-            if spec["kind"] == "bool":
+            if spec["kind"] in ("bool", "choice"):
                 value = r.settings()[name]
-                worked, told = sched.set_setting(name, spec["words"][1] if value else spec["words"][0])
+                words = list(spec["words"])
+                if spec["kind"] == "bool":
+                    nxt = words[1] if value else words[0]
+                else:
+                    # A choice toggles like a switch, to the next of its words.
+                    nxt = words[(words.index(value) + 1) % len(words)] if value in words else words[0]
+                worked, told = sched.set_setting(name, nxt)
                 said = told[-1] if told else ""
                 if worked:
                     app.receipt(said)
@@ -1455,11 +1507,19 @@ class SettingSheet(FieldSheet):
 
     def __init__(self, name: str) -> None:
         r = runner()
-        super().__init__(name, str(r.settings()[name]))
-        self.name = name
         spec = r.SETTINGS[name]
+        value = r.settings()[name]
+        # A time of day is shown, and typed, on the phone's clock.
+        shown = r.spell_setting(name, value) if spec["kind"] == "clock" else str(value)
+        super().__init__(name, shown)
+        self.name = name
+        self.kind = spec["kind"]
         self.presets = PRESETS.get(name, [])
-        if spec["kind"] == "minutes":
+        if spec["kind"] == "clock":
+            self.rule = "a time of day on this phone's clock, like 04:00"
+        elif spec.get("zero") and "min" in spec:
+            self.rule = f"MB a day; 0 is {spec['zero']}"
+        elif spec["kind"] == "minutes":
             hours = spec["max"] // 60
             self.rule = (f"a multiple of {spec['step']}, {spec['min']} min to {hours} h"
                          if spec["step"] > 1 else f"{spec['min']} to {spec['max']} min")
@@ -1467,7 +1527,7 @@ class SettingSheet(FieldSheet):
             self.rule = f"{spec['min']} to {spec['max']} MB"
 
     def accepts(self, ch: str) -> bool:
-        return ch.isdigit()
+        return ch.isdigit() or (self.kind == "clock" and ch == ":")
 
     def submit(self, app) -> None:
         worked, told = sched.set_setting(self.name, self.value or "default")

@@ -717,6 +717,7 @@ VERDICT_WORDS = {
     "early": "waiting",
     "late": "done",
     "empty": "nothing queued",
+    "unset": "no allowance set",
     "off": "auto is off",
     "spent": "nothing to spend",
     "blind": "no portal",

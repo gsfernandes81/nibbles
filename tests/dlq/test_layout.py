@@ -290,8 +290,12 @@ def test_every_setting_has_a_row_at_every_height(dlq, width):
             app.compose()
             names = [entry.key[1] for entry in app.tabs[4].view.entries
                      if entry.key[0] == "setting"]
-            want = [n for n in dlq.runner.SETTINGS if n != "paid-min" or waived]
-            assert names == want, height
+            values = dlq.runner.settings()
+            assert names == dlq.qs.shown_settings(values), height
+            assert ("paid-min" in names) == waived
+            hidden = set(dlq.runner.SETTINGS) - set(names)
+            # Only the rows that come and go are ever missing.
+            assert hidden <= {"paid-min", "allowance", "reset"}, hidden
 
 
 @pytest.mark.parametrize("width", WIDTHS)
