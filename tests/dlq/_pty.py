@@ -38,10 +38,10 @@ from pathlib import Path
 import pyte
 
 #: The checkout under test. Its modules are copied, never imported from here.
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 
-#: The modules a queue root needs to run its own screen out of. ``ytdl_item``
-#: is the shim pre-split items import; it is part of a queue root.
+#: The modules a queue root needs to run its own screen out of: the whole
+#: checkout's worth since ytq and dlq became one repo (2026-10-10).
 MODULES = (
     "dlq.py",
     "expire_dl.py",
@@ -49,6 +49,7 @@ MODULES = (
     "expire_sched.py",
     "expire_ui.py",
     "ytdl_item.py",
+    "ytq.py",
 )
 
 #: The directories the runner makes for itself. Made up front so a test that
@@ -59,7 +60,7 @@ SUBDIRS = ("queue", "done", "failed", "work", "out", "logs")
 def sibling(name: str, env: str) -> Path:
     """A sibling checkout, resolved the way every module here resolves one.
 
-    ``$YTQ_HOME`` / ``$ZWANA_HOME``, then a clone beside this one, then under
+    ``$ZWANA_HOME``, then a clone beside this one, then under
     ``~``. Spelled here rather than read off an imported module because the
     answer is wanted *before* anything is imported: it goes into the child's
     environment, and into this process's for the copy under the temporary
@@ -74,7 +75,6 @@ def sibling(name: str, env: str) -> Path:
     return Path.home() / name
 
 
-YTQ = sibling("ytq", "YTQ_HOME")
 ZWANA = sibling("zwana-quota", "ZWANA_HOME")
 
 
@@ -110,7 +110,7 @@ def env(root: Path, home: Path, cols: int = 40, rows: int = 24) -> dict[str, str
 
     The siblings are named outright rather than left to be found, because
     ``EXPIRE_HOME`` moves the queue root and the "beside this one" answer moves
-    with it — the copy under a temporary directory has no ytq beside it.
+    with it — the copy under a temporary directory has no zwana-quota beside it.
 
     ``HOME`` is the temporary directory and the two credential variables are
     unset, which is what keeps this offline. The screen says the portal did not
@@ -120,7 +120,6 @@ def env(root: Path, home: Path, cols: int = 40, rows: int = 24) -> dict[str, str
     out.update(
         {
             "EXPIRE_HOME": str(root),
-            "YTQ_HOME": str(YTQ),
             "ZWANA_HOME": str(ZWANA),
             "HOME": str(home),
             "TERM": "xterm-256color",

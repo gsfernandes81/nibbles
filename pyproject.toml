@@ -1,19 +1,20 @@
 [project]
-name = "dlq"
-version = "0.2.0"
-description = "The pre-midnight expiring-quota download queue and its nightly runner"
+name = "nibbles"
+version = "0.3.0"
+description = "Queue YouTube videos and file downloads on your phone, and fetch them with data that would otherwise expire"
 requires-python = ">=3.11"
-# Deliberately empty. Everything here is stdlib; ytq and quota_widget are
-# reached as sibling CHECKOUTS (~/ytq, ~/zwana-quota, or $YTQ_HOME /
-# $ZWANA_HOME), never as installed packages, so installing this pulls nothing
-# from the internet.
+# Deliberately empty for now. ytq shells out to the yt-dlp *binary* on PATH
+# rather than importing it, and everything else is stdlib. quota_widget is
+# reached as the zwana-quota CHECKOUT (~/zwana-quota or $ZWANA_HOME), never as
+# an installed package, so installing this pulls nothing from the internet.
 dependencies = []
 
 [project.scripts]
-# The queue's one command: the screen when called bare on a terminal, status
-# off one, every verb, and `dlq <url>` — the plain-URL queue ask, uniform
-# with `ytq <url>`. It resolves the queue root through ytq._root rather than
-# trusting __file__, so an installed copy still manages the real queue.
+# Both resolve the queue root (this checkout, or $EXPIRE_HOME) rather than
+# trusting __file__, so an installed copy still queues into, and manages, the
+# real queue. ytq and dlq were two repos until 2026-10-10; the commands keep
+# their names until the one-app shell replaces them.
+ytq = "ytq:main"
 dlq = "expire_sched:main"
 
 [build-system]
@@ -30,6 +31,8 @@ only-include = [
     "expire_runner.py",
     "expire_sched.py",
     "expire_ui.py",
+    "ytdl_item.py",
+    "ytq.py",
 ]
 sources = ["."]
 # Editable installs get a .pth for this directory instead of per-module
@@ -59,3 +62,13 @@ lint = ["ruff==0.16.4"]
 mutants = [
     "poodle>=1.3.4",
 ]
+
+# Two suites, one per former repo, each with a conftest that builds its own
+# throwaway queue root and imports the modules out of THAT copy — never out of
+# this checkout, whose expire_runner would root itself here. They are run as
+# two pytest processes (.githooks/checks.sh), because each conftest owns the
+# environment and sys.modules for its whole session. No `pythonpath` here on
+# purpose: putting this checkout on sys.path is exactly what must not happen.
+[tool.pytest.ini_options]
+testpaths = ["tests/ytq", "tests/dlq"]
+markers = ["tui: drives the curses screens under a pty"]

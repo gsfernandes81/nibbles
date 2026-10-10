@@ -1,7 +1,7 @@
 # make dev      uv sync: the locked pytest, pyte and hypothesis into .venv
 #               (and hatchling once, where the repo builds) — a few hundred
 #               KB, then cached
-# make test     the pytest suite
+# make test     both pytest suites (tests/ytq and tests/dlq)
 # make check    the same thing — .githooks/checks.sh is the one runner, so
 #               what a push gets checked with is what you just ran; it uses
 #               .venv through uv when there is one and plain python3

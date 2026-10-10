@@ -30,7 +30,7 @@ from _pty import ENTER, drive, make_root, row_for  # noqa: F401  (ENTER: keys)
 # the items in queue/ import them by bare name and so does this. What is
 # imported here is the checkout's own copy, and only for the two pure layout
 # functions below; the screen half runs against a copy under a temporary root.
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 

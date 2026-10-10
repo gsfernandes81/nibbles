@@ -3,7 +3,7 @@
 
 The free grant of ~763 MiB lands at 00:00 UTC and whatever is left of it is
 wiped at the next 00:00 UTC. This runner works through scripts dropped in
-``~/dlq/queue`` in the hour before that deadline — ``dlq settings window``, an
+``~/nibbles/queue`` in the hour before that deadline — ``dlq settings window``, an
 hour unless it is told otherwise — so allowance that would evaporate gets spent
 on something asked for instead.
 

@@ -114,7 +114,7 @@ the server's own headers. By hand, a complete item:
 # PARTIAL: yes
 # DESC: Ubuntu 24.04 desktop ISO
 import sys
-sys.path.insert(0, "/data/data/com.termux/files/home/dlq")
+sys.path.insert(0, "/data/data/com.termux/files/home/nibbles")
 import expire_dl
 
 sys.exit(expire_dl.run(

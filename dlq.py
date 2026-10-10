@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import math
 import re
 import sys
@@ -36,17 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# ytq lives in its own checkout: $YTQ_HOME, a clone beside this one, or
-# ~/ytq — the same resolution expire_sched uses, spelled here too because
-# `dlq` is not the only door (python3 dlq.py runs this file directly).
-_ytq = os.environ.get("YTQ_HOME")
-_beside = Path(__file__).resolve().parent.parent / "ytq"
-sys.path.insert(1, str(
-    Path(_ytq).expanduser().resolve() if _ytq
-    else (_beside.resolve() if _beside.is_dir() else Path.home() / "ytq")
-))
-
-import ytq  # noqa: E402  (from the ytq checkout: shared queue plumbing)
+import ytq  # noqa: E402  (beside this file: shared queue plumbing)
 
 BASE_HEADERS = {
     # Sizes are meaningless if the server gzips, and expire_dl will ask for
@@ -205,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
               dlq https://x.example/feed --expect-bytes 50000000
 
             for video pages use ytq; the queue itself is dlq — bare for
-            the screen, or dlq status. docs: ~/dlq/docs/download-queue.md"""),
+            the screen, or dlq status. docs: ~/nibbles/docs/download-queue.md"""),
     )
     parser.add_argument("url", nargs="?", help="the file to download")
     parser.add_argument("--name", help="saved file name (default: from the URL)")

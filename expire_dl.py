@@ -39,7 +39,7 @@ Typical item::
     # EXPIRE: v1
     # EXPECT_BYTES: 4200000000
     # PARTIAL: yes
-    import sys; sys.path.insert(0, "/data/data/com.termux/files/home/dlq")
+    import sys; sys.path.insert(0, "/data/data/com.termux/files/home/nibbles")
     import expire_dl
     sys.exit(expire_dl.run("https://example/big.iso", "big.iso"))
 

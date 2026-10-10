@@ -39,7 +39,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _pty import MODULES, YTQ, ZWANA, make_root  # noqa: E402
+from _pty import MODULES, ZWANA, make_root  # noqa: E402
 
 from hypothesis import HealthCheck, settings  # noqa: E402
 
@@ -250,7 +250,6 @@ def _rooted(root: Path):
 def _environment(root: Path, home: Path) -> dict[str, str]:
     return {
         "EXPIRE_HOME": str(root),
-        "YTQ_HOME": str(YTQ),
         "ZWANA_HOME": str(ZWANA),
         "HOME": str(home),
         "COLUMNS": "80",
@@ -462,7 +461,7 @@ def _real_queue_untouched():
     pass — and an item run with no ``EXPIRE_WORK`` writes its progress file
     into whatever the working directory happens to be, which is here.
     """
-    real = Path(__file__).resolve().parents[1]
+    real = Path(__file__).resolve().parents[2]
     watched = (real / "config.json", real / "state.json", real / "queue")
     before = {path: path.stat().st_mtime for path in watched if path.exists()}
     listed = {path.name for path in real.iterdir()}

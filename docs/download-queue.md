@@ -7,19 +7,18 @@ a floor for the morning (100 MB by default) and never touching the paid
 reserve. `dlq settings` changes the window, the floor, what the job says, or
 turns it off outright — see [Settings](#settings).
 
-The queue lives in `~/dlq/` — this checkout — and its YouTube front end in a
-sibling checkout, `~/ytq/`. Two commands are installable (see
+The queue and its YouTube front end live in one checkout, `~/nibbles/` (they
+were two repos, `dlq` and `ytq`, until 2026-10-10). Two commands are installable (see
 [Installing](#installing-the-commands)) and then work from any directory:
 `ytq` queues videos, `dlq` is the queue itself — typed on its own it opens
 [the screen](#changing-what-is-queued), which is where the queue is worked on,
 and `dlq <url>` queues a plain file URL. Without installing, every line
-in these docs also works as `python3 ~/ytq/ytq.py …` — and `dlq` as
-`python3 ~/dlq/expire_sched.py …`.
+in these docs also works as `python3 ~/nibbles/ytq.py …` — and `dlq` as
+`python3 ~/nibbles/expire_sched.py …`.
 
-The checkouts find each other as siblings: each looks beside itself first,
-then under `~` (`~/ytq`, `~/dlq`, `~/zwana-quota` — the runner reads the
-portal through the quota widget in that third one). `YTQ_HOME`, `EXPIRE_HOME`
-and `ZWANA_HOME` override, in that order of likelihood to be needed.
+The runner reads the portal through the quota widget in a second checkout,
+`~/zwana-quota`, found beside this one or under `~`. `EXPIRE_HOME` and
+`ZWANA_HOME` override where either lives.
 
 If you need something before the window rather than during it, see
 [Downloading something now](#downloading-something-now) — that spends data
@@ -60,9 +59,9 @@ Nothing downloads when you queue — the item just waits for the nightly window.
 
 ## Installing the commands
 
-Optional — the scripts run fine as `python3 ~/dlq/expire_sched.py`. Installing
-just puts them on PATH as `dlq` and `ytq` — one install per checkout, since
-they are separate repos. Neither pyproject declares a dependency (stdlib only;
+Optional — the scripts run fine as `python3 ~/nibbles/expire_sched.py`. Installing
+just puts them on PATH as `dlq` and `ytq`, both from the one checkout. The
+pyproject declares no dependency (stdlib only;
 yt-dlp is a separate binary on PATH), so nothing but the build backend is ever
 fetched.
 
@@ -70,8 +69,7 @@ fetched.
 are, so edits take effect immediately and pulling a repo needs no reinstall:
 
 ```
-uv tool install --editable ~/dlq
-uv tool install --editable ~/ytq
+uv tool install --editable ~/nibbles
 ```
 
 **Non-editable** — copies the modules into the tool's own environment, so the
@@ -79,11 +77,11 @@ commands are unaffected by edits to the checkouts, at the cost of needing
 `--force` to pick any change up:
 
 ```
-uv tool install ~/dlq
-uv tool install --force ~/dlq   # after editing
+uv tool install ~/nibbles
+uv tool install --force ~/nibbles   # after editing
 ```
 
-An installed copy still works out of `~/dlq/`, not next to itself
+An installed copy still works out of `~/nibbles/`, not next to itself
 — the queue has to be the one the nightly runner reads, and `dlq` has to arm
 the runner that lives in the checkout. Both commands anchor there deliberately
 (`ytq._root()` finds it, and `dlq` takes the same answer rather than its own
@@ -93,7 +91,7 @@ would queue into its own installed directory, where the runner never looks, and
 no queue next to it and cannot reach `quota_widget` at all. The symptom would be
 a job firing faithfully every night onto an empty queue.
 
-Set `EXPIRE_HOME` if the queue checkout is somewhere other than `~/dlq`:
+Set `EXPIRE_HOME` if the queue checkout is somewhere other than `~/nibbles`:
 
 ```
 EXPIRE_HOME=~/src/dlq ytq <url>
@@ -108,14 +106,14 @@ The install fetches at most the **≈1 MB** hatchling build backend from PyPI,
 once — after that it is served from `uv`'s cache. (Add `--offline` if you want
 the install to refuse rather than fetch on a metered connection.)
 
-Both packages need hatchling rather than `uv_build` (which is compiled into
+The package needs hatchling rather than `uv_build` (which is compiled into
 the uv binary and fetches nothing): `uv_build` resolves one module name to one
 directory, and these are flat sibling modules on purpose — the queue items
 written into `queue/` `import expire_dl` and `import ytdl_item` by bare name.
 So this fetch is the standing cost of that layout, and it is paid once: the
-build backend is shared from uv's cache across both installs.
+build backend is kept in uv's cache after that.
 
-To remove: `uv tool uninstall dlq` (and `uv tool uninstall ytq`). Nothing else
+To remove: `uv tool uninstall nibbles`. Nothing else
 in the queue depends on the install — the nightly runner is registered by
 absolute path and is unaffected by it, and queue items already written keep
 working.
@@ -123,8 +121,8 @@ working.
 ### Fish completions
 
 ```
-ln -s ~/dlq/completions/dlq.fish ~/.config/fish/completions/
-ln -s ~/ytq/completions/ytq.fish ~/.config/fish/completions/
+ln -s ~/nibbles/completions/dlq.fish ~/.config/fish/completions/
+ln -s ~/nibbles/completions/ytq.fish ~/.config/fish/completions/
 ```
 
 Symlinks rather than copies, so pulling the repo updates them. New shells pick
@@ -152,7 +150,7 @@ unregisters it. Both are also `j` on [the settings page](#settings), under the
 line that says which it currently is — arm when it says not armed, cancel
 (with a confirm, because what follows is silence) when it says armed. `arm`
 registers the runner **in the checkout** whether or not `dlq` itself is
-installed, so re-arm after moving `~/dlq`.
+installed, so re-arm after moving `~/nibbles`.
 
 ## Watching one download
 
@@ -224,7 +222,7 @@ job       armed, fires every 15m
 last run
   22:30Z (11m ago) not yet: window opens
   23:00Z
-root      ~/dlq
+root      ~/nibbles
 ```
 
 The first line under the heading is the whole answer, and there are only ten

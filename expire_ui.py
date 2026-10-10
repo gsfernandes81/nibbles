@@ -75,7 +75,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import expire_sched as sched  # noqa: E402  (sibling module, path fixed up above)
-import ytq  # noqa: E402  (reachable because expire_sched put its checkout on sys.path)
+import ytq  # noqa: E402  (beside this file, path fixed up above)
 import contextlib
 
 #: What a row says is said the same way ``dlq list`` says it, by calling the

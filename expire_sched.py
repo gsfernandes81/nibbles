@@ -84,18 +84,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# ytq lives in its own checkout now: $YTQ_HOME, a clone beside this one, or
-# ~/ytq — the same three answers, in the same order, that ytq._sibling gives
-# for finding this repo. One resolution here covers every module in this
-# checkout that imports this one first (expire_ui deliberately does).
-_ytq = os.environ.get("YTQ_HOME")
-_beside = Path(__file__).resolve().parent.parent / "ytq"
-sys.path.insert(1, str(
-    Path(_ytq).expanduser().resolve() if _ytq
-    else (_beside.resolve() if _beside.is_dir() else Path.home() / "ytq")
-))
-
-import ytq  # noqa: E402  (from the ytq checkout, path fixed up above)
+import ytq  # noqa: E402  (beside this file, path fixed up above)
 
 #: The checkout, never this file's directory. Installed non-editable, this
 #: module is a copy in site-packages, and every path below has to keep pointing
@@ -2338,7 +2327,7 @@ def dump(target: str | None = None) -> int:
 
     def _environment() -> None:
         print(f"  python     : {sys.version.split()[0]}  {sys.executable}")
-        for name in ("EXPIRE_HOME", "YTQ_HOME", "ZWANA_HOME"):
+        for name in ("EXPIRE_HOME", "ZWANA_HOME"):
             value = os.environ.get(name)
             if value:
                 print(f"  {name} = {value}")
@@ -2357,10 +2346,8 @@ def dump(target: str | None = None) -> int:
         print(f"  queue root : {ROOT}")
         print(f"    queue/README.md      : {(ROOT / 'queue' / 'README.md').is_file()}")
         print(f"    expire_runner.py     : {(ROOT / 'expire_runner.py').is_file()}")
-        print(f"    ytdl_item.py shim    : {(ROOT / 'ytdl_item.py').is_file()}")
-        ytq_dir = Path(ytq.__file__).resolve().parent
-        print(f"  ytq        : {ytq_dir}")
-        print(f"    ytdl_item.py         : {(ytq_dir / 'ytdl_item.py').is_file()}")
+        print(f"    ytdl_item.py         : {(ROOT / 'ytdl_item.py').is_file()}")
+        print(f"    ytq.py               : {(ROOT / 'ytq.py').is_file()}")
         zwana = _zwana_root()
         print(f"  zwana      : {zwana}")
         print(f"    quota_widget.py      : {(zwana / 'quota_widget.py').is_file()}")
@@ -2522,7 +2509,7 @@ def usage() -> int:
     print("no command: the screen", file=sys.stderr)
     print("a URL: queue it as a direct file download", file=sys.stderr)
     print("NAME: part of a name, or its number", file=sys.stderr)
-    print("docs: ~/dlq/docs/download-queue.md", file=sys.stderr)
+    print("docs: ~/nibbles/docs/download-queue.md", file=sys.stderr)
     return 2
 
 
