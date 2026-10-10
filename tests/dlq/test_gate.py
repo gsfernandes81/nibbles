@@ -65,6 +65,9 @@ def test_every_verdict_says_something_and_is_one_of_the_named_ones(dlq):
                         "live",
                         dlq.reading(age=600, live=False),
                         dlq.reading(free=0, paid=0),
+                        # A manual budget with no allowance: the one verdict
+                        # only that source can give.
+                        dlq.runner.manual_reading({}),
                     )
                     for doc in docs:
                         for current in (0.0, 5_000.0, 9_500.0):
@@ -248,3 +251,69 @@ def test_a_blind_snapshot_spends_what_the_items_declared(dlq):
     assert facts["spendable"] == dlq.runner.blind_budget(
         dlq.runner.queued_items()[0], dlq.runner.load_state()
     )
+
+
+# --------------------------------------------------------------------------- #
+# A manual budget's own verdicts, and where they sit
+# --------------------------------------------------------------------------- #
+
+
+def manual(dlq, *, allowance_mb=0, spent=0):
+    """A manual reading with *allowance_mb* a day and *spent* bytes of it gone."""
+    dlq.config({"budget": "manual", "allowance_mb": allowance_mb})
+    state = {"spent": [[dlq.runner.now(), spent]]} if spent else {}
+    return dlq.runner.manual_reading(state)
+
+
+def test_no_allowance_is_reported_after_the_empty_queue_and_before_the_clock(dlq):
+    """``unset`` sits between ``empty`` and ``early``.
+
+    After the empty queue, because with nothing queued there is nothing to
+    spend an allowance on either way. Ahead of the clock, because it is a
+    standing setting rather than a moment: at noon the answer to "what will
+    happen tonight" is "nothing, nobody has said how much there is", not
+    "waiting for the window".
+    """
+    doc = manual(dlq)
+    assert verdict(dlq, doc=doc, items=[]) == "empty"
+    assert verdict(dlq, doc=doc, current=0.0) == "unset"
+    assert verdict(dlq, doc=doc, current=9_500.0) == "unset"
+    # The switch is still asked first of all.
+    assert verdict(dlq, doc=doc, auto=False) == "off"
+
+
+def test_neither_force_nor_blind_steps_over_a_missing_allowance(dlq):
+    """No flag can supply a figure nobody has given."""
+    doc = manual(dlq)
+    assert verdict(dlq, doc=doc, force=True) == "unset"
+    assert verdict(dlq, doc=doc, force=True, blind=True) == "unset"
+
+
+def test_a_spent_allowance_is_the_spent_verdict_in_its_usual_place(dlq):
+    """Spent for today is ``spent``: after the clock, before ``go``.
+
+    The same verdict as a portal with nothing spendable in it, because it is the
+    same night — nothing above the reserve until the reset — and so it sits in
+    the same place and is said by the same screens. What a manual one adds is a
+    sentence of its own, naming the allowance rather than a portal figure.
+    """
+    reserve = dlq.runner.reserve_bytes()
+    doc = manual(dlq, allowance_mb=500, spent=500 * 1_000_000 - reserve)
+    assert verdict(dlq, doc=doc) == "spent"
+    assert verdict(dlq, doc=doc, current=0.0) == "early"
+    assert verdict(dlq, doc=doc, force=True, blind=True) == "spent"
+    assert gate(dlq, doc=doc)[1].strip()
+    # With the day untouched the same night goes.
+    assert verdict(dlq, doc=manual(dlq, allowance_mb=500)) == "go"
+
+
+def test_a_manual_reading_is_never_a_missing_portal(dlq):
+    """There is no portal behind it, so no portal gate can stop it.
+
+    And so ``--blind`` has nothing to override: asked for on a manual budget it
+    is an ordinary run against the allowance, never the uncounted kind.
+    """
+    doc = manual(dlq, allowance_mb=500)
+    assert dlq.runner.usable(doc)
+    assert verdict(dlq, doc=doc, blind=True) == "go"
+    assert verdict(dlq, doc=doc) not in dlq.runner.GATE_FAULTS

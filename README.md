@@ -9,6 +9,12 @@ scheduled job spends the leftover on downloads queued here, always leaving a
 floor for the morning (100 MB, by default) and never touching the paid
 reserve. Everything says what it costs before it spends anything.
 
+How much there is to spend comes from a **budget source**: the zwana crew
+portal (the default wherever the zwana-quota checkout is there), or a manual
+daily allowance and reset time for a plan with no portal, spent down from the
+runner's own count of what it moved. `dlq settings budget` chooses;
+`docs/download-queue.md` has the section on both.
+
 ytq and dlq were two repos until 2026-10-10; this is both of them, with their
 histories. The two commands keep their names for now:
 
@@ -31,8 +37,9 @@ A one-app, buttons-first rebuild of both screens on blessed is in progress:
   and its screen.
 - `queue/`: the queue, with the item contract in `queue/README.md`.
 - `~/zwana-quota`, a separate checkout: the portal client and quota widget the
-  runner reads every guard figure through. Found as `$ZWANA_HOME`, then a clone
-  beside this one, then `~/zwana-quota`.
+  zwana budget source reads every guard figure through. Found as
+  `$ZWANA_HOME`, then a clone beside this one, then `~/zwana-quota`. Not
+  needed with `dlq settings budget manual`.
 
 The queue root is this checkout (`$EXPIRE_HOME` overrides), never an installed
 copy's own directory, so an installed `ytq` or `dlq` still works the real queue.

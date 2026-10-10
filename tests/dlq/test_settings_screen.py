@@ -22,6 +22,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import json
+
 import pytest
 
 from _pty import ENTER, drive, make_root, row_for  # noqa: F401  (ENTER: keys)
@@ -65,8 +67,11 @@ def _said(body: list[tuple[int, str, str]]) -> list[str]:
 
 
 def _keys() -> list[str]:
-    """Every letter the page answers to, settings and page rows alike."""
-    return [chr(key) for key in (*expire_ui.SETTING_KEYS, *expire_ui.PAGE_KEYS)]
+    """Every letter the page answers to, settings and page rows alike.
+
+    The page's own answer: which settings it draws depends on the budget source.
+    """
+    return expire_ui.setting_letters().split()
 
 
 @pytest.mark.parametrize(("width", "height"), SIZES)
@@ -192,3 +197,27 @@ def test_changing_a_setting_stays_on_the_settings_page(
     # The receipt survives the screen: q on the listing tears curses down and
     # prints what the session changed.
     assert b"auto" in tail
+
+
+@pytest.mark.tui
+@pytest.mark.parametrize("source", ["zwana", "manual"])
+def test_with_the_keyboard_up_every_row_is_still_on_the_page(
+    tmp_path: Path, source: str
+) -> None:
+    """40×14, the phone being typed on: the nightly job's row is still there.
+
+    The page shows the settings that do something under the budget source and
+    gives up the blank under its title on a short screen; between them, every
+    row it draws is on the screen, down to the last one, and the hint names
+    exactly the keys of those rows.
+    """
+    root = _checkout(tmp_path)
+    (root / "config.json").write_text(json.dumps({"budget": source}), encoding="utf-8")
+    shots, _ = drive(root, tmp_path, 40, 14, [b"s", b"q", b"q"])
+    settings = shots[1]
+    assert "settings" in settings[0]
+    letters = [line.split()[0] for line in settings[1:-2] if line.split()[:1]]
+    hinted = settings[-2].strip().split("  ")[0].split()
+    assert row_for(settings, "b").split()[:2] == ["b", "budget"]
+    assert row_for(settings, "j"), "the last row fell off the bottom"
+    assert letters == hinted
