@@ -22,3 +22,6 @@ config.json
 # make mutants: poodle's per-worker copies of the tree, and its report
 .poodle-temp/
 .poodle-report.json
+
+# uv build
+dist/

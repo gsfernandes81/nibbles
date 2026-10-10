@@ -305,7 +305,7 @@ with no app:
   nibbles arm | cancel       register or unregister the nightly job
   nibbles logs | dump
 
-docs: ~/nibbles/docs/ytq.md and ~/nibbles/docs/download-queue.md"""
+docs: github.com/gsfernandes81/nibbles/tree/main/docs"""
 
 #: The words that open the app on a tab (``ui`` is dlq's word for the queue).
 #: Feed and Later have none: they are a tap away, and reading either spends.

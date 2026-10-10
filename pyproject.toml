@@ -2,21 +2,42 @@
 name = "nibbles"
 version = "0.4.0"
 description = "Queue YouTube videos and file downloads on your phone, and fetch them with data that would otherwise expire"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
-# Deliberately empty for now. ytq shells out to the yt-dlp *binary* on PATH
-# rather than importing it, and everything else is stdlib. quota_widget is
-# reached as the zwana-quota CHECKOUT (~/zwana-quota or $ZWANA_HOME), never as
-# an installed package, so installing this pulls nothing from the internet.
+authors = [{ name = "Gavin Fernandes" }]
+keywords = ["termux", "youtube", "yt-dlp", "download", "queue", "metered", "tui"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Android",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Multimedia :: Video",
+]
+# ytq shells out to the yt-dlp *binary* on PATH rather than importing it, and
+# quota_widget is reached as the zwana-quota CHECKOUT (~/zwana-quota or
+# $ZWANA_HOME), never as an installed package — a manual budget needs none.
+# blessed owns the terminal; bewitch draws the screens (a checkout of it beside
+# this one, or under ~, still wins: tui._bewitch_root).
 dependencies = [
+    "bewitch>=0.1.0",
     "blessed>=1.50",
 ]
 
+[project.urls]
+Source = "https://github.com/gsfernandes81/nibbles"
+Issues = "https://github.com/gsfernandes81/nibbles/issues"
+Documentation = "https://github.com/gsfernandes81/nibbles/tree/main/docs"
+
 [project.scripts]
-# One command (2026-10-10). The old ytq and dlq installs each put an
-# executable of their own name on PATH, so this one only adds `nibbles` and
-# never clashes with either while they are still installed; every word they
-# took is a word `nibbles` takes (`nibbles help`). It resolves the queue root
-# (this checkout, or $EXPIRE_HOME) rather than trusting __file__, so an
+# One command (2026-10-10); every word ytq and dlq took is a word `nibbles`
+# takes (`nibbles help`). It resolves the queue root (nibbles.home: this
+# checkout, $EXPIRE_HOME, else ~/nibbles) rather than trusting __file__, so an
 # installed copy still queues into, and manages, the real queue.
 nibbles = "nibbles:main"
 
@@ -25,29 +46,34 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-# Flat sibling modules, not a package: they import each other by bare name and
-# the queue items written into queue/ do the same, so the whole directory has
-# to land on sys.path as one unit.
-only-include = [
-    "dlq.py",
-    "expire_dl.py",
-    "expire_runner.py",
-    "expire_sched.py",
-    "expire_ui.py",
-    "nibbles.py",
-    "queue_screens.py",
-    "shell.py",
-    "tui.py",
-    "widgets.py",
-    "ytdl_item.py",
-    "yt_screens.py",
-    "ytq.py",
-]
-sources = ["."]
-# Editable installs get a .pth for this directory instead of per-module
-# shims, which keeps `import expire_dl` working the same way the runtime
-# sys.path.insert calls already assume.
+# One package since 2026-10-10. The flat files at the checkout's root are
+# doors for a phone that predates it (see their docstrings) and do not ship.
+packages = ["nibbles"]
+# Editable installs get a .pth for the checkout, so `import nibbles` is the
+# checkout's package, edits take effect at once and a pull needs no reinstall.
 dev-mode-dirs = ["."]
+
+[tool.hatch.build.targets.wheel.force-include]
+# The item contract, which an installed copy writes into the queue root it
+# makes on first run (nibbles.home.ensure) — it is also what marks one.
+"queue/README.md" = "nibbles/queue-README.md"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "nibbles",
+    "queue/README.md",
+    "tests",
+    "docs",
+    "completions",
+    "README.md",
+    "LICENSE",
+    "CLAUDE.md",
+]
+
+[tool.uv.sources]
+# For development the sibling checkout, which the suites already need; the
+# wheel's metadata says only `bewitch>=0.1.0`, which PyPI answers.
+bewitch = { path = "../bewitch", editable = true }
 
 # Two groups, not one — the or3 repo's uv plan (docs/uv-dev-env.md there),
 # applied here. `uv sync` installs dev (pytest is pure Python and installs

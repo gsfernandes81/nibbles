@@ -8,14 +8,17 @@ would expire anyway, and never more — and the screens are built for a
 
 ytq (the YouTube front end) and dlq (the expiring-quota download queue and its
 runner) were split out of the `or3` monorepo's `termux/expire/` on 2026-08-28
-and **merged into this repo on 2026-10-10**, histories kept. The modules are
-flat at the root and import each other by bare name. Two sibling checkouts
+and **merged into this repo on 2026-10-10**, histories kept. Since the same
+day they are **one package, `nibbles/`**, importing each other as
+`from nibbles import ytq` (see *Published to PyPI* below for why and for the
+doors left at the root). Two sibling checkouts
 are left: **zwana-quota** (the portal client and quota widget the zwana budget
 source reads its guard figures through; a manual budget needs none:
 `$ZWANA_HOME`, a clone beside this repo, then `~/zwana-quota`) and **bewitch**
 (the Lip Gloss port every screen is drawn with: `$BEWITCH_HOME`, beside, then
-`~/bewitch`; `tui._bewitch_root`). The one installed dependency is
-**blessed**, which owns the terminal. `expire_sched._zwana_root` predicts the runner's resolution so
+`~/bewitch`; `tui._bewitch_root`, which falls back to the installed bewitch
+when there is no checkout). The installed dependencies are **blessed**, which
+owns the terminal, and **bewitch** from PyPI. `expire_sched._zwana_root` predicts the runner's resolution so
 `nibbles status` can name a missing checkout instead of letting an import
 traceback. The phone's move from `~/dlq` + `~/ytq` to `~/nibbles` is in the
 README.
@@ -189,12 +192,41 @@ in what nothing draws.
   `out/<item>/` and the *runner* moves it at delivery (`shutil.move`, never a
   rename — shared storage is a different filesystem), so an unreachable
   destination leaves the file safe.
-- **Every command line anchors to the checkout, not an installed copy** —
-  `ytq._root()` resolves the queue root (`$EXPIRE_HOME`, else this file's own
-  directory *only when it holds `queue/README.md`*, else `~/nibbles`) and the queue's
-  commands take the same answer, so an installed copy still manages the real queue;
-  the alternative is a nightly job firing faithfully onto an empty queue,
-  saying nothing. The Installing section of `docs/download-queue.md` explains it.
+- **Every command line anchors to the queue root, not an installed copy** —
+  `home.root()` resolves it (`$EXPIRE_HOME`, else the checkout the package
+  sits in *only when it holds `queue/README.md`*, else `~/nibbles`), and
+  `ytq.HERE`, `expire_sched.ROOT` and `expire_runner.ROOT` are all that one
+  answer, so an installed copy still manages the real queue; the alternative
+  is a nightly job firing faithfully onto an empty queue, saying nothing. The
+  Installing section of `docs/download-queue.md` explains it.
+- **Published to PyPI** (2026-10-10, the owner's: package it properly,
+  AGPL-3.0-or-later, released from `main`). Why a package: thirteen flat
+  modules would have landed in site-packages as top-level `shell`, `tui`,
+  `widgets`… The wheel is `nibbles/` and the item contract
+  (`queue/README.md`, force-included as `nibbles/queue-README.md`).
+  **An installed copy makes its own root** — `home.ensure`, called by the
+  door on every run: the contract and the launcher `~/nibbles/expire_runner.py`
+  (Termux shebang, sets `EXPIRE_HOME` to its own directory, puts
+  `home.SOURCE` on sys.path, runs `nibbles.expire_runner.main`), rewritten
+  only while it is one of ours (`home.GENERATED`) and only when the package
+  moved; never into a checkout, a root `EXPIRE_HOME` names, or a non-empty
+  folder that is not a queue. Queue items put `home.SOURCE` (the checkout or
+  site-packages) on sys.path and import `nibbles.ytdl_item` /
+  `nibbles.expire_dl`, because the job starts them with Termux's own
+  interpreter, which knows no venv. `nibbles now` is `python -m nibbles now`
+  under `sys.executable` with the package first on `PYTHONPATH`
+  (`home.child_env`). **The doors at the root** — `expire_runner.py`,
+  `expire_sched.py`, `ytdl_item.py`, `expire_dl.py` — are for the phone's
+  checkout, which predates the package: the armed job's path, items already
+  queued, and `python3 expire_sched.py`. Imported, each *is* its module
+  (`sys.modules[__name__]`); run, it runs `main`. They are not shipped, and
+  can go once no phone has a job or an item that names them. **A release is a
+  version bump landing on `main`**: `.github/workflows/release.yml` runs both
+  suites (cloning bewitch and zwana-quota beside), builds, smoke-tests the
+  wheel in a clean venv, publishes by trusted publishing (environment
+  `pypi`, no token) and tags `v<version>`; `__version__` moves with
+  `pyproject`'s (`test_install.py` holds them together). bewitch is released
+  the same way and has to reach PyPI first.
 
 - **One reading feeds the word, the figures and the bar** (2026-08-28). A
   download's size was once shown twice, from two readings a second apart that
@@ -496,10 +528,11 @@ without the second it never decodes a mouse report; and they send a tap as
 Termux does (press and release at one cell) and a drag as wheel events stamped
 with the cell it began on. pyte is taught `CSI S` and `CSI T` there too.
 
-**Both suites run the modules out of a copy.** This checkout's own
-`expire_runner` anchors its root on its own directory, which is the real queue,
-so neither suite may import a module from here: each conftest copies the
-modules into a temporary queue root, points `EXPIRE_HOME` and `HOME` at
+**Both suites run the package out of a copy.** A checkout is its own queue
+root, which here is the real queue, so neither suite may import a module from
+here (an editable install puts this checkout on sys.path, which is why the
+copy is asserted): each conftest copies the package and the root's doors into
+a temporary queue root shaped like a checkout, points `EXPIRE_HOME` and `HOME` at
 temporary directories and imports (or, under a pty, executes) the copy. The ytq
 conftest asserts the `ytq` it imported is the copy; the dlq conftest asserts
 every root the modules spelled is the temporary one, and an autouse fixture
@@ -514,7 +547,7 @@ in it.
 to a checkout rather than to `__file__` — that is what keeps an installed `nibbles`
 managing the real queue — so the only honest way to test one is to build a
 checkout somewhere else and run the modules out of *it*. `tests/dlq/conftest.py`
-copies this checkout's modules into a temporary directory, points
+copies this checkout's package into a temporary directory, points
 `EXPIRE_HOME` and `HOME` at it and imports them there, so `expire_runner.ROOT`,
 `ytq.HERE` and every path spelled from them land under `tmp_path`. `HOME` is
 what keeps the suite offline: `zwana_quota` reads its credentials from
@@ -575,6 +608,7 @@ One file per guarantee, and each says which:
 | `test_dump.py` | `nibbles dump` finishes on the broken trees it exists for |
 | `test_queue_flows.py` | the tabs' flows headless: Remove keeps the bytes unless told, Rename moves everything, a setting set from its presets, a refused value written nowhere, a broken config never written over |
 | `test_screens.py` | the Queue and More tabs, on a pty |
+| `test_install.py` | an installed copy makes its own queue root and launcher, and writes into no checkout, no `EXPIRE_HOME` and no folder of somebody's; the launcher runs the runner in its own root; the wheel ships the contract where the package looks |
 
 **`make mutants` is the suite's own check.** poodle changes one operator,
 literal or comparison at a time and runs the tests against it; a mutant that
@@ -677,7 +711,7 @@ poodle's own `--only`:
 
 ```
 POODLE_TESTS="tests/dlq/test_gate.py tests/dlq/test_tonight_budget.py" \
-    uv run --group mutants poodle --only expire_runner.py
+    uv run --group mutants poodle --only nibbles/expire_runner.py
 ```
 
 The three the figures above came from, so the next run is the same run:
@@ -685,11 +719,11 @@ The three the figures above came from, so the next run is the same run:
 ```
 POODLE_TESTS="tests/dlq/test_gate.py tests/dlq/test_tonight_budget.py tests/dlq/test_firing.py
               tests/dlq/test_settings.py tests/dlq/test_clock.py tests/dlq/test_item_contract.py
-              tests/dlq/test_in_flight.py"                      --only expire_runner.py
+              tests/dlq/test_in_flight.py"                      --only nibbles/expire_runner.py
 POODLE_TESTS="tests/dlq/test_settings.py tests/dlq/test_listing.py tests/dlq/test_cli.py
-              tests/dlq/test_dump.py tests/dlq/test_layout.py"      --only expire_sched.py
+              tests/dlq/test_dump.py tests/dlq/test_layout.py"      --only nibbles/expire_sched.py
 POODLE_TESTS="tests/dlq/test_ui_moves.py tests/dlq/test_cut_line.py
-              tests/dlq/test_layout.py"                         --only expire_ui.py
+              tests/dlq/test_layout.py"                         --only nibbles/expire_ui.py
 ```
 
 No pty test is in any of those: they are a large share of the suite's wall

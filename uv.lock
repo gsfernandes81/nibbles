@@ -12,6 +12,20 @@ wheels = [
 ]
 
 [[package]]
+name = "bewitch"
+version = "0.1.0"
+source = { editable = "../bewitch" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "hypothesis", specifier = ">=6.167.1" },
+    { name = "pytest", specifier = ">=8" },
+]
+lint = [{ name = "ruff", specifier = "==0.16.4" }]
+
+[[package]]
 name = "blessed"
 version = "1.50.0"
 source = { registry = "https://pypi.org/simple" }
@@ -256,6 +270,7 @@ name = "nibbles"
 version = "0.4.0"
 source = { editable = "." }
 dependencies = [
+    { name = "bewitch" },
     { name = "blessed" },
 ]
 
@@ -273,7 +288,10 @@ mutants = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "blessed", specifier = ">=1.50" }]
+requires-dist = [
+    { name = "bewitch", editable = "../bewitch" },
+    { name = "blessed", specifier = ">=1.50" },
+]
 
 [package.metadata.requires-dev]
 dev = [

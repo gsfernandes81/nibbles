@@ -15,7 +15,7 @@ Search, `nibbles queue` opens it on its Queue tab, which is where the queue is
 worked on, `nibbles <url>` queues a plain file URL (or opens a video page's
 sheet), and every verb in these docs (`nibbles status`, `nibbles settings`,
 …) is one of its words — `nibbles help` lists them all. Without installing, every line
-in these docs also works as `python3 ~/nibbles/nibbles.py …`.
+in these docs also works as `python3 -m nibbles …` from `~/nibbles`.
 
 The runner reads the portal through the quota widget in a second checkout,
 `~/zwana-quota`, found beside this one or under `~`. `EXPIRE_HOME` and
@@ -66,61 +66,56 @@ Nothing downloads when you queue — the item just waits for the nightly window.
 
 ## Installing the commands
 
-Optional — the app runs fine as `python3 ~/nibbles/nibbles.py`. Installing
-just puts that on PATH as `nibbles`, the one command, from the one checkout
-(it installs no `ytq` or `dlq`). The pyproject declares one dependency, **blessed**, which owns the
-terminal for the screens (run uninstalled, that is `pip install blessed`);
-yt-dlp is a separate binary on PATH, and **bewitch**, the library the screens
-are drawn with, is a checkout beside this one (`~/bewitch`, or
-`$BEWITCH_HOME`), like `~/zwana-quota`.
+One command, `nibbles`, from PyPI or from the checkout. It depends on
+**blessed**, which owns the terminal, and **bewitch**, the library the screens
+are drawn with; yt-dlp is a separate binary on PATH, and `~/zwana-quota` a
+checkout beside this one (`$ZWANA_HOME`), needed only for the zwana budget.
 
-**Editable** — the installed commands run the files in the checkouts as they
-are, so edits take effect immediately and pulling a repo needs no reinstall:
+**From PyPI** — a copy in the tool's own environment, upgraded by uv:
+
+```
+uv tool install nibbles
+uv tool upgrade nibbles             # later
+```
+
+**Editable, from the checkout** — what the phone runs: the command runs the
+package in `~/nibbles` as it is, so edits take effect immediately and a pull
+needs no reinstall. A bewitch checkout beside it (`~/bewitch`, or
+`$BEWITCH_HOME`) wins over the installed bewitch, so it is pulled the same way:
 
 ```
 uv tool install --editable ~/nibbles
 ```
 
-**Non-editable** — copies the modules into the tool's own environment, so the
-commands are unaffected by edits to the checkouts, at the cost of needing
-`--force` to pick any change up:
+Either way the queue is **`~/nibbles/`, never the installed copy's own
+directory** — the queue has to be the one the nightly runner reads. The root is
+`$EXPIRE_HOME`, else the checkout the package sits in, else `~/nibbles`
+(`nibbles.home.root`), because the alternative fails without saying so: a copy
+in site-packages would queue into its own directory, where the runner never
+looks, and the symptom would be a job firing faithfully every night onto an
+empty queue.
 
-```
-uv tool install ~/nibbles
-uv tool install --force ~/nibbles   # after editing
-```
+An installed copy makes that root the first time `nibbles` runs: the item
+contract in `queue/README.md` (which is what marks a root) and
+`expire_runner.py`, the launcher `nibbles arm` registers with the job
+scheduler. The launcher names the package's path, so every `nibbles` rewrites
+it if an upgrade moved the package — run `nibbles` once after upgrading, before
+the window. Nothing is written into a checkout (its own `expire_runner.py` is
+tracked), into a root `EXPIRE_HOME` names, or into a `~/nibbles` that already
+holds something that is not a queue.
 
-An installed copy still works out of `~/nibbles/`, not next to itself
-— the queue has to be the one the nightly runner reads, and `nibbles arm` has
-to arm the runner that lives in the checkout. Every command line anchors there
-deliberately (`ytq._root()` finds it, and the queue's commands take the same
-answer rather than their own location) because the alternative fails without saying so: a non-editable copy
-would queue into its own installed directory, where the runner never looks, and
-`nibbles arm` would register the copy of the runner sitting beside it — which has
-no queue next to it and cannot reach `quota_widget` at all. The symptom would be
-a job firing faithfully every night onto an empty queue.
-
-Set `EXPIRE_HOME` if the queue checkout is somewhere other than `~/nibbles`:
+Set `EXPIRE_HOME` if the queue is somewhere other than `~/nibbles`:
 
 ```
 EXPIRE_HOME=~/src/nibbles nibbles <url>
 ```
 
-Either way `uv` builds an isolated environment under `~/.local/share/uv/tools/`
-and links the commands into `~/.local/bin` — nothing is written inside the
-checkouts and no other project's environment is touched. If they are not found
-afterwards, `~/.local/bin` is not on PATH; `uv tool update-shell` fixes that.
-
-The install fetches blessed and the **≈1 MB** hatchling build backend from
-PyPI, once — after that they are served from `uv`'s cache. (Add `--offline` if you want
-the install to refuse rather than fetch on a metered connection.)
-
-The package needs hatchling rather than `uv_build` (which is compiled into
-the uv binary and fetches nothing): `uv_build` resolves one module name to one
-directory, and these are flat sibling modules on purpose — the queue items
-written into `queue/` `import expire_dl` and `import ytdl_item` by bare name.
-So this fetch is the standing cost of that layout, and it is paid once: the
-build backend is kept in uv's cache after that.
+`uv` builds an isolated environment under `~/.local/share/uv/tools/` and links
+the command into `~/.local/bin`; if it is not found afterwards, `~/.local/bin`
+is not on PATH, and `uv tool update-shell` fixes that. The install fetches
+blessed and bewitch (and, for the editable one, the **≈1 MB** hatchling build
+backend) from PyPI once; after that they are served from uv's cache. (Add
+`--offline` to have it refuse rather than fetch on a metered connection.)
 
 To remove: `uv tool uninstall nibbles`. Nothing else
 in the queue depends on the install — the nightly runner is registered by
@@ -158,8 +153,8 @@ unregisters it. Both are also the **nightly job** row on [the More
 tab](#settings) (`j`), which says which it currently is — a tap arms it when
 it says not armed, and stops it, after asking (because what follows is
 silence), when it says armed. `arm`
-registers the runner **in the checkout** whether or not `nibbles` itself is
-installed, so re-arm after moving `~/nibbles`.
+registers the runner **in the queue root** (`~/nibbles/expire_runner.py`), so
+re-arm after moving `~/nibbles`.
 
 ## Watching one download
 

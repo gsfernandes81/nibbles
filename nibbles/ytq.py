@@ -1190,15 +1190,17 @@ def upgrade_command(command: str) -> str:
 
 
 def checkout_root() -> Path | None:
-    """The repository this is running out of, found by its own ``.git``.
+    """The repository this package is running out of, found by its own ``.git``.
 
-    Walked rather than counted from the queue root's depth. Two directories up
-    is right on the phone and is ``/`` the moment anything else is true — and
-    ``git -C / pull`` in a fix somebody is about to type is worse than
-    offering no path at all. ``.exists`` rather than ``.is_dir`` because a
-    worktree's ``.git`` is a file.
+    Walked up from the package's parent (:data:`home.SOURCE`) rather than
+    counted. One directory up is right in a checkout and is site-packages the
+    moment it is installed — and ``git -C <site-packages> pull`` in a fix
+    somebody is about to type is worse than offering no path at all.
+    ``.exists`` rather than ``.is_dir`` because a worktree's ``.git`` is a file.
     """
-    for folder in (HERE, *HERE.parents):
+    if not (home.SOURCE / home.CONTRACT).is_file():
+        return None
+    for folder in (home.SOURCE, *home.SOURCE.parents):
         if (folder / ".git").exists():
             return folder
     return None
@@ -1209,16 +1211,16 @@ def own_upgrade() -> str:
 
     An editable install runs out of the checkout, so what updates it is a pull
     and not a reinstall. Told apart by where this file actually is: under the
-    uv tools directory is a copy that has to be reinstalled, anywhere else is
-    the checkout it was installed from.
+    uv tools directory is a copy uv upgrades, a checkout is pulled, and
+    anything else is a copy pip installed from PyPI.
     """
     venv = Path(sys.executable).parent.parent
     here = Path(__file__).resolve().parent
     copied = (venv / UV_RECEIPT).is_file() and str(here).startswith(str(venv.resolve()))
     if copied:
-        return "uv tool install nibbles --force"
+        return "uv tool upgrade nibbles"
     root = checkout_root()
-    return f"git -C {tilde(root)} pull" if root else "reinstall nibbles from the checkout"
+    return f"git -C {tilde(root)} pull" if root else "pip install -U nibbles"
 
 
 def tool_version(command: str, timeout: int = 20) -> str:
@@ -2676,7 +2678,7 @@ def main(argv: list[str] | None = None) -> int:
 
             a plain file URL given to nibbles is queued as a file; the queue
             itself is nibbles queue, or nibbles (status|list|arm|logs).
-            docs: ~/nibbles/docs/ytq.md and ~/nibbles/docs/download-queue.md"""),
+            docs: github.com/gsfernandes81/nibbles/tree/main/docs"""),
     )
     parser.add_argument(
         "terms",

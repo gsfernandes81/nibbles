@@ -42,39 +42,75 @@ screens follow; `design/divergences.md` lists where the build differs.
 
 ## Layout
 
-- `nibbles.py`: the app's loop. `tui.py`: the terminal (blessed), read as
-  taps, drags and keys. `widgets.py`: the buttons, sheets and bars, drawn with
+- `nibbles/` is the package. `app.py`: the app's loop, and `nibbles.main`,
+  the one command's door. `tui.py`: the terminal (blessed), read as taps,
+  drags and keys. `widgets.py`: the buttons, sheets and bars, drawn with
   bewitch. `shell.py`: what the screens share. `yt_screens.py`: Search, Feed,
   Later and the video sheet. `queue_screens.py`: Queue and More.
-- `ytq.py`: the YouTube half's logic and its command line. `ytdl_item.py`:
-  what the items it writes download through.
-- `expire_runner.py`: the scheduled runner. `expire_dl.py`: the shared
+- `nibbles/ytq.py`: the YouTube half's logic and its command line.
+  `ytdl_item.py`: what the items it writes download through.
+- `nibbles/expire_runner.py`: the scheduled runner. `expire_dl.py`: the shared
   downloader. `expire_sched.py`, `expire_ui.py`, `dlq.py`: the queue's command
-  line and its actions. `nibbles.main` is the one door to all three command
-  lines.
+  line and its actions. `home.py`: where the queue lives.
+- `expire_runner.py`, `expire_sched.py`, `ytdl_item.py` and `expire_dl.py` at
+  the root are doors to the package's modules, kept for a phone armed, and
+  holding items queued, before nibbles was a package. They are not shipped.
 - `queue/`: the queue, with the item contract in `queue/README.md`.
-- Two separate checkouts, each found as its variable, then a clone beside this
-  one, then under `~`: **`~/zwana-quota`** (`$ZWANA_HOME`), the portal client
-  and quota widget the zwana budget source reads every guard figure through
-  (not needed with a manual budget), and **`~/bewitch`** (`$BEWITCH_HOME`),
-  the styling library every screen is drawn with.
-- One installed dependency: **blessed**, which owns the terminal.
+- **`~/zwana-quota`** (`$ZWANA_HOME`, a clone beside this one, or under `~`):
+  the portal client and quota widget the zwana budget source reads every
+  guard figure through. Not needed with a manual budget.
+- Installed dependencies: **blessed**, which owns the terminal, and
+  **bewitch**, the styling library every screen is drawn with. A bewitch
+  checkout (`$BEWITCH_HOME`, beside this one, or `~/bewitch`) wins over the
+  installed one.
 
-The queue root is this checkout (`$EXPIRE_HOME` overrides), never an installed
-copy's own directory, so an installed `nibbles` still works the real queue.
+The queue root is `$EXPIRE_HOME`, else this checkout, else `~/nibbles` — never
+an installed copy's own directory, so an installed `nibbles` still works the
+real queue. An installed copy makes `~/nibbles` the first time it runs: the
+item contract, and the `expire_runner.py` launcher `nibbles arm` registers
+with the job scheduler. It writes into no checkout and into no folder that
+already holds something else.
 
 ## Install
 
-`git clone https://github.com/gsfernandes81/bewitch ~/bewitch` beside it. Then
-either install the commands (which brings blessed with them):
+From PyPI, on Termux (`pkg install python termux-api`, and yt-dlp on PATH):
 
 ```
+uv tool install nibbles        # or: pip install nibbles
+nibbles                        # makes ~/nibbles on its first run
+nibbles arm                    # register the nightly job
+```
+
+`uv tool upgrade nibbles` (or `pip install -U nibbles`) updates it, and the
+next `nibbles` points the launcher at the new copy.
+
+Or from a checkout, which is what the phone runs (`git pull` is the update):
+
+```
+git clone https://github.com/gsfernandes81/nibbles ~/nibbles
+git clone https://github.com/gsfernandes81/bewitch ~/bewitch
 uv tool install --editable ~/nibbles
 ln -s ~/nibbles/completions/nibbles.fish ~/.config/fish/completions/
 ```
 
-or run the files as they are, after `pip install blessed`:
-`python3 ~/nibbles/nibbles.py`, which takes the same words.
+or, with nothing installed but `pip install blessed`, `python3 -m nibbles`
+from `~/nibbles`, which takes the same words.
+
+On a phone that already runs a checkout, pulling the change that made nibbles
+a package needs nothing else: the job is still armed at
+`~/nibbles/expire_runner.py`, items queued before it still import
+`ytdl_item`/`expire_dl` off `~/nibbles`, and the editable install's `nibbles`
+still finds `nibbles.main` — the doors at the root answer all three.
+
+## Releasing
+
+A push to `main` that changes `version` in `pyproject.toml` to one PyPI does
+not have yet is a release: `.github/workflows/release.yml` runs both suites,
+builds, installs the wheel in a clean environment and makes a queue root with
+it, then publishes by PyPI's trusted publishing (no token is stored anywhere)
+and tags `v<version>`. Bump `__version__` in `nibbles/__init__.py` with it; a
+test holds the two together. bewitch is released the same way from its own
+repo, and has to be on PyPI before a nibbles that needs it.
 
 ## Moving the phone from ~/dlq and ~/ytq (one-time)
 
@@ -116,7 +152,7 @@ runner runs what landed.
 
 There are two suites, `tests/ytq` and `tests/dlq`, from the two repos, run as
 two pytest processes. Each builds its own queue root under a temporary
-directory, copies this checkout's modules into it, points `EXPIRE_HOME` and
+directory, copies this checkout's package into it, points `EXPIRE_HOME` and
 `HOME` at it and imports from there, so the checks never read or write the
 queue this checkout manages and never reach the network. The app is opened on a
 pty that answers blessed's startup queries the way Termux does
@@ -151,3 +187,7 @@ Measured on this phone in 2026-08, and still what `nibbles arm` relies on:
   with no reference counting — `termux-wake-unlock` releases it regardless of
   who acquired it, so a job that unlocked on its way out would silently drop
   a lock taken for something else.
+
+## Licence
+
+AGPL-3.0-or-later; see `LICENSE`.
