@@ -476,6 +476,7 @@ One file per guarantee, and each says which:
 | `test_item_contract.py` | every way an item can fail to declare itself is a reason and never an exception |
 | `test_in_flight.py` | the guards that act while the bytes are moving: the byte cap, the floor, the deadline, a portal gone dark |
 | `test_dump.py` | `dlq dump` finishes on the broken trees it exists for |
+| `test_queue_flows.py` | the tabs' flows headless: Remove keeps the bytes unless told, Rename moves everything, a setting set from its presets, a refused value written nowhere, a broken config never written over |
 | `test_screens.py` | the Queue and More tabs, on a pty |
 
 **`make mutants` is the suite's own check.** poodle changes one operator,
@@ -657,6 +658,12 @@ The files, and what each is for:
   width exactly, one-unit time, the phone's clock, title names, tier picks
   and the skipped codec, the learned heights, and the list's scrolloff and
   draggable bar.
+- `test_app_flows.py` — the YouTube tabs' flows headless, through the real
+  `nibbles.App` with no terminal: one tap opens a row and starts its probe, a
+  closed sheet keeps its probe, the withheld notice once a session and on
+  top, Stop closing its sheet, the button writing the item under the video's
+  own name, Now as the one yes, the duplicate's answer, `q` typing into a
+  focused field.
 - `test_app_layout.py` — **the layout sweep** (design §8): every tab and every
   sheet at widths 32 to 80 and heights 11 to 30 — every line exactly the
   width, no two targets overlapping, buttons three rows, the pinned answers
