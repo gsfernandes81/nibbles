@@ -20,7 +20,7 @@ import time
 
 import pytest
 
-import ytq
+from nibbles import ytq
 from conftest import search_info, video_info
 from termux_pty import DOWN, ENTER, ESC
 

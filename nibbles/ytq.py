@@ -81,36 +81,19 @@ import threading
 import time
 from pathlib import Path
 
-MODULE_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(MODULE_DIR))
+from nibbles import home, ytdl_item
+import contextlib
 
-import ytdl_item  # noqa: E402  (sibling module, path fixed up above)
-import contextlib  # noqa: E402  (kept beside the sibling imports above)
+#: What a queue item puts on ``sys.path`` to import ``nibbles``: the checkout,
+#: or the site-packages this was installed into (:data:`home.SOURCE`).
+MODULE_DIR = home.SOURCE
 
-
-def _root() -> Path:
-    """The directory the runner works out of — the nibbles checkout.
-
-    ``EXPIRE_HOME`` wins, so a checkout can live anywhere. Otherwise this
-    file's own directory, but only when it *is* a checkout — it holds the
-    item contract, ``queue/README.md`` — because an installed copy sits in a
-    venv, and an item written next to that copy would sit where the nightly
-    runner never looks: queued, apparently fine, and never downloaded. An
-    installed copy answers ``~/nibbles``, which is where the phone keeps it.
-    """
-    override = os.environ.get("EXPIRE_HOME")
-    if override:
-        return Path(override).expanduser().resolve()
-    here = Path(__file__).resolve().parent
-    if (here / "queue" / "README.md").is_file():
-        return here
-    return Path.home() / "nibbles"
-
-
-HERE = _root()
-# expire_runner and expire_dl live at the queue root; ytdl_item reaches
-# expire_dl through this same insert when run out of this checkout.
-sys.path.insert(0, str(HERE))
+#: The directory the runner works out of — :func:`home.root`: ``EXPIRE_HOME``,
+#: else the checkout this package sits in, else ``~/nibbles``. Never an
+#: installed copy's own directory, because an item written next to it would sit
+#: where the nightly runner never looks: queued, apparently fine, and never
+#: downloaded.
+HERE = home.root()
 QUEUE = HERE / "queue"
 STAGING = QUEUE / ".staging"
 DONE = HERE / "done"
@@ -119,7 +102,7 @@ FAILED = HERE / "failed"
 #: The runner rejects an item whose interpreter is not on disk, and on Termux
 #: /usr/bin/env is not. Written literally rather than from sys.executable so a
 #: run under some other interpreter cannot emit an item that will not start.
-SHEBANG = "#!/data/data/com.termux/files/usr/bin/python3"
+SHEBANG = home.SHEBANG
 
 #: Payload bytes are not wire bytes, and the item pays for one metadata
 #: extraction per firing on top. Applied to the size yt-dlp reports.
@@ -1705,9 +1688,8 @@ queue may take to work through a video this size.
 
 import sys
 
-sys.path.insert(0, {json.dumps(str(HERE))})
 sys.path.insert(0, {json.dumps(str(MODULE_DIR))})
-import ytdl_item  # noqa: E402
+from nibbles import ytdl_item  # noqa: E402
 
 sys.exit(ytdl_item.run(
     url={json.dumps(url)},
@@ -1804,8 +1786,7 @@ def landing(dest: str) -> str:
     with where the file turns up is worse than no line.
     """
     try:
-        sys.path.insert(0, str(HERE))
-        import expire_runner
+        from nibbles import expire_runner
 
         where = expire_runner.dest_of({"dest": dest})
     except Exception:  # noqa: BLE001 - a message, never a blocker
@@ -1816,8 +1797,7 @@ def landing(dest: str) -> str:
 def validate(path: Path) -> str | None:
     """Ask the runner's own parser whether it would admit this item."""
     try:
-        sys.path.insert(0, str(HERE))
-        import expire_runner
+        from nibbles import expire_runner
 
         item = expire_runner.parse_item(path)
     except Exception as exc:  # noqa: BLE001 - a check, never a blocker
@@ -1858,13 +1838,14 @@ def queue_busy() -> bool:
 def now_argv(name: str) -> list[str]:
     """The command that downloads one queued item now.
 
-    ``dlq``'s own action, by path under the queue root rather than by console
-    script, for the reason :func:`_root` exists: an installed copy in
-    site-packages manages a queue that is not there. ``--yes`` because the
-    confirm screen was the asking, and being asked twice teaches people to stop
-    reading the question.
+    ``nibbles now``, as ``python -m nibbles`` under this interpreter rather
+    than by console script, so it is this package — the checkout or the
+    installed copy that is running — whatever is first on PATH; the queue root
+    it works on is :data:`HERE` either way (:func:`home.root`). ``--yes``
+    because the confirm screen was the asking, and being asked twice teaches
+    people to stop reading the question.
     """
-    return [sys.executable, str(HERE / "expire_sched.py"), "now", name, "--yes"]
+    return [sys.executable, "-m", "nibbles", "now", name, "--yes"]
 
 
 def start_now(name: str) -> tuple[subprocess.Popen, Path]:
@@ -1887,6 +1868,7 @@ def start_now(name: str) -> tuple[subprocess.Popen, Path]:
             stderr=subprocess.STDOUT,
             start_new_session=True,
             cwd=str(HERE),
+            env=home.child_env(),
         )
     finally:
         handle.close()
@@ -2353,8 +2335,7 @@ def preferred_index(options: list[Choice], remembered: dict | None) -> int:
 def recalled_format() -> dict | None:
     """The format chosen last time, from the queue's own config file."""
     try:
-        sys.path.insert(0, str(HERE))
-        import expire_runner
+        from nibbles import expire_runner
 
         remembered = expire_runner.load_config().get("ytq_last_format")
     except Exception:  # noqa: BLE001 - a convenience, never a blocker
@@ -2371,8 +2352,7 @@ def remember_format(choice: Choice) -> None:
     up disagreeing.
     """
     try:
-        sys.path.insert(0, str(HERE))
-        import expire_runner
+        from nibbles import expire_runner
 
         config = expire_runner.load_config()
         config["ytq_last_format"] = {"label": choice.label, "kind": choice.kind}
@@ -2483,8 +2463,7 @@ def prefs() -> dict:
     (``{"480": 12}``, how often each was picked), ``chips`` (heights set by
     hand, or absent), ``skip`` (codec families to pass over)."""
     try:
-        sys.path.insert(0, str(HERE))
-        import expire_runner
+        from nibbles import expire_runner
 
         found = expire_runner.load_config().get("ytq_prefs")
     except Exception:  # noqa: BLE001 - a convenience, never a blocker
@@ -2497,8 +2476,7 @@ def save_prefs(changes: dict) -> str | None:
     when ``config.json`` will not parse, because writing over a file that
     could not be read is how the destinations get lost."""
     try:
-        sys.path.insert(0, str(HERE))
-        import expire_runner
+        from nibbles import expire_runner
 
         problem = expire_runner.config_problem()
         if problem:
@@ -2808,9 +2786,9 @@ def main(argv: list[str] | None = None) -> int:
     # detached `nibbles now`, so there is nothing left here to wait for.
     # The one road: ``subs`` and ``wl`` reach the app as the words the
     # search field takes, and the app routes them to the Feed and Later tabs.
-    import nibbles
+    from nibbles import app
 
-    receipts = nibbles.run("search", first or None, preloaded, args.now, dest)
+    receipts = app.run("search", first or None, preloaded, args.now, dest)
     if not receipts:
         print("nothing queued")
         return 0

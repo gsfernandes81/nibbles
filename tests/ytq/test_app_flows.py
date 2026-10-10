@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import time
 
-import nibbles
-import shell
-import tui
-import ytq
-import yt_screens as ys
+from nibbles import app as nibbles
+from nibbles import shell
+from nibbles import tui
+from nibbles import ytq
+from nibbles import yt_screens as ys
 from conftest import fmt, search_info, video_info
 
 MiB = 1024**2

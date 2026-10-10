@@ -354,7 +354,7 @@ def test_wrapping_always_gives_back_at_least_one_line(dlq, text, width):
 def test_a_bar_is_drawn_in_characters_a_phone_draws_one_column_wide(dlq):
     """bewitch's ``█`` against ``░``: both one column on the phone (checked
     2026-10-10, design §10), and the bar is exactly the width it is given."""
-    import widgets
+    from nibbles import widgets
     from bewitch.lipgloss._cells import char_width
 
     for width in range(12, 60):

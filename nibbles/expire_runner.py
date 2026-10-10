@@ -95,9 +95,14 @@ import time
 import datetime as dt
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+from nibbles import home
+
+#: The queue root (:func:`home.root`). The nightly job starts the runner through
+#: ``expire_runner.py`` at the root, which names its own directory as
+#: ``EXPIRE_HOME`` first: the runner works out of the root it was armed at.
+HERE = home.root()
 # quota_widget lives in the zwana-quota checkout: $ZWANA_HOME, a clone beside
-# this one, or ~/zwana-quota. expire_sched._zwana_root predicts this same
+# the queue root, or ~/zwana-quota. expire_sched._zwana_root predicts this same
 # resolution so `nibbles status` can say which checkout is missing instead of
 # letting this import traceback.
 _zwana = os.environ.get("ZWANA_HOME")
@@ -2774,7 +2779,7 @@ def report(force: bool = False, blind: bool = False) -> int:
     facts = snapshot(force, blind)
     # Imported here rather than at the top: a firing must not pay for it, and
     # only this path ever draws anything.
-    import expire_sched
+    from nibbles import expire_sched
 
     paint = Paint(expire_sched.colour_ok())
     for _, painted in expire_sched.compose_status(facts, paint=paint):

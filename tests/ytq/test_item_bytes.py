@@ -14,7 +14,7 @@ from __future__ import annotations
 from hypothesis import given
 from hypothesis import strategies as st
 
-import ytdl_item
+from nibbles import ytdl_item
 
 
 def wrote(folder, name: str, size: int):

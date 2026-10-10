@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import pytest
 
-import nibbles
-import queue_screens as qs
-import shell
-import ytq
-import yt_screens as ys
+from nibbles import app as nibbles
+from nibbles import queue_screens as qs
+from nibbles import shell
+from nibbles import ytq
+from nibbles import yt_screens as ys
 from conftest import search_info, video_info
 
 MiB = 1024**2

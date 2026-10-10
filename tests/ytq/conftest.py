@@ -55,10 +55,10 @@ hypothesis_settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default")
 
 REPO = Path(__file__).resolve().parents[2]
 
-#: The modules a queue root holds, all of them this checkout's.
-_MODULES = ("expire_dl.py", "expire_runner.py", "expire_sched.py", "expire_ui.py",
-            "dlq.py", "ytdl_item.py", "ytq.py", "nibbles.py", "queue_screens.py",
-            "shell.py", "tui.py", "widgets.py", "yt_screens.py")
+#: What a queue root holds of this checkout: the package, and the doors at
+#: the checkout's root, so the copy is shaped like the checkout itself.
+_PACKAGE = "nibbles"
+_MODULES = ("expire_runner.py", "expire_sched.py", "ytdl_item.py", "expire_dl.py")
 
 
 def _zwana_checkout(dlq: Path) -> Path | None:
@@ -90,6 +90,8 @@ for folder in (QUEUE_ROOT, HOME, QUEUE_ROOT / "queue"):
 (QUEUE_ROOT / "queue" / "README.md").write_text("a throwaway queue\n")
 for name in _MODULES:
     shutil.copy2(REPO / name, QUEUE_ROOT / name)
+shutil.copytree(REPO / _PACKAGE, QUEUE_ROOT / _PACKAGE,
+                ignore=shutil.ignore_patterns("__pycache__"))
 
 os.environ["EXPIRE_HOME"] = str(QUEUE_ROOT)
 # bewitch draws the screens; the copy under a temporary root has no sibling
@@ -109,11 +111,11 @@ for leaked in ("EXPIRE_SLICE_BYTES", "EXPIRE_BUDGET_BYTES", "EXPIRE_STOP_EPOCH",
 
 sys.path.insert(0, str(QUEUE_ROOT))
 
-import ytq  # noqa: E402  (after the environment above, deliberately)
+from nibbles import ytq  # noqa: E402  (after the environment above, deliberately)
 
 # The copy, never the checkout: a test importing ytq from here would be
 # importing the runner rooted in the real queue.
-assert Path(ytq.__file__).resolve().parent == QUEUE_ROOT.resolve()
+assert Path(ytq.__file__).resolve().parent == (QUEUE_ROOT / _PACKAGE).resolve()
 
 #: Everything a test may empty between cases. ``ytq``'s constants are the
 #: authority for the three it knows about, so a rename there reaches here.
@@ -270,7 +272,10 @@ def tui():
         env = dict(os.environ)
         env.update({"TERM": "xterm-256color", "LINES": str(rows), "COLUMNS": str(cols)})
         env.update(extra)
-        session = Termux([sys.executable, str(QUEUE_ROOT / "ytq.py"), *argv], cols, rows, env)
+        # ytq's own main, as ``nibbles`` hands it these words, from the copy.
+        program = "import sys; from nibbles import ytq; sys.exit(ytq.main())"
+        session = Termux([sys.executable, "-c", program, *argv], cols, rows, env,
+                         cwd=str(QUEUE_ROOT))
         started.append(session)
         return session
 

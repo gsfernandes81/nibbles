@@ -20,7 +20,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-import tui  # noqa: F401  (puts the bewitch checkout on the path)
+from nibbles import tui  # noqa: F401  (puts the bewitch checkout on the path)
 from bewitch import glyphs
 from bewitch.bubbles import (
     dialog_title,

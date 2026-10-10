@@ -40,7 +40,7 @@ Typical item::
     # EXPECT_BYTES: 4200000000
     # PARTIAL: yes
     import sys; sys.path.insert(0, "/data/data/com.termux/files/home/nibbles")
-    import expire_dl
+    from nibbles import expire_dl
     sys.exit(expire_dl.run("https://example/big.iso", "big.iso"))
 
 Note the shebang: on Termux ``/usr/bin/env`` does not exist, and the runner

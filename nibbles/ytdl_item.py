@@ -43,8 +43,8 @@ a video that finished downloading at the slice edge could never be merged.
 Usage from a queue item::
 
     import sys
-    sys.path.insert(0, "/data/data/com.termux/files/home/or3/termux/expire")
-    import ytdl_item
+    sys.path.insert(0, "/data/data/com.termux/files/home/nibbles")
+    from nibbles import ytdl_item
     sys.exit(ytdl_item.run(url="https://...", name="some-talk", fmt="137+140",
                            total_hint=612_000_000))
 """
@@ -62,12 +62,8 @@ import threading
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-# expire_dl sits beside this file in the nibbles checkout. A queue item inserts
-# the real path itself before importing this module, so the insert above is for
-# running out of the checkout.
-import expire_dl  # noqa: E402  (beside this file, path fixed up above)
-import contextlib  # noqa: E402  (kept beside the sibling imports above)
+from nibbles import expire_dl
+import contextlib
 
 COMPLETE = expire_dl.COMPLETE
 PROGRESS = expire_dl.PROGRESS

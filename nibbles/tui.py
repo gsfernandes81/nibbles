@@ -39,22 +39,25 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# bewitch is a sibling checkout, found the way every sibling here is found.
-_HERE = Path(__file__).resolve().parent
+# bewitch draws every screen. A checkout of it wins where there is one — beside
+# this one, or under ~, the way every sibling here is found — so the phone draws
+# with the bewitch it pulls; otherwise the one installed with nibbles from PyPI.
+_SOURCE = Path(__file__).resolve().parent.parent
 
 
-def _bewitch_root() -> Path:
+def _bewitch_root() -> Path | None:
     override = os.environ.get("BEWITCH_HOME")
     if override:
         return Path(override).expanduser()
-    for candidate in (_HERE.parent / "bewitch", Path.home() / "bewitch"):
-        if (candidate / "bewitch").is_dir():
+    for candidate in (_SOURCE.parent / "bewitch", Path.home() / "bewitch"):
+        if (candidate / "bewitch" / "__init__.py").is_file():
             return candidate
-    return _HERE.parent / "bewitch"
+    return None
 
 
-if str(_bewitch_root()) not in sys.path:
-    sys.path.insert(0, str(_bewitch_root()))
+_BEWITCH = _bewitch_root()
+if _BEWITCH is not None and str(_BEWITCH) not in sys.path:
+    sys.path.insert(0, str(_BEWITCH))
 
 from bewitch.colorprofile import detect  # noqa: E402
 from bewitch.lipgloss import Block  # noqa: E402

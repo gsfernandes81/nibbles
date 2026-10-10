@@ -82,17 +82,18 @@ import textwrap
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+from nibbles import home, ytq
 
-import ytq  # noqa: E402  (beside this file, path fixed up above)
-
-#: The checkout, never this file's directory. Installed non-editable, this
+#: The queue root, never this file's directory. Installed from PyPI, this
 #: module is a copy in site-packages, and every path below has to keep pointing
-#: at the queue the nightly runner actually reads — the same anchoring
-#: :func:`ytq._root` does, deliberately via the same answer so the two cannot
-#: drift apart and arm a runner that watches a different queue.
+#: at the queue the nightly runner actually reads — :func:`home.root`, through
+#: ``ytq.HERE`` deliberately, so the two cannot drift apart and arm a runner
+#: that watches a different queue.
 ROOT = ytq.HERE
-RUNNER = ROOT / "expire_runner.py"
+#: What the job scheduler starts: the launcher at the root (a checkout's
+#: tracked one, or the one :func:`home.ensure` writes for an installed copy),
+#: which imports the runner from the package.
+RUNNER = ROOT / home.LAUNCHER
 QUEUE = ROOT / "queue"
 LOGS = ROOT / "logs"
 HEARTBEAT = ROOT / "heartbeat"
@@ -226,7 +227,7 @@ def _zwana_root() -> Path:
     """Where the runner will look for ``quota_widget``.
 
     Spelled from :data:`ROOT` rather than this file, because what imports it
-    is ``ROOT/expire_runner.py`` — under ``EXPIRE_HOME`` that may not be this
+    is the runner started from ``ROOT/expire_runner.py`` — under ``EXPIRE_HOME`` that may not be this
     checkout — and the answer has to be the one THAT copy gives: $ZWANA_HOME,
     a clone beside the queue root, or ~/zwana-quota. expire_runner's own
     resolution is the original; this predicts it for a message that can name
@@ -432,24 +433,20 @@ def tail(path: Path, lines: int) -> None:
 
 
 def _runner():
-    """The runner module, imported from the checkout rather than from beside us.
+    """The runner module, ``nibbles.expire_runner``.
 
     Imported lazily, and only by the paths that need an item's declared cap:
     everything else here answers from the filesystem, and ``nibbles names`` is run
     on every press of the tab key.
 
-    The ``__main__`` check is for the other direction: ``expire_runner
-    --status`` draws its screen through this module, and importing the runner
-    by name from inside the running runner would build a *second* copy of it —
-    same file, separate module, separate state — which is the kind of fault
-    that shows up as two figures disagreeing and nothing to explain it.
+    Always by that one name — the root's launcher imports it so too, rather
+    than running the file — because ``expire_runner --status`` draws its screen
+    through this module, and a runner imported under a second name from inside
+    the running one would be a *second* copy of it, same file, separate state:
+    the kind of fault that shows up as two figures disagreeing and nothing to
+    explain it.
     """
-    main = sys.modules.get("__main__")
-    if Path(getattr(main, "__file__", "") or "-").resolve() == RUNNER:
-        return main
-    if str(ROOT) not in sys.path:
-        sys.path.insert(0, str(ROOT))
-    import expire_runner
+    from nibbles import expire_runner
 
     return expire_runner
 
@@ -2418,7 +2415,7 @@ def _me() -> str:
     name = Path(sys.argv[0]).name
     if name and name in (Path(__file__).name, "nibbles"):
         return name
-    return "nibbles" if shutil.which("nibbles") else Path(__file__).name
+    return "nibbles"
 
 
 def dump(target: str | None = None) -> int:
@@ -2465,9 +2462,8 @@ def dump(target: str | None = None) -> int:
     def _roots() -> None:
         print(f"  queue root : {ROOT}")
         print(f"    queue/README.md      : {(ROOT / 'queue' / 'README.md').is_file()}")
-        print(f"    expire_runner.py     : {(ROOT / 'expire_runner.py').is_file()}")
-        print(f"    ytdl_item.py         : {(ROOT / 'ytdl_item.py').is_file()}")
-        print(f"    ytq.py               : {(ROOT / 'ytq.py').is_file()}")
+        print(f"    expire_runner.py     : {RUNNER.is_file()}")
+        print(f"  package    : {home.PACKAGE}")
         zwana = _zwana_root()
         print(f"  zwana      : {zwana}")
         print(f"    quota_widget.py      : {(zwana / 'quota_widget.py').is_file()}")
@@ -2695,7 +2691,7 @@ def main(argv: list[str] | None = None) -> int:
     # can never shadow a URL (no verb contains "://"). The queuer keeps its
     # own module (dlq.py, with its own flags); this is only the door.
     if argv and "://" in argv[0]:
-        import dlq
+        from nibbles import dlq
 
         return dlq.main(argv)
 
@@ -2729,7 +2725,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         # Imported here and not at the top: this is the only action that needs
         # the app, and `nibbles names` runs on every press of the tab key.
-        import expire_ui
+        from nibbles import expire_ui
 
         return expire_ui.run()
     elif action == "dest":

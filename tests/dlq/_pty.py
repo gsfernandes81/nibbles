@@ -40,23 +40,11 @@ import pyte
 #: The checkout under test. Its modules are copied, never imported from here.
 REPO = Path(__file__).resolve().parents[2]
 
-#: The modules a queue root needs to run its own screen out of: the whole
-#: checkout's worth since ytq and dlq became one repo (2026-10-10).
-MODULES = (
-    "dlq.py",
-    "expire_dl.py",
-    "expire_runner.py",
-    "expire_sched.py",
-    "expire_ui.py",
-    "nibbles.py",
-    "queue_screens.py",
-    "shell.py",
-    "tui.py",
-    "widgets.py",
-    "ytdl_item.py",
-    "yt_screens.py",
-    "ytq.py",
-)
+#: What a queue root needs to run its own screen out of: the package, and the
+#: doors at the checkout's root (the runner the job is armed with above all),
+#: so the copy is shaped exactly like the checkout it was taken from.
+PACKAGE = "nibbles"
+MODULES = ("expire_runner.py", "expire_sched.py", "ytdl_item.py", "expire_dl.py")
 
 #: The directories the runner makes for itself. Made up front so a test that
 #: only reads does not have to have written first.
@@ -92,6 +80,8 @@ def make_root(where: Path, items: dict[str, str] | None = None) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     for name in MODULES:
         shutil.copy(REPO / name, root / name)
+    shutil.copytree(REPO / PACKAGE, root / PACKAGE, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("__pycache__"))
     # The runner's shebang is Termux's absolute python, which is the right
     # answer on the phone — ``#!/usr/bin/env python3`` is the portable form
     # everywhere else and is the one thing Android cannot exec — and it is not

@@ -19,9 +19,9 @@ from __future__ import annotations
 import sys
 import time
 
-import tui
-import widgets as w
-from shell import Screen, Sheet
+from nibbles import tui
+from nibbles import widgets as w
+from nibbles.shell import Screen, Sheet
 
 import os
 
@@ -40,8 +40,8 @@ class App:
                  first: str | None = None, preloaded: dict | None = None,
                  now: bool = False, dest: str = "video",
                  size: tuple[int, int] | None = None) -> None:
-        import queue_screens as qs
-        import yt_screens as ys
+        from nibbles import queue_screens as qs
+        from nibbles import yt_screens as ys
 
         self.session = session
         self.width, self.height = size or (session.size if session else (40, 24))
@@ -335,6 +335,13 @@ def main(argv: list[str] | None = None) -> int:
     that always answered it; what changed is only the door (2026-10-10, the
     owner's: one executable, ``nibbles <url>`` for a page or a file alike)."""
     argv = sys.argv[1:] if argv is None else list(argv)
+    # An installed copy makes its queue root the first time, and keeps the
+    # runner's launcher pointing at wherever an upgrade put the package. A
+    # checkout, or a root EXPIRE_HOME names, is never written.
+    from nibbles import home
+
+    for line in home.ensure():
+        print(line, file=sys.stderr)
     if not argv:
         return _open("search", [])
     head, rest = argv[0], argv[1:]
@@ -345,23 +352,23 @@ def main(argv: list[str] | None = None) -> int:
         return _open(TAB_WORDS[head], rest)
     if "--list" in argv and any(arg in LISTS for arg in argv):
         word = next(arg for arg in argv if arg in LISTS)
-        import ytq
+        from nibbles import ytq
 
         return ytq.main([LISTS[word], *(arg for arg in argv if arg != word)])
     if "--from-json" in map(_flag, argv):
-        import ytq
+        from nibbles import ytq
 
         return ytq.main(argv)
     words = [arg for arg in argv if arg != "--yes"]
     if words and words[0] in QUEUE_VERBS and not any(_looks_like_url(arg) for arg in words):
-        import expire_sched
+        from nibbles import expire_sched
 
         return expire_sched.main(argv)
     # Not a word nibbles has: what yt-dlp would take. Asked last, because the
     # last of its questions is yt-dlp's own extractors, and that is a second.
     target = next((arg for arg in argv if not arg.startswith("-")), None)
     if target is not None:
-        import ytq
+        from nibbles import ytq
 
         taken = ytq.read_input(target)
         if taken is not None:
@@ -381,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _looks_like_url(text: str) -> bool:
-    import ytq
+    from nibbles import ytq
 
     return ytq.looks_like_url(text)
 
@@ -393,8 +400,8 @@ def _url(url: str, argv: list[str]) -> int:
     yt-dlp's generic extractor takes both, so "would yt-dlp take it" cannot
     tell them apart; the headers can, and a file fetched by Range resumes
     where yt-dlp's would start again."""
-    import dlq
-    import ytq
+    from nibbles import dlq
+    from nibbles import ytq
 
     flags = {_flag(arg) for arg in argv if arg.startswith("-")}
     if flags & set(FILE_FLAGS):
@@ -419,7 +426,7 @@ def _open(tab: str, rest: list[str]) -> int:
     """The app on *tab*; ``search`` takes the words to search for, through
     ``ytq.main``, so the receipts are printed the way they always were."""
     if tab == "search" and rest:
-        import ytq
+        from nibbles import ytq
 
         return ytq.main(rest)
     if rest:
@@ -427,7 +434,7 @@ def _open(tab: str, rest: list[str]) -> int:
         return 2
     if tab == "queue":
         # Through the queue's own door, which names a broken checkout first.
-        import expire_sched
+        from nibbles import expire_sched
 
         return expire_sched.main(["ui"])
     if not sys.stdout.isatty():
