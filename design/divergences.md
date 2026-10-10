@@ -23,18 +23,29 @@ owner to approve it or send it back. One entry per divergence, newest last:
   (a time of day; stored UTC, spelled on the phone's clock by
   `spell_setting`). Under a manual budget `snapshot()["expiring"]` is `None`:
   nothing can say what expires when the rest of the phone's use is not
-  counted. The old curses settings page (`b`, `l`, `t`) shows and sets them;
-  the rebuilt screens are not touched.
-- Proposed for the rebuild, until the owner decides: on More, `budget` as a
-  switch row under `reserve`, and `allowance` and `reset` under it shown only
-  while the budget is manual — as `paid-min` shows only under the waiver —
-  with `allowance` opening the number sheet (presets `500 MB 1 GB 2 GB 5 GB`)
-  and `reset` a time sheet. On the window card under a manual budget, the bar
-  draws `spendable` against `allowance.left_bytes` and the figure reads
-  `480 MiB of 1.2 GiB left to spend`, never "expires"; with no allowance set
-  the card says `no daily allowance set` where the bar would be. The Now sheet's
-  red "on mobile data, charged" case never applies to a manual budget: what it
-  spends is counted against the allowance either way.
+  counted. The old curses settings page (`b`, `l`, `t`) shows and sets them,
+  and shows only the settings that apply to the budget source
+  (`expire_runner.settings_shown`): `allowance` and `reset` under manual,
+  `reserve-when-paid` and `paid-min` under zwana. Below 16 rows it gives up the
+  blank under its title, so all its rows fit at 40×14. The rebuilt screens are
+  not touched.
+- Approved for the rebuild (owner, 2026-10-10, over side-by-side sketches):
+  - **More:** `b budget` as a switch row under `reserve` (`◉ manual`), with
+    `l allowance` and `t reset` under it, shown only while the budget is
+    manual, as `paid-min` shows only under the waiver. `allowance` opens the
+    number sheet (presets `500 MB 1 GB 2 GB 5 GB`); `reset` opens a time sheet
+    on the phone's clock. A change says itself on the line above the tabs
+    (`allowance is 1.5 GB a day`).
+  - **Window card, manual budget:** the bar draws `spendable` against
+    `allowance.left_bytes`, and the figure keeps the spec's own shape,
+    `1017/1144 MiB to spend` (22 columns, all there is beside Run now). Never
+    "expires". Keyboard up, the strip reads `waiting · 1017/1144 MiB`.
+  - **Window card, no allowance set:** `no daily allowance set` where the
+    verdict would be, `set it under More` under it, and Run now drawn off. The
+    status bar reads `WAITING  no allowance set`.
+  - The Now sheet's red "on mobile data, charged" case never applies to a
+    manual budget: what it spends is counted against the allowance either way.
 - Why: a manual budget has figures the spec has no place for, and one figure
-  (what expires) it cannot have at all.
-- Status: awaiting approval
+  (what expires) it cannot have at all. The first wording proposed for the
+  card, `480 MiB of 1.2 GiB left to spend`, was 32 columns and did not fit.
+- Status: approved 2026-10-10

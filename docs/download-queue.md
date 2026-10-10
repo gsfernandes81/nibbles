@@ -593,18 +593,23 @@ dlq settings reset 05:30            # ...that starts again at 05:30, phone time
 dlq settings window default         # put the built-in default back
 ```
 
-Or `s` on the main screen, which shows the same nine and takes the same
+Or `s` on the main screen, which shows the ones that apply to the [budget
+source](#budget-sources) — `allowance` and `reset` only on a manual budget,
+`reserve-when-paid` and `paid-min` only on zwana, seven either way — and takes the same
 changes: the switches toggle where they sit, and the numbers open a field,
 prefilled with what they are now — type `default` to put the built-in one
 back, same as on the command line; `budget` steps to the other source where
-it sits, like a switch. Two more rows sit under those nine, in the
+it sits, like a switch. Two more rows sit under those seven, in the
 same layout: `d` for the destinations — the folder they all share, written
 with `~` where it is under home and shortened to just the folder's own name
 (`Download`) where the whole path will not fit beside the label (see [Where
 downloads go](#where-downloads-go)) — and `j` for the nightly job — armed,
 not armed, or the error stopping it from arming — which arms it when it is
 not armed and cancels it, with a confirm, when it is. Each row's key is
-beside its name (`w r p m a n b l t d j`).
+beside its name (`w r p m a n b d j` on zwana, `w r a n b l t d j` on a
+manual budget), and the hint line names exactly the keys on the page. With the
+keyboard up the blank line under the title goes, so every row still fits a
+14-row screen.
 
 **A change stays on the page.** The row redraws with the new value and the
 page says what it did, in the setting's own sentence, wrapped under the rows

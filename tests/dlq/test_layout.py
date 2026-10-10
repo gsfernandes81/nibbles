@@ -262,7 +262,7 @@ def test_the_settings_page_fits_and_keeps_every_row(dlq, width):
     for height in range(12, 30):
         body = dlq.ui.settings_body(width, height, job, "something happened just now")
         heads = [text for _, text, tone in body if tone == "head"]
-        assert len(heads) == len(dlq.runner.SETTINGS) + len(dlq.ui.PAGE_KEYS)
+        assert len(heads) == len(dlq.runner.settings_shown()) + len(dlq.ui.PAGE_KEYS)
         for indent, text, _ in body:
             assert indent + len(text) <= width - 1, text
 
@@ -312,7 +312,29 @@ def test_the_settings_page_gives_things_up_in_one_order(dlq, width):
                 if line[1] and line[2] != "90"
             ]
         )
-        assert len(body) <= max(height - 6, floor), height
+        assert len(body) <= max(dlq.ui.settings_room(height), floor), height
+
+
+@pytest.mark.parametrize("source", ["zwana", "manual"])
+@pytest.mark.parametrize("width", WIDTHS)
+def test_the_settings_page_fits_a_phone_with_its_keyboard_up(dlq, width, source):
+    """At 14 rows, every row the page shows is on the screen, under either source.
+
+    The page shows only the settings that do something under the budget
+    source, and with the keyboard up it gives up the blank under its title:
+    that is what keeps the nightly job's row on a phone that is being typed on.
+    """
+    dlq.config({"budget": source})
+    job = [("nightly job", "armed, fires every 15m", "32")]
+    for height in range(14, 30):
+        body = dlq.ui.settings_body(width, height, job, "something happened just now")
+        heads = [text for _, text, tone in body if tone == "head"]
+        assert len(heads) == len(dlq.runner.settings_shown()) + len(dlq.ui.PAGE_KEYS)
+        assert len(body) <= dlq.ui.settings_room(height), (height, len(body))
+    # And the keys the hint names are the keys of the rows that are drawn.
+    letters = dlq.ui.setting_letters().split()
+    heads = [text.split()[0] for _, text, tone in dlq.ui.settings_lines(width, job) if tone == "head"]
+    assert letters == heads
 
 
 @pytest.mark.parametrize("width", WIDTHS)

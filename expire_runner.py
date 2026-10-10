@@ -405,6 +405,7 @@ SETTINGS: dict[str, dict] = {
     },
     "reserve-when-paid": {
         "key": "reserve_when_paid",
+        "only": "zwana",
         "default": True,
         "kind": "bool",
         "words": ("yes", "no"),
@@ -412,6 +413,7 @@ SETTINGS: dict[str, dict] = {
     },
     "paid-min": {
         "key": "paid_min_mb",
+        "only": "zwana",
         "default": 0,
         "kind": "mb",
         "words": None,
@@ -443,6 +445,7 @@ SETTINGS: dict[str, dict] = {
     },
     "allowance": {
         "key": "allowance_mb",
+        "only": "manual",
         "default": 0,
         "kind": "mb",
         "words": None,
@@ -457,12 +460,28 @@ SETTINGS: dict[str, dict] = {
     },
     "reset": {
         "key": "reset_utc",
+        "only": "manual",
         "default": "00:00",
         "kind": "clock",
         "words": None,
         "label": "when the plan's day starts again",
     },
 }
+
+
+def settings_shown(source: str | None = None) -> list[str]:
+    """The settings that do something under *source*, in :data:`SETTINGS` order.
+
+    A setting marked ``only`` belongs to one budget source and does nothing
+    under the other: ``reserve-when-paid`` and ``paid-min`` turn on a paid
+    figure only the portal has, and ``allowance`` and ``reset`` describe the
+    manual budget the portal makes unnecessary. A screen offers only these, so
+    that a row on it is always a row that changes something — and so that the
+    page fits a phone with its keyboard up. They are all still read, stored
+    and set the same way; the command line and the dump list every one.
+    """
+    source = source or budget_source()
+    return [name for name, spec in SETTINGS.items() if spec.get("only") in (None, source)]
 
 
 def setting_problem(name: str, raw: object) -> str | None:

@@ -263,6 +263,13 @@ from `design/mock/` with bewitch's own recipes, keyboard down and keyboard up.
   window may spend against what expires" is therefore `spendable` against
   `expiring` under zwana, and against `allowance["left_bytes"]` — "left of the
   allowance", never "expires" — under manual.
+  **A screen shows only the settings that apply to the source**
+  (`settings_shown`, off each spec's `only`): a row that changes nothing is a
+  row nobody should have to read past, and it is what keeps the old settings
+  page whole at 40×14 — seven settings and two page rows, with the blank under
+  the title given up below 16 rows. The command line and the dump still list
+  every setting. The owner approved the rebuild's More rows and window card
+  for a manual budget on 2026-10-10; `design/divergences.md` has them.
 - **The cut line in the queued list is computed, never an item** (2026-09-02).
   `expire_runner.admit()` is the one admission rule — what a single item may
   take in a firing, and why not — and `fire()` calls it instead of carrying
