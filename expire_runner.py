@@ -28,6 +28,12 @@ mobile data rather than the vessel's wifi. That case has one answer and it is
 ``--blind``: see *Running with no portal* below. Everything outside that flag
 still refuses to move a byte it cannot account for.
 
+Everything above is the **zwana** budget source, the default wherever the
+zwana-quota checkout can be imported. The other is **manual** — ``dlq settings
+budget manual``, for a plan with no portal: a daily allowance and the time it
+resets, spent down from the runner's own ledger of what it has moved since the
+reset, with the reserve kept and never waived. See *Budget sources* below.
+
 Nothing here trusts a queued script. Scripts declare a byte count; that number
 is a *cap enforced against them*, not a promise believed.
 
@@ -101,8 +107,47 @@ sys.path.insert(1, str(
     else (_beside.resolve() if _beside.is_dir() else Path.home() / "zwana-quota")
 ))
 
-import quota_widget as qw  # noqa: E402  (from the zwana-quota checkout)
-import contextlib
+import contextlib  # noqa: E402
+import importlib.util  # noqa: E402
+
+#: Whether the zwana-quota checkout can be imported at all, asked without
+#: importing it. It decides one thing — which budget source is the default
+#: (see :data:`SETTINGS`) — and is asked once, at import, because a firing is a
+#: process of its own and a checkout cloned or deleted between two of them is
+#: answered by the next one.
+ZWANA_IMPORTABLE = importlib.util.find_spec("quota_widget") is not None
+
+_QW = None
+
+
+def _qw():
+    """``quota_widget``, imported the first time something needs it.
+
+    Lazily, because only the zwana budget source needs it: a phone with no
+    zwana portal and no zwana-quota checkout runs the manual source, and the
+    runner, ``dlq status``, ``dlq settings`` and ``dlq dump`` all have to work
+    there. Raises ``ImportError`` when the checkout is not there, which each
+    caller turns into the sentence it needs.
+    """
+    global _QW
+    if _QW is None:
+        import quota_widget
+
+        _QW = quota_widget
+    return _QW
+
+
+def __getattr__(name: str):
+    """``expire_runner.qw`` for the front ends, imported when first asked for.
+
+    A module ``__getattr__`` is only consulted for a name the module does not
+    have, so this costs nothing anywhere else, and code inside this file asks
+    :func:`_qw` rather than the bare name.
+    """
+    if name == "qw":
+        return _qw()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 ROOT = HERE
 QUEUE = ROOT / "queue"
@@ -290,7 +335,15 @@ def save_config(config: dict) -> None:
 # --------------------------------------------------------------------------- #
 
 
-#: The six things a person may change about how the queue spends, in the order
+#: Where the figure every guard spends against comes from, in the order both
+#: front ends offer them. ``zwana`` is the crew portal, read through the
+#: zwana-quota checkout, and is the default wherever that checkout can be
+#: imported; ``manual`` is a daily allowance and the time it resets, set by the
+#: person, spent down from the runner's own count of what it has moved. See
+#: *Budget sources* below.
+BUDGET_SOURCES = ("zwana", "manual")
+
+#: The things a person may change about how the queue spends, in the order
 #: both front ends list them — so a screen and a command cannot disagree about
 #: what there is to change. They live in the same ``config.json`` the
 #: destinations do, and like the destinations they are read at the moment they
@@ -316,6 +369,14 @@ def save_config(config: dict) -> None:
 #: ``notify-blocked`` is whether a firing stopped by a fault says so on the
 #: phone. That one notification only: an item that failed its last night goes
 #: on notifying either way, because nothing else is ever going to mention it.
+#:
+#: ``budget``, ``allowance`` and ``reset`` choose and describe the budget
+#: source. The last two belong to the manual source alone and do nothing under
+#: zwana, whose portal knows both figures for itself; their sentences say so
+#: rather than a refusal saying it, the way ``paid-min`` does for
+#: ``reserve-when-paid``. ``reset`` is stored in UTC, because the reset is one
+#: instant wherever the phone happens to be, and it is typed and shown on the
+#: phone's own clock, because that is the clock a plan's reset is sold in.
 #:
 #: The switches are spelled in their own words rather than in one shared pair,
 #: because that is how each reads out loud: a reserve is kept or it is not,
@@ -373,6 +434,34 @@ SETTINGS: dict[str, dict] = {
         "words": ("on", "off"),
         "label": "say when a firing is blocked",
     },
+    "budget": {
+        "key": "budget",
+        "default": "zwana" if ZWANA_IMPORTABLE else "manual",
+        "kind": "choice",
+        "words": BUDGET_SOURCES,
+        "label": "what says how much may be spent",
+    },
+    "allowance": {
+        "key": "allowance_mb",
+        "default": 0,
+        "kind": "mb",
+        "words": None,
+        "label": "data the plan gives each day",
+        "min": 0,
+        "max": 1_000_000,
+        "step": 1,
+        # Nought is not an allowance of nothing, it is no allowance yet: the
+        # gate says ``unset`` rather than "nothing to spend", because the one
+        # is a setting to make and the other a day already used up.
+        "zero": "not set",
+    },
+    "reset": {
+        "key": "reset_utc",
+        "default": "00:00",
+        "kind": "clock",
+        "words": None,
+        "label": "when the plan's day starts again",
+    },
 }
 
 
@@ -393,6 +482,16 @@ def setting_problem(name: str, raw: object) -> str | None:
         if isinstance(raw, bool):
             return None
         return f"{name} is {spec['words'][0]} or {spec['words'][1]}"
+    if spec["kind"] == "choice":
+        if isinstance(raw, str) and raw in spec["words"]:
+            return None
+        return f"{name} is {' or '.join(spec['words'])}"
+    if spec["kind"] == "clock":
+        # Stored as UTC ``HH:MM`` and nothing else: the file is read by a
+        # firing, which has no business guessing what a hand-typed "4am" meant.
+        if isinstance(raw, str) and _utc_minutes(raw) is not None:
+            return None
+        return f"{name} is a time of day, like 04:00"
 
     unit = "minutes" if spec["kind"] == "minutes" else "MB"
     # bool is an int in Python and True would otherwise read as one minute.
@@ -477,11 +576,17 @@ def parse_setting(name: str, text: str) -> object:
         if said in ("off", "no", "false", "0"):
             return False
         raise ValueError(f"{name} is {spec['words'][0]} or {spec['words'][1]}")
+    if spec["kind"] == "choice":
+        if said in spec["words"]:
+            return said
+        raise ValueError(f"{name} is {' or '.join(spec['words'])}")
+    if spec["kind"] == "clock":
+        return _typed_clock(name, said)
 
     match = re.fullmatch(
         r"(\d+)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)?"
         if spec["kind"] == "minutes"
-        else r"(\d+)\s*(mb|m)?",
+        else r"(\d+)\s*(mb|m|gb|g)?",
         said,
     )
     if not match:
@@ -490,6 +595,9 @@ def parse_setting(name: str, text: str) -> object:
     value = int(match.group(1))
     if spec["kind"] == "minutes" and (match.group(2) or "").startswith("h"):
         value *= 60
+    # A plan is sold in GB as often as in MB, and decimal like the setting.
+    if spec["kind"] == "mb" and (match.group(2) or "").startswith("g"):
+        value *= 1000
     problem = setting_problem(name, value)
     if problem:
         raise ValueError(problem)
@@ -506,7 +614,57 @@ def spell_setting(name: str, value: object) -> str:
     spec = SETTINGS[name]
     if spec["kind"] == "bool":
         return spec["words"][0] if value else spec["words"][1]
+    if spec["kind"] == "choice":
+        return str(value)
+    if spec["kind"] == "clock":
+        # On the phone's clock, never in UTC: that is the clock the plan was
+        # sold in and the one the person reading this steers by.
+        return local_clock(_utc_minutes(str(value)) or 0)
+    if not value and spec.get("zero"):
+        return spec["zero"]
     return f"{value} min" if spec["kind"] == "minutes" else f"{value} MB"
+
+
+def _utc_minutes(stored: str) -> int | None:
+    """``"18:30"`` → 1110, minutes past 00:00 UTC; ``None`` if it is not a time."""
+    match = re.fullmatch(r"(\d{2}):(\d{2})", stored)
+    if not match:
+        return None
+    hours, minutes = int(match.group(1)), int(match.group(2))
+    if hours > 23 or minutes > 59:
+        return None
+    return hours * 60 + minutes
+
+
+def local_clock(utc_minutes: int) -> str:
+    """Minutes past 00:00 UTC as ``HH:MM`` on this phone's clock, today."""
+    utc = dt.datetime.now(dt.UTC).replace(
+        hour=utc_minutes // 60, minute=utc_minutes % 60, second=0, microsecond=0
+    )
+    return utc.astimezone().strftime("%H:%M")
+
+
+def _typed_clock(name: str, said: str) -> str:
+    """A time of day as typed — on the phone's clock — as the UTC ``HH:MM`` stored.
+
+    Typed on the phone's own clock, because that is how a plan's reset is
+    told to whoever bought it ("midnight", "5:30 in the morning"); stored in
+    UTC, because the reset is one instant and the phone may cross a timezone
+    before it comes round. ``Z`` or ``UTC`` after the time says it is UTC
+    already, for the person reading a plan's terms that are written that way.
+    """
+    match = re.fullmatch(r"(\d{1,2})(?:[:.h]?(\d{2}))?\s*(z|utc)?", said)
+    if not match:
+        raise ValueError(f"{name} is a time of day, like 04:00")
+    hours, minutes = int(match.group(1)), int(match.group(2) or 0)
+    if hours > 23 or minutes > 59:
+        raise ValueError(f"{name} is a time of day, like 04:00")
+    if match.group(3):
+        return f"{hours:02d}:{minutes:02d}"
+    local = dt.datetime.now().astimezone().replace(
+        hour=hours, minute=minutes, second=0, microsecond=0
+    )
+    return local.astimezone(dt.UTC).strftime("%H:%M")
 
 
 def window_seconds() -> int:
@@ -539,7 +697,9 @@ def reserve_waived(doc: dict | None) -> bool:
     the reserve from the next poll, and the poll after it says so again.
     """
     values = settings()
-    if values["reserve-when-paid"] or not doc:
+    if values["reserve-when-paid"] or not doc or is_manual(doc):
+        # A manual source has no paid figure to waive it on, and a reading that
+        # has not said there is paid data is not one that says there is.
         return False
     # ``paid-min`` at zero is the rule the waiver had before there was a figure
     # to put on it: any paid data at all. A byte is "at all", so the threshold
@@ -714,6 +874,59 @@ def human(n: float) -> str:
     return f"{n:,.2f} GiB"
 
 
+# The few presentation helpers the front ends borrow from ``quota_widget``:
+# taken from it when it is there, so the queue and the widget keep drawing
+# alike, and spelled here only for the phone that has no zwana-quota at all,
+# where ``dlq status`` still has to come out.
+
+
+class Paint:
+    """``quota_widget.Paint``: ANSI colours, off when output is not a terminal."""
+
+    def __new__(cls, enabled: bool):
+        try:
+            return _qw().Paint(enabled)
+        except ImportError:
+            return super().__new__(cls)
+
+    def __init__(self, enabled: bool) -> None:
+        self.on = enabled
+
+    def __call__(self, text: str, code: str) -> str:
+        return f"\033[{code}m{text}\033[0m" if self.on else text
+
+
+def countdown(seconds: float) -> str:
+    """``8h 49m`` / ``47m``: ``quota_widget.countdown`` on plain seconds."""
+    delta = dt.timedelta(seconds=max(0.0, seconds))
+    try:
+        return _qw().countdown(delta)
+    except ImportError:
+        minutes = max(0, int(delta.total_seconds() // 60))
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+
+
+def since(seconds: float) -> str:
+    """``5m ago``: ``quota_widget.since``."""
+    try:
+        return _qw().since(seconds)
+    except ImportError:
+        if seconds < 90:
+            return f"{seconds:.0f}s ago"
+        if seconds < 5400:
+            return f"{seconds / 60:.0f}m ago"
+        return f"{seconds / 3600:.0f}h ago"
+
+
+def grade(share: float) -> str:
+    """Colour for a fraction remaining: ``quota_widget.grade``."""
+    try:
+        return _qw().grade(share)
+    except ImportError:
+        return "1;32" if share >= 0.25 else "1;33" if share >= 0.08 else "1;31"
+
+
 def log(message: str) -> None:
     """Append to the runner log and echo, so a manual run shows its reasoning."""
     line = f"{stamp()}  {message}"
@@ -784,14 +997,29 @@ def deadlines(doc: dict | None, blind: bool = False) -> tuple[float, float, floa
 
     The deadline itself is left alone; it is still when the grant resets, and
     it is still true. What is gone is only its authority over this run.
+
+    A manual reading carries its own reset — the ``reset`` setting, worked out
+    when the reading was taken — and that is the deadline, alone.
     """
     current = now()
-    utc = dt.datetime.fromtimestamp(current, dt.UTC)
-    local_guess = qw.next_reset(utc).timestamp()
-    deadline = local_guess
-    if doc:
-        portal_guess = current + doc["reset"]["seconds_until"]
-        deadline = min(deadline, portal_guess)
+    if is_manual(doc):
+        # The person's own reset, and nothing to cross-check it against: a
+        # manual source has no portal to be more authoritative than the setting.
+        deadline = doc["resets"]
+    else:
+        utc = dt.datetime.fromtimestamp(current, dt.UTC)
+        try:
+            local_guess = _qw().next_reset(utc).timestamp()
+        except ImportError:
+            # zwana asked for by name with no checkout to read it through. The
+            # gate stops the night as a missing reading; the clock it is said
+            # against is the reset setting's, whose default is the same 00:00
+            # UTC the portal's grant resets at.
+            local_guess = manual_resets(current)[1]
+        deadline = local_guess
+        if doc:
+            portal_guess = current + doc["reset"]["seconds_until"]
+            deadline = min(deadline, portal_guess)
     if blind:
         return deadline, current, NO_DEADLINE
     return deadline, deadline - window_seconds(), deadline - STOP_MARGIN
@@ -814,6 +1042,12 @@ def portal_now() -> tuple[dict | None, str]:
     and "no route to the portal" want different things done about them, and
     only the exception says which.
     """
+    try:
+        qw = _qw()
+    except ImportError as exc:
+        # The zwana source chosen by name with no checkout to read it through.
+        # A missing reading like any other, said in words that name the fix.
+        return None, f"zwana-quota cannot be imported ({exc}); clone it or set ZWANA_HOME"
     try:
         data = qw.gather(qw.stale())
         qw.store(data)
@@ -845,7 +1079,10 @@ def portal_reachable(timeout: float = REACH_TIMEOUT) -> bool:
     turns on. It costs nothing — the portal is zero-rated — and it never
     stands in for :func:`portal_now`, which is what says how much there is.
     """
-    host = qw.z.BASE_URL.split("//", 1)[-1].split("/", 1)[0]
+    try:
+        host = _qw().z.BASE_URL.split("//", 1)[-1].split("/", 1)[0]
+    except ImportError:
+        return False
     try:
         with socket.create_connection((host, 443), timeout=timeout):
             return True
@@ -874,6 +1111,10 @@ def usable(doc: dict | None) -> bool:
     reachable portal is always preferred to flying without one, so the flag
     only takes effect when there is genuinely nothing to fly on.
     """
+    if is_manual(doc):
+        # The runner's own record, as fresh as the last thing it saved: there
+        # is no portal behind it to have gone stale.
+        return True
     return bool(doc) and doc["reading"]["live"] and doc["reading"]["age_seconds"] <= 120
 
 
@@ -890,7 +1131,13 @@ def spendable_bytes(doc: dict) -> int:
       rather than the paid reserve. It can only over-state, so it is
       discounted: a proportional haircut, plus whatever a stale reading could
       have burned since it was taken.
+
+    A manual reading has neither figure; :func:`manual_spendable` is its
+    answer, and the reason it is a function of its own is that it is the
+    whole of the manual source's arithmetic.
     """
+    if is_manual(doc):
+        return manual_spendable(doc)
     free = doc["free"]["left_bytes"]
     haircut = max(FREE_HAIRCUT_FRACTION * free, FREE_HAIRCUT_FLOOR)
     age_penalty = doc["reading"]["age_seconds"] * AGE_BURN_RATE
@@ -918,6 +1165,205 @@ def blind_budget(items: list[dict], state: dict) -> int:
         done = int(records.get(item["name"], {}).get("part_bytes") or 0)
         total += max(0, item["cap"] - done)
     return total
+
+
+# --------------------------------------------------------------------------- #
+# Budget sources
+# --------------------------------------------------------------------------- #
+#
+# Every guard above spends against a *reading*, and where a reading comes from
+# is the budget source — ``dlq settings budget``, one of
+# :data:`BUDGET_SOURCES`:
+#
+# * **zwana** is the crew portal: :func:`portal_now`, the
+#   ``quota_widget.derive`` document, exactly as it always was. It knows what
+#   is left, what of it expires at the reset, and whether paid data is there.
+# * **manual** is a plan with no portal: a daily allowance and the time it
+#   resets, both set by the person, spent down from the runner's own count of
+#   what it has moved since the last reset (:func:`note_spent`). It knows the
+#   allowance and its own spending, and nothing else — not what the rest of the
+#   phone used, not what expires, not whether anything is paid — so the reading
+#   carries no figure for any of those and nothing downstream invents one.
+#
+# The two readings are told apart by shape, :func:`is_manual`, so that every
+# function that took a portal document goes on taking one unchanged and the
+# zwana path is the code it was. A manual reading is never ``None``: it is
+# worked out from the disk, so there is always one, and a missing allowance is
+# a verdict of its own (``unset``) rather than a missing reading.
+
+#: How long the ledger keeps a spend. Two days, because the most it is ever
+#: asked about is the day since the last reset, and a reset moved earlier by
+#: hand is still inside the day before.
+LEDGER_KEEP = 2 * 86_400
+
+
+def budget_source() -> str:
+    """The source the next reading is taken from: ``zwana`` or ``manual``."""
+    return str(settings()["budget"])
+
+
+def is_manual(doc: dict | None) -> bool:
+    """Whether *doc* is a manual reading rather than a portal document."""
+    return isinstance(doc, dict) and doc.get("source") == "manual"
+
+
+def allowance_bytes() -> int:
+    """The manual source's daily allowance in bytes; nought until it is set.
+
+    Decimal MB, like the reserve, because a plan is sold in them.
+    """
+    return int(settings()["allowance"]) * 1_000_000
+
+
+def manual_resets(current: float) -> tuple[float, float]:
+    """``(the last reset, the next one)`` by the ``reset`` setting, as epochs."""
+    minutes = _utc_minutes(str(settings()["reset"])) or 0
+    utc = dt.datetime.fromtimestamp(current, dt.UTC)
+    today = utc.replace(
+        hour=minutes // 60, minute=minutes % 60, second=0, microsecond=0
+    )
+    upcoming = today if today > utc else today + dt.timedelta(days=1)
+    return (upcoming - dt.timedelta(days=1)).timestamp(), upcoming.timestamp()
+
+
+def note_spent(state: dict, spent: int, when: float | None = None) -> None:
+    """Add *spent* bytes, moved at *when*, to the runner's ledger in *state*.
+
+    The manual source's whole knowledge of the day: what the runner itself has
+    moved, as ``[epoch, bytes]`` entries under ``state["spent"]``. Kept for
+    both sources, so that switching to manual in the middle of a day starts
+    from what this phone has already spent rather than from nought.
+
+    Entries rather than one running total, so that the question is always
+    "what since the last reset" however the reset is set: a total reset at a
+    fixed time would be wrong the day somebody moved the reset. Recorded when
+    the bytes have moved — a run that straddles the reset is charged to the
+    new day, which is the direction that cannot overspend it. Not saved here:
+    the caller saves the state it is already holding.
+    """
+    if spent <= 0:
+        return
+    when = now() if when is None else when
+    kept = [
+        entry
+        for entry in _ledger(state)
+        if when - entry[0] < LEDGER_KEEP
+    ]
+    kept.append([when, int(spent)])
+    state["spent"] = kept
+
+
+def _ledger(state: dict) -> list[list]:
+    """The ledger's entries that can be read, as ``[epoch, bytes]``."""
+    raw = state.get("spent") or []
+    entries = []
+    for entry in raw if isinstance(raw, list) else []:
+        try:
+            entries.append([float(entry[0]), max(0, int(entry[1]))])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+    return entries
+
+
+def ledger_problem(state: dict) -> str | None:
+    """Why the runner's record of its spending cannot be trusted, or ``None``.
+
+    Asked because the manual source spends against that record and nothing
+    else: a ``state.json`` that will not parse, or a ledger that is not a list
+    of spends, is a day's spending forgotten, and forgetting it reads as an
+    allowance nobody has touched. So the manual reading treats it as spent —
+    the direction that cannot overspend — and this is the line that says why.
+    """
+    try:
+        raw = STATE_FILE.read_text(encoding="utf-8")
+    except OSError:
+        raw = ""
+    if raw.strip():
+        try:
+            json.loads(raw)
+        except ValueError:
+            return "state.json will not parse, so what was spent today is not known"
+    if "spent" in state and not isinstance(state["spent"], list):
+        return "state.json's record of what was spent is not a list"
+    return None
+
+
+def manual_reading(state: dict | None = None, current: float | None = None) -> dict:
+    """The manual source's reading: the allowance, and what the runner spent of it.
+
+    Worked out from the disk rather than asked of anything, so it is free, it
+    is always there, and it is as fresh as the last thing the runner saved.
+    *state* is the one already in hand, when there is one — :func:`fire` is
+    holding the state it is about to save, and the ledger in it is the one
+    with the item that just finished in it.
+
+    What is here is all a manual source can know. ``left_bytes`` is the
+    allowance less the runner's own spending, which **overstates** what the
+    plan has left whenever anything else on the phone used data — which is
+    what the reserve is for, and why the reserve is never waived here.
+    """
+    if state is None:
+        state = load_state()
+    current = now() if current is None else current
+    since, resets = manual_resets(current)
+    allowance = allowance_bytes()
+    problem = ledger_problem(state)
+    spent = (
+        allowance
+        if problem
+        else sum(bytes_ for when, bytes_ in _ledger(state) if when >= since)
+    )
+    return {
+        "source": "manual",
+        "allowance_bytes": allowance,
+        "spent_bytes": spent,
+        "left_bytes": max(0, allowance - spent),
+        "since": since,
+        "resets": resets,
+        "problem": problem or "",
+    }
+
+
+def manual_spendable(doc: dict) -> int:
+    """What a manual reading lets the queue spend: what is left, less the reserve.
+
+    The allowance less what the runner has already spent since the reset, less
+    the reserve, less :data:`FLOOR_MARGIN` — the same headroom the portal's
+    floor is approached with, and here for the second of its two reasons: the
+    in-flight guard reads the interface counter once per :data:`IFACE_POLL`,
+    and a download keeps moving between two looks.
+    """
+    return int(max(0, doc["left_bytes"] - floor_bytes(doc) - FLOOR_MARGIN))
+
+
+def read_budget(state: dict | None = None) -> dict | None:
+    """A reading from whichever source is chosen; ``None`` only from zwana.
+
+    What a firing asks, at the top and after every item. The zwana half is
+    :func:`read_portal`, logged as it always was; the manual half is
+    :func:`manual_reading` over the state the firing is holding.
+    """
+    if budget_source() == "manual":
+        return manual_reading(state)
+    return read_portal()
+
+
+def budget_now(state: dict | None = None) -> tuple[dict | None, str]:
+    """``(reading, why not)`` from whichever source is chosen, logging nothing.
+
+    What a status screen asks: :func:`portal_now` for zwana, and the manual
+    reading, which always answers, for manual.
+    """
+    if budget_source() == "manual":
+        return manual_reading(state), ""
+    return portal_now()
+
+
+def _remainder(doc: dict) -> int:
+    """What *doc* says is left before the floor is reached, in bytes."""
+    if is_manual(doc):
+        return int(doc["left_bytes"])
+    return int(doc["today"]["remainder_bytes"])
 
 
 # --------------------------------------------------------------------------- #
@@ -1417,6 +1863,9 @@ def run_item(
     log_path = LOGS / f"{day}-{item['name']}.log"
 
     log(f"start {item['name']}  cap {human(cap)}  {until}")
+    # For the ledger on the one path fire() never hears back from: a run
+    # interrupted on its way through watch() returns nothing to be counted.
+    began_iface = iface_bytes()
     with log_path.open("a") as sink:
         sink.write(f"\n===== {stamp()} cap={cap} stop_in={until} =====\n")
         sink.flush()
@@ -1468,6 +1917,11 @@ def run_item(
         kill_tree(pgid, "runner interrupted")
         state.pop("active_pgid", None)
         state.pop("active_stop_by", None)
+        # What it moved is gone from the allowance whether or not it finished:
+        # a manual budget that forgot an interrupted download would spend the
+        # same bytes again on the next run. fire() records every run that
+        # returns; this is the one that does not.
+        note_spent(state, max(0, iface_bytes() - began_iface))
         save_state(state)
         raise
     report = read_status(work, run_id, spent)
@@ -1512,6 +1966,13 @@ def watch(
     child. What the missing half costs is stated where it is agreed to, in
     :func:`blind_budget` and in the question ``dlq`` asks before starting.
 
+    A manual reading has the first of them and only the projection under it:
+    its remainder is the allowance less what the runner had spent before this
+    item, and the interface delta is taken off it exactly as it is between
+    portal polls — which over-counts, as the cap wants. There is nothing to
+    poll, because nothing else is keeping count, so there is no portal to go
+    dark either.
+
     The floor is re-asked of every fresh reading rather than worked out once at
     the start, because ``reserve-when-paid`` turns on a figure that moves: paid
     data bought mid-run waives the reserve from that poll on, and paid data
@@ -1520,7 +1981,7 @@ def watch(
     """
     start_iface = iface_bytes()
     last_portal = now()
-    remainder = doc["today"]["remainder_bytes"] if doc else None
+    remainder = _remainder(doc) if doc else None
     remainder_iface = start_iface
     hard_floor = floor_bytes(doc) + FLOOR_MARGIN
     allowance = cap * 1.15 + 8 * MiB
@@ -1555,7 +2016,11 @@ def watch(
                 kill_tree(pgid, f"floor reached (projected {human(projected)})")
                 break
 
-        if doc is not None and current - last_portal >= PORTAL_POLL:
+        if (
+            doc is not None
+            and not is_manual(doc)
+            and current - last_portal >= PORTAL_POLL
+        ):
             last_portal = current
             fresh = read_portal()
             if fresh:
@@ -1727,6 +2192,7 @@ def say_blocked() -> None:
 GATE_STATES = (
     "off",
     "empty",
+    "unset",
     "early",
     "late",
     "no-portal",
@@ -1795,6 +2261,17 @@ def gate(
         return "off", "automatic downloads are off"
     if not items:
         return "empty", "queue empty"
+    # A manual source with no allowance has nothing to spend against, and it is
+    # asked here — after the empty queue, ahead of the clock — for the reason
+    # ``off`` is asked ahead of everything: it is a standing setting rather
+    # than a moment, so it is the answer at noon as much as inside the window,
+    # and somebody setting the phone up learns it while they are setting it up
+    # rather than the first night nothing happens. The empty queue still comes
+    # first, because there is nothing to spend an allowance *on* either way.
+    # Not a fault and not --force's to step over: it is a figure nobody has
+    # given yet, and no flag can supply one.
+    if is_manual(doc) and not doc["allowance_bytes"]:
+        return "unset", "no daily allowance set"
     if not force and current < window_open:
         return "early", f"not yet: window opens {clock(window_open)}"
     if current >= stop_by:
@@ -1806,6 +2283,14 @@ def gate(
             return "no-portal", "no live portal reading; not starting anything"
         return "stale", "portal reading is stale; not starting anything"
     if spendable_bytes(doc) <= 0:
+        # The manual source's "spent for today" is this same verdict, in the
+        # same place: a reading that leaves nothing above the reserve, for the
+        # rest of the day. What differs is only what it is said with.
+        if is_manual(doc):
+            return "spent", doc["problem"] or (
+                f"the day's allowance is spent: {human(doc['spent_bytes'])} of "
+                f"{human(doc['allowance_bytes'])}, and the reserve is kept"
+            )
         return "spent", f"no spendable data ({human(doc['free']['left_bytes'])} free)"
     return "go", "window open"
 
@@ -1828,7 +2313,8 @@ def snapshot(force: bool = False, blind: bool = False) -> dict:
     """
     state = load_state()
     items, rejected = queued_items()
-    doc, portal_problem = portal_now()
+    source = budget_source()
+    doc, portal_problem = budget_now(state)
     # Asked for and actually flying blind are two different things: with the
     # portal up, --blind changes nothing and the screen must not claim it did.
     flying = blind and not usable(doc)
@@ -1863,8 +2349,21 @@ def snapshot(force: bool = False, blind: bool = False) -> dict:
         "deadline": deadline,
         "window_open": window_open,
         "stop_by": stop_by,
-        "portal": doc,
+        # The portal's own document, and so only ever zwana's: a manual source
+        # has no portal, and its reading is under "allowance" instead.
+        "portal": None if is_manual(doc) else doc,
         "portal_problem": portal_problem,
+        # Which budget source answered: one of BUDGET_SOURCES.
+        "source": source,
+        # The manual reading — allowance_bytes, spent_bytes, left_bytes, since,
+        # resets, problem — or None under zwana.
+        "allowance": doc if is_manual(doc) else None,
+        # What expires unspent at the reset, where the source can know it: the
+        # portal's free grant left. A manual source cannot know what the rest
+        # of the phone used, so it is None there rather than a figure made up.
+        "expiring": (
+            None if is_manual(doc) or not doc else doc["free"]["left_bytes"]
+        ),
         "spendable": (
             blind_budget(items, state)
             if verdict == "blind"
@@ -1926,7 +2425,7 @@ def fire(force: bool = False, blind: bool = False) -> int:
     reap(state, orphaned=True)
 
     items, rejected = queued_items()
-    doc = read_portal()
+    doc = read_budget(state)
     flying = blind and not usable(doc)
     if flying:
         # Dropped rather than carried: everything downstream — the budget, the
@@ -2036,6 +2535,10 @@ def fire(force: bool = False, blind: bool = False) -> int:
         code, spent, claimed = run_item(item, cap, item_stop, doc, state)
         elapsed = max(1.0, now() - began)
         spent_total += spent
+        # Into the ledger before anything else is decided, whichever source is
+        # answering: it is what the manual reading after this item is taken
+        # from, and what a switch to manual tomorrow starts from.
+        note_spent(state, spent)
         budget = max(0, budget - spent)
 
         payload = claimed["spent"] if claimed else None
@@ -2108,14 +2611,16 @@ def fire(force: bool = False, blind: bool = False) -> int:
         # nothing at the other end to ask, and asking anyway would log the same
         # failure once per item and stall each gap on a connection timeout.
         if doc is not None:
-            fresh = read_portal()
+            fresh = read_budget(state)
             if fresh:
                 doc = fresh
                 budget = min(budget, spendable_bytes(doc))
 
     if done_count or spent_total > MiB:
         left = (
-            f", {human(doc['today']['remainder_bytes'])} left"
+            f", {human(doc['left_bytes'])} of the allowance left"
+            if is_manual(doc)
+            else f", {human(doc['today']['remainder_bytes'])} left"
             if doc
             else " of mobile data"
         )
@@ -2150,7 +2655,7 @@ def report(force: bool = False, blind: bool = False) -> int:
     # only this path ever draws anything.
     import expire_sched
 
-    paint = qw.Paint(expire_sched.colour_ok())
+    paint = Paint(expire_sched.colour_ok())
     for _, painted in expire_sched.compose_status(facts, paint=paint):
         print(painted)
     return 0

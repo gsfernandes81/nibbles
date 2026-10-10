@@ -1104,6 +1104,17 @@ def _tonight_figures(facts: dict, room: int) -> str:
             [f"{size} on mobile data, nothing counting", f"{size} on mobile data"],
             room,
         )
+    manual = facts.get("allowance")
+    if manual is not None:
+        # A manual budget has no "expires": only what is left of the allowance
+        # by the runner's own count, which is what the second spelling names.
+        if not manual["allowance_bytes"]:
+            return "no daily allowance set"
+        left = ytq.human(manual["left_bytes"])
+        return _pick(
+            [f"{size} to spend · {left} of the allowance left", f"{size} to spend"],
+            room,
+        )
     doc = facts["portal"]
     if doc is None:
         # The portal's own words for why it did not answer. Not shortened and
@@ -1181,6 +1192,9 @@ def _nothing_to_spend(facts: dict) -> str:
     spendable in it is a night where the allowance is genuinely gone. Only the
     last of them is about the data.
     """
+    manual = facts.get("allowance")
+    if manual is not None:
+        return "no allowance set" if not manual["allowance_bytes"] else "allowance spent"
     if facts["portal"] is None:
         return "no portal reading"
     if not sched._runner().usable(facts["portal"]):
@@ -2925,9 +2939,21 @@ def dest_screen(win, paint: dict) -> list[str]:
 #: short zip is not an error. ``p`` is the reserve-when-*p*aid switch, whose
 #: name is too long to take its own initial twice over; ``m`` is the *m*inimum
 #: of paid data that switch wants, sitting next to it as it does in the list;
-#: ``n`` is the *n*otification. None of them is ``q`` or ``x``, which are the
-#: way out and the way to stop a download everywhere else in the queue.
-SETTING_KEYS = (ord("w"), ord("r"), ord("p"), ord("m"), ord("a"), ord("n"))
+#: ``n`` is the *n*otification; ``b`` the *b*udget source, ``l`` its
+#: al*l*owance and ``t`` the *t*ime it resets. None of them is ``q`` or ``x``,
+#: which are the way out and the way to stop a download everywhere else in the
+#: queue.
+SETTING_KEYS = (
+    ord("w"),
+    ord("r"),
+    ord("p"),
+    ord("m"),
+    ord("a"),
+    ord("n"),
+    ord("b"),
+    ord("l"),
+    ord("t"),
+)
 
 #: The two rows that are not settings in ``config.json`` but belong on this
 #: page all the same — they are the rest of what the queue's own screen used to
@@ -3243,6 +3269,26 @@ def settings_screen(win, paint: dict) -> list[str]:
             worked, told = sched.set_setting(
                 picked, spec["words"][1] if value else spec["words"][0]
             )
+        elif spec["kind"] == "choice":
+            # The next of its words, round again after the last: a choice of
+            # two is a switch, and steps where it sits as one does.
+            words = spec["words"]
+            following = words[(words.index(value) + 1) % len(words)]
+            worked, told = sched.set_setting(picked, following)
+        elif spec["kind"] == "clock":
+            typed = ask(
+                win,
+                paint,
+                f" {picked} ",
+                spec["label"],
+                runner.spell_setting(picked, value),
+                "A time of day on this phone's clock, like 04:00. ctrl-U "
+                "clears the field. Type default to put the built-in one back.",
+            )
+            if not typed:
+                flash, said = "left as it was", ""
+                continue
+            worked, told = sched.set_setting(picked, typed)
         else:
             unit = "Minutes" if spec["kind"] == "minutes" else "MB"
             steps = f", in steps of {spec['step']}" if spec["step"] > 1 else ""
