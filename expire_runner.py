@@ -3,13 +3,13 @@
 
 The free grant of ~763 MiB lands at 00:00 UTC and whatever is left of it is
 wiped at the next 00:00 UTC. This runner works through scripts dropped in
-``~/nibbles/queue`` in the hour before that deadline — ``dlq settings window``, an
+``~/nibbles/queue`` in the hour before that deadline — ``nibbles settings window``, an
 hour unless it is told otherwise — so allowance that would evaporate gets spent
 on something asked for instead.
 
 Guarantees, in the order they matter
 ------------------------------------
-1. **The reserve is left afterwards.** 100 MB unless ``dlq settings reserve``
+1. **The reserve is left afterwards.** 100 MB unless ``nibbles settings reserve``
    says otherwise. Enforced against ``today.remainder_bytes``, which the portal
    measures exactly, and re-checked live while a download runs — not merely
    predicted before it starts. The one thing that lifts it is being told to:
@@ -29,7 +29,7 @@ mobile data rather than the vessel's wifi. That case has one answer and it is
 still refuses to move a byte it cannot account for.
 
 Everything above is the **zwana** budget source, the default wherever the
-zwana-quota checkout can be imported. The other is **manual** — ``dlq settings
+zwana-quota checkout can be imported. The other is **manual** — ``nibbles settings
 budget manual``, for a plan with no portal: a daily allowance and the time it
 resets, spent down from the runner's own ledger of what it has moved since the
 reset, with the reserve kept and never waived. See *Budget sources* below.
@@ -58,7 +58,7 @@ spend against, so the three guarantees above have nothing to stand on and are
 paid mobile data, and what bounds it is what the queue itself declared. Each
 item is still capped at its own ``EXPECT_BYTES``, which is a cap enforced
 against it rather than a promise believed, so the queue's whole exposure is the
-sum of those — the figure ``dlq run-now --blind`` says out loud and asks about
+sum of those — the figure ``nibbles run-now --blind`` says out loud and asks about
 before anything starts.
 
 Two things follow from there being no expiring grant to land inside, and both
@@ -98,7 +98,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # quota_widget lives in the zwana-quota checkout: $ZWANA_HOME, a clone beside
 # this one, or ~/zwana-quota. expire_sched._zwana_root predicts this same
-# resolution so `dlq status` can say which checkout is missing instead of
+# resolution so `nibbles status` can say which checkout is missing instead of
 # letting this import traceback.
 _zwana = os.environ.get("ZWANA_HOME")
 _beside = HERE.parent / "zwana-quota"
@@ -125,7 +125,7 @@ def _qw():
 
     Lazily, because only the zwana budget source needs it: a phone with no
     zwana portal and no zwana-quota checkout runs the manual source, and the
-    runner, ``dlq status``, ``dlq settings`` and ``dlq dump`` all have to work
+    runner, ``nibbles status``, ``nibbles settings`` and ``nibbles dump`` all have to work
     there. Raises ``ImportError`` when the checkout is not there, which each
     caller turns into the sentence it needs.
     """
@@ -195,7 +195,7 @@ STOP_MARGIN = 90
 FIRING_SECONDS = 9 * 60
 
 #: How often JobScheduler comes round, in seconds — its own periodic floor, and
-#: what ``dlq arm`` asks for. A night is therefore not one long run but a row of
+#: what ``nibbles arm`` asks for. A night is therefore not one long run but a row of
 #: :data:`FIRING_SECONDS` slices, one per period, and the projection on the
 #: screen has to work the night the same way or it would promise a whole
 #: evening's throughput to a queue that will only ever be given nine minutes
@@ -354,7 +354,7 @@ BUDGET_SOURCES = ("zwana", "manual")
 #: night's downloads. 100 MB by default because that is how the requirement was
 #: given, in decimal MB because that is how it was stated. It was a constant
 #: until it stopped being a fact about the phone and became a judgement about
-#: the month; ``dlq settings reserve`` is where it is made now.
+#: the month; ``nibbles settings reserve`` is where it is made now.
 #:
 #: ``window`` is how long before the reset the queue may start being worked. A
 #: multiple of 15 minutes because a firing is a JobScheduler job that lands
@@ -533,7 +533,7 @@ def setting_state(name: str) -> tuple[object, str | None, str]:
     there was one.
 
     The one judge of a question three places used to answer for themselves:
-    ``dlq settings``, ``dlq dump`` and the settings screen each decided
+    ``nibbles settings``, ``nibbles dump`` and the settings screen each decided
     whether a value was in force, two of them on ``config.get(key) is None``
     and one on ``key in config``, so a file holding ``null`` read as "set and
     refused" on the screen and as "default, nothing to say" from the command.
@@ -562,8 +562,8 @@ def settings() -> dict[str, object]:
     error and it is never half-applied: this is read at the top of a firing
     nobody is watching, and a ``config.json`` somebody typed a stray character
     into must not be able to stop a night's downloads or, worse, take out the
-    reserve on the way past. What is ignored is not silent — ``dlq settings``
-    and ``dlq dump`` both name the value they are declining and why.
+    reserve on the way past. What is ignored is not silent — ``nibbles settings``
+    and ``nibbles dump`` both name the value they are declining and why.
     """
     config = load_config()
     out: dict[str, object] = {}
@@ -744,7 +744,7 @@ def auto_enabled() -> bool:
     """Whether the nightly job's firings may download.
 
     Off is a *when* rather than a refusal: the job stays armed and goes on
-    firing, it just does nothing when it does, and ``dlq run-now`` still
+    firing, it just does nothing when it does, and ``nibbles run-now`` still
     downloads because a person asking is not the schedule. Nothing about money
     is decided here — the reserve, the per-item caps and the portal reading go
     on deciding everything they decided.
@@ -896,7 +896,7 @@ def human(n: float) -> str:
 # The few presentation helpers the front ends borrow from ``quota_widget``:
 # taken from it when it is there, so the queue and the widget keep drawing
 # alike, and spelled here only for the phone that has no zwana-quota at all,
-# where ``dlq status`` still has to come out.
+# where ``nibbles status`` still has to come out.
 
 
 class Paint:
@@ -1216,7 +1216,7 @@ def spendable_bytes(doc: dict) -> int:
     Two independent limits, and the smaller wins:
 
     * ``today.remainder_bytes - floor`` protects the user's reserve, which is
-      100 MB unless ``dlq settings reserve`` says otherwise and is nothing at
+      100 MB unless ``nibbles settings reserve`` says otherwise and is nothing at
       all on a reading that waives it. The remainder is measured by the portal,
       so this limit is exact and is the one that carries the guarantee.
     * ``free.left_bytes`` keeps the spending inside the *expiring* allowance
@@ -1247,7 +1247,7 @@ def blind_budget(items: list[dict], state: dict) -> int:
     figure. What is left is the only other number in the room: what each item
     declared it needs, less what it has already taken. That is a *cap enforced
     against the items* exactly as it is on a nightly run, never a promise
-    believed, and it is deliberately the same figure ``dlq run-now --blind``
+    believed, and it is deliberately the same figure ``nibbles run-now --blind``
     says out loud before asking — the front end must not compute its own, or
     the number the user agreed to and the number spent would drift apart.
     """
@@ -1264,7 +1264,7 @@ def blind_budget(items: list[dict], state: dict) -> int:
 # --------------------------------------------------------------------------- #
 #
 # Every guard above spends against a *reading*, and where a reading comes from
-# is the budget source — ``dlq settings budget``, one of
+# is the budget source — ``nibbles settings budget``, one of
 # :data:`BUDGET_SOURCES`:
 #
 # * **zwana** is the crew portal: :func:`portal_now`, the
@@ -1897,7 +1897,7 @@ def spawn_plan(stop_by: float) -> tuple[list[str], str, str]:
 
     ``0`` is the contract's own spelling of "no deadline" and not a special
     case invented here: an item reads it as ``+inf`` (``expire_dl.deadline``),
-    and it is what ``dlq now`` has always passed.
+    and it is what ``nibbles now`` has always passed.
     """
     if stop_by == NO_DEADLINE:
         # No `timeout` at all. Wrapping it in a made-up large number instead
@@ -1924,7 +1924,7 @@ def run_item(
 
     On a blind run there is no deadline to enforce, so there is no ``timeout``
     around it and the item is told ``EXPIRE_STOP_EPOCH=0`` — the contract's own
-    spelling of "no deadline", and the one ``dlq now`` has always used. The
+    spelling of "no deadline", and the one ``nibbles now`` has always used. The
     item then runs until it is done. Everything that is not the clock is
     unchanged: the session, the byte cap, and the interruption path below.
     """
@@ -2192,7 +2192,7 @@ def hand_over(item: dict, state: dict) -> list[Path]:
       unmounted, no space. Failing here leaves the file sitting in ``out/``,
       already paid for and still there, instead of half-written into Downloads.
 
-    Returns where the files ended up, which is what ``dlq path`` reports.
+    Returns where the files ended up, which is what ``nibbles path`` reports.
     """
     where = dest_of(item)
     source = OUT / item["name"]
@@ -2430,7 +2430,7 @@ def snapshot(force: bool = False, blind: bool = False) -> dict:
     what tonight would download without reading the clock a second time and
     getting a different night. How any of it is drawn is
     :func:`expire_sched.compose_status`, which lays out the same terminal
-    ``dlq list`` does.
+    ``nibbles list`` does.
     """
     state = load_state()
     items, rejected = queued_items()
@@ -2767,7 +2767,7 @@ def report(force: bool = False, blind: bool = False) -> int:
 
     Drawn by ``expire_sched`` rather than here, because it is one screen and it
     lays out one terminal — the phone's, in portrait, at about 40 columns. The
-    queue rows in particular have to agree with ``dlq list`` down to the
+    queue rows in particular have to agree with ``nibbles list`` down to the
     figures, and the way to be sure of that is for the same code to draw both.
     This end owns the facts (:func:`snapshot`); that end owns the layout.
     """

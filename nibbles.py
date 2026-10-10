@@ -2,9 +2,10 @@
 """nibbles: queue YouTube videos and files, fetch them before the data expires.
 
 One app, five tabs along the bottom: **Search · Feed · Later · Queue · More**.
-``ytq`` opens on Search, ``ytq subs`` on Feed, ``ytq wl`` on Later, ``dlq`` on
-Queue, and a bare ``nibbles`` on Search. Buttons first, keys second, laid out
-for a phone in portrait: ``design/design.md`` is the spec this follows.
+``nibbles`` opens on Search and ``nibbles queue`` on Queue; it is the one
+command (``nibbles help``).
+Buttons first, keys second, laid out for a phone in portrait:
+``design/design.md`` is the spec this follows.
 
 This module is the loop: one :class:`tui.Session`, the screen on top, the
 guards on taps, the pressed flash, sheets over a dimmed tab, and the status
@@ -281,21 +282,159 @@ def run(start: str = "search", first: str | None = None, preloaded: dict | None 
             return app.receipts
 
 
+USAGE = """\
+usage: nibbles [WHERE | COMMAND | URL] ...
+
+the app:
+  nibbles                    the app, on Search
+  nibbles search WORDS       ...searching YouTube for WORDS (~0.1 MB)
+  nibbles queue              ...on the queue (alias: ui)
+  nibbles more               ...on the settings
+  nibbles URL                a video page: its sheet (--now starts it);
+                             a file: queued as a download (asks its
+                             headers first, ~1 KB, to tell which)
+
+with no app:
+  nibbles --list URL         a video's formats and caps; writes nothing
+  nibbles --list subs | wl   print the feed or Watch Later
+  nibbles status             what happens next, and what it turns on
+  nibbles list               every download, and how much of it is here
+  nibbles path NAME          where a finished download landed
+  nibbles dest | settings    show or set where files go, and the window
+  nibbles run-now [--blind]  run the whole queue now
+  nibbles arm | cancel       register or unregister the nightly job
+  nibbles logs | dump
+
+docs: ~/nibbles/docs/ytq.md and ~/nibbles/docs/download-queue.md"""
+
+#: The words that open the app on a tab (``ui`` is dlq's word for the queue).
+#: Feed and Later have none: they are a tap away, and reading either spends.
+TAB_WORDS = {"search": "search", "queue": "queue", "ui": "queue", "more": "more"}
+
+#: What only a video page takes, and what only a file download takes: either
+#: settles what a URL is without asking it.
+VIDEO_FLAGS = ("--now", "--list", "--from-json")
+FILE_FLAGS = ("--name", "--number", "--sha256", "--expect-bytes", "--probe",
+              "--dry-run", "--again")
+
+#: The words ``--list`` prints with no URL: the two signed-in lists.
+LISTS = {"subs": "--subs", "wl": "--wl"}
+
+#: The queue's verbs nibbles answers with no app; ``queue`` (its raw file
+#: listing) and ``ui`` are not among them, ``queue`` being the tab.
+QUEUE_VERBS = ("status", "list", "path", "dest", "settings", "logs", "dump", "run-now",
+               "arm", "cancel", "now", "names", "--now", "--list")
+
+
+def _flag(arg: str) -> str:
+    return arg.split("=")[0]
+
+
 def main(argv: list[str] | None = None) -> int:
-    """``nibbles``: the app, opened on Search (or the tab named)."""
-    argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] in START:
-        start, argv = argv[0], argv[1:]
+    """``nibbles``: the one command. Every word it takes goes to the module
+    that always answered it; what changed is only the door (2026-10-10, the
+    owner's: one executable, ``nibbles <url>`` for a page or a file alike)."""
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if not argv:
+        return _open("search", [])
+    head, rest = argv[0], argv[1:]
+    if head in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    if head in TAB_WORDS:
+        return _open(TAB_WORDS[head], rest)
+    if "--list" in argv and any(arg in LISTS for arg in argv):
+        word = next(arg for arg in argv if arg in LISTS)
+        import ytq
+
+        return ytq.main([LISTS[word], *(arg for arg in argv if arg != word)])
+    if "--from-json" in map(_flag, argv):
+        import ytq
+
+        return ytq.main(argv)
+    words = [arg for arg in argv if arg != "--yes"]
+    if words and words[0] in QUEUE_VERBS and not any(_looks_like_url(arg) for arg in words):
+        import expire_sched
+
+        return expire_sched.main(argv)
+    # Not a word nibbles has: what yt-dlp would take. Asked last, because the
+    # last of its questions is yt-dlp's own extractors, and that is a second.
+    target = next((arg for arg in argv if not arg.startswith("-")), None)
+    if target is not None:
+        import ytq
+
+        taken = ytq.read_input(target)
+        if taken is not None:
+            what, value = taken
+            rest = [arg for arg in argv if arg != target]
+            if what == "search":
+                return ytq.main([*rest, *value.split()])
+            if ytq.looks_like_url(value):
+                return _url(value, [value, *rest])
+            # Taken by one of yt-dlp's extractors though no link (a bare
+            # video id): a page by definition, and the app is told it is one.
+            return ytq.main(["--link", value, *rest])
+    print(f"nibbles: {head!r} is not a command; nibbles search {' '.join(argv)} "
+          "searches YouTube for it", file=sys.stderr)
+    print("         nibbles help lists the commands", file=sys.stderr)
+    return 2
+
+
+def _looks_like_url(text: str) -> bool:
+    import ytq
+
+    return ytq.looks_like_url(text)
+
+
+def _url(url: str, argv: list[str]) -> int:
+    """A page to its video sheet, a file to the queue: told apart by what the
+    flags already say, else by YouTube's own hosts, else by asking the
+    server's headers (``dlq.kind_of``) — never by guessing from the name.
+    yt-dlp's generic extractor takes both, so "would yt-dlp take it" cannot
+    tell them apart; the headers can, and a file fetched by Range resumes
+    where yt-dlp's would start again."""
+    import dlq
+    import ytq
+
+    flags = {_flag(arg) for arg in argv if arg.startswith("-")}
+    if flags & set(FILE_FLAGS):
+        kind = "file"
+    elif flags & set(VIDEO_FLAGS):
+        kind = "page"
     else:
-        start = "search"
-    if argv:
-        print("usage: nibbles [search|feed|later|queue|more]", file=sys.stderr)
-        print("       ytq and dlq take the old arguments", file=sys.stderr)
+        full = url if "://" in url else f"https://{url}"
+        try:
+            kind = dlq.kind_of(full)
+        except dlq.ProbeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if kind == "file" and full != url:
+            argv = [full if arg == url else arg for arg in argv]
+    if kind == "file":
+        return dlq.main(argv)
+    return ytq.main(argv)
+
+
+def _open(tab: str, rest: list[str]) -> int:
+    """The app on *tab*; ``search`` takes the words to search for, through
+    ``ytq.main``, so the receipts are printed the way they always were."""
+    if tab == "search" and rest:
+        import ytq
+
+        return ytq.main(rest)
+    if rest:
+        print(f"nibbles {tab} takes nothing after it", file=sys.stderr)
         return 2
+    if tab == "queue":
+        # Through the queue's own door, which names a broken checkout first.
+        import expire_sched
+
+        return expire_sched.main(["ui"])
     if not sys.stdout.isatty():
-        print("nibbles needs a terminal; dlq status and ytq --list print", file=sys.stderr)
+        print("nibbles needs a terminal; nibbles help lists what prints without one",
+              file=sys.stderr)
         return 2
-    for line in run(start):
+    for line in run(tab):
         print(line)
     return 0
 

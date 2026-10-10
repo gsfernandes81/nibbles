@@ -158,8 +158,11 @@ owner asked for: a Done download whose file was removed says `deleted`, not
 ## A bare `nibbles` — 2026-10-10
 
 - Spec: open question (design §9), proposed: Search.
-- Built: Search. `nibbles queue` (or `feed`, `later`, `more`) opens another
-  tab; `ytq` and `dlq` keep their own words.
+- Built: Search, always — with no terminal it says it needs one rather than
+  printing the status (the owner, 2026-10-10). `nibbles queue` or `more` opens
+  another tab; Feed and Later have no word, being a tap away. `nibbles` is the
+  one command, and `nibbles <url>` takes what yt-dlp would plus a plain file
+  URL (the owner's, 2026-10-10).
 
 ## The More tab's other rows and their sheets — 2026-10-10
 

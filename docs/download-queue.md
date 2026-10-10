@@ -4,19 +4,18 @@ The data plan grants ~763 MiB of free data a day, and whatever is unused is
 wiped at 00:00 UTC. In the window before that reset — an hour by default —
 a scheduled job spends the leftover on downloads you queued — always leaving
 a floor for the morning (100 MB by default) and never touching the paid
-reserve. `dlq settings` changes the window, the floor, what the job says, or
+reserve. `nibbles settings` changes the window, the floor, what the job says, or
 turns it off outright — see [Settings](#settings).
 
 The queue and its YouTube front end live in one checkout, `~/nibbles/` (they
-were two repos, `dlq` and `ytq`, until 2026-10-10). Three commands are installable (see
-[Installing](#installing-the-commands)) and then work from any directory, and
-all three open [the same app](#the-app): `nibbles` opens it on Search, `ytq`
-queues videos (and opens it on Search), and `dlq` is the queue itself — typed
-on its own it opens the app on its Queue tab, which is where the queue is
-worked on, and `dlq <url>` queues a plain file URL. Without installing, every
-line in these docs also works as `python3 ~/nibbles/ytq.py …` — `dlq` as
-`python3 ~/nibbles/expire_sched.py …` and `nibbles` as
-`python3 ~/nibbles/nibbles.py`.
+were two repos, `dlq` and `ytq`, until 2026-10-10). **One command is
+installable**, `nibbles` (see [Installing](#installing-the-commands)), and it
+then works from any directory: on its own it opens [the app](#the-app) on
+Search, `nibbles queue` opens it on its Queue tab, which is where the queue is
+worked on, `nibbles <url>` queues a plain file URL (or opens a video page's
+sheet), and every verb in these docs (`nibbles status`, `nibbles settings`,
+…) is one of its words — `nibbles help` lists them all. Without installing, every line
+in these docs also works as `python3 ~/nibbles/nibbles.py …`.
 
 The runner reads the portal through the quota widget in a second checkout,
 `~/zwana-quota`, found beside this one or under `~`. `EXPIRE_HOME` and
@@ -35,37 +34,41 @@ portal cannot be reached](#when-the-portal-cannot-be-reached).
 
 | You have | Run |
 |---|---|
-| a video page (YouTube etc.) | `ytq <url>` — see [ytq.md](ytq.md) |
-| no link, just a title | `ytq` and search for it |
-| a direct file URL | `dlq <url>` |
+| a video page (YouTube etc.) | `nibbles <url>` — see [ytq.md](ytq.md) |
+| no link, just a title | `nibbles search <words>` |
+| a direct file URL | `nibbles <url>` — the same command |
 | something more exotic | write an item by hand — `queue/README.md` is the contract |
 
-`dlq` sizes the file from its response headers (headers only — costs no
-data), writes the queue item, and prints where the file will land:
+`nibbles <url>` first asks the server what the URL is — its headers only,
+~1 KB: HTML is a page, for yt-dlp and the video sheet; anything else is a
+file. (YouTube's own hosts are pages without asking, and any of the flags
+below says "a file" without asking.) For a file it then sizes it from the
+same kind of headers (no payload), writes the queue item, and prints where
+the file will land:
 
 ```
-dlq <url>                    # probe the size, queue it
-dlq <url> --name x.iso       # choose the saved file name
-dlq <url> --sha256 <hex>     # verify the file before delivery
-dlq <url> --probe            # just print size + resume support
-dlq <url> --expect-bytes N   # server won't state a size: set the
-                                  # most you are willing to let it cost
-dlq <url> --again            # queue it even though it is already
-                                  # queued or already downloaded
+nibbles <url>                    # probe the size, queue it
+nibbles <url> --name x.iso       # choose the saved file name
+nibbles <url> --sha256 <hex>     # verify the file before delivery
+nibbles <url> --probe            # just print size + resume support
+nibbles <url> --expect-bytes N   # server won't state a size: set the
+                                 # most you are willing to let it cost
+nibbles <url> --again            # queue it even though it is already
+                                 # queued or already downloaded
 ```
 
 A URL that is already in the queue, already downloaded or already given up on
 is refused rather than queued a second time, naming what it already is; the
-same check catches a video `ytq` has seen before, on the id rather than the URL
+same check catches a video queued before, on the id rather than the URL
 — see [ytq.md](ytq.md#it-will-not-queue-the-same-video-twice).
 
 Nothing downloads when you queue — the item just waits for the nightly window.
 
 ## Installing the commands
 
-Optional — the scripts run fine as `python3 ~/nibbles/expire_sched.py`. Installing
-just puts them on PATH as `dlq`, `ytq` and `nibbles`, all from the one
-checkout. The pyproject declares one dependency, **blessed**, which owns the
+Optional — the app runs fine as `python3 ~/nibbles/nibbles.py`. Installing
+just puts that on PATH as `nibbles`, the one command, from the one checkout
+(it installs no `ytq` or `dlq`). The pyproject declares one dependency, **blessed**, which owns the
 terminal for the screens (run uninstalled, that is `pip install blessed`);
 yt-dlp is a separate binary on PATH, and **bewitch**, the library the screens
 are drawn with, is a checkout beside this one (`~/bewitch`, or
@@ -88,19 +91,19 @@ uv tool install --force ~/nibbles   # after editing
 ```
 
 An installed copy still works out of `~/nibbles/`, not next to itself
-— the queue has to be the one the nightly runner reads, and `dlq` has to arm
-the runner that lives in the checkout. Both commands anchor there deliberately
-(`ytq._root()` finds it, and `dlq` takes the same answer rather than its own
-location) because the alternative fails without saying so: a non-editable copy
+— the queue has to be the one the nightly runner reads, and `nibbles arm` has
+to arm the runner that lives in the checkout. Every command line anchors there
+deliberately (`ytq._root()` finds it, and the queue's commands take the same
+answer rather than their own location) because the alternative fails without saying so: a non-editable copy
 would queue into its own installed directory, where the runner never looks, and
-`dlq arm` would register the copy of the runner sitting beside it — which has
+`nibbles arm` would register the copy of the runner sitting beside it — which has
 no queue next to it and cannot reach `quota_widget` at all. The symptom would be
 a job firing faithfully every night onto an empty queue.
 
 Set `EXPIRE_HOME` if the queue checkout is somewhere other than `~/nibbles`:
 
 ```
-EXPIRE_HOME=~/src/dlq ytq <url>
+EXPIRE_HOME=~/src/nibbles nibbles <url>
 ```
 
 Either way `uv` builds an isolated environment under `~/.local/share/uv/tools/`
@@ -127,36 +130,35 @@ working.
 ### Fish completions
 
 ```
-ln -s ~/nibbles/completions/dlq.fish ~/.config/fish/completions/
-ln -s ~/nibbles/completions/ytq.fish ~/.config/fish/completions/
+ln -s ~/nibbles/completions/nibbles.fish ~/.config/fish/completions/
 ```
 
 Symlinks rather than copies, so pulling the repo updates them. New shells pick
 them up; `exec fish` in the current one. They complete the subcommands and
-options, and — for `dlq path` — the download names themselves, each shown
+options, and — for `nibbles path` — the download names themselves, each shown
 with its state:
 
 ```
-$ dlq path <tab>
+$ nibbles path <tab>
 40-ubuntu-24-04.py  (queued, 1 GiB here)  60-some-talk.py  (queued)
 ```
 
-That list comes from `dlq names`, which walks the queue directories and parses
+That list comes from `nibbles names`, which walks the queue directories and parses
 nothing, because it runs on every press of the tab key.
 
 ## One-time setup
 
 ```
-dlq arm
+nibbles arm
 ```
 
 Registers the job with Android's scheduler (needs the **Termux:API app**, not
-just the package). It survives reboots and Termux being killed; `dlq cancel`
+just the package). It survives reboots and Termux being killed; `nibbles cancel`
 unregisters it. Both are also the **nightly job** row on [the More
 tab](#settings) (`j`), which says which it currently is — a tap arms it when
 it says not armed, and stops it, after asking (because what follows is
 silence), when it says armed. `arm`
-registers the runner **in the checkout** whether or not `dlq` itself is
+registers the runner **in the checkout** whether or not `nibbles` itself is
 installed, so re-arm after moving `~/nibbles`.
 
 ## Watching one download
@@ -176,10 +178,10 @@ Android the moment this run delivers it. `esc Back` leaves it running.
 
 ## When something fails
 
-`dlq dump` prints one paste of everything a bug report needs: the
+`nibbles dump` prints one paste of everything a bug report needs: the
 environment, how each sibling checkout resolved, what the gate thinks, the
 state rows, the head of each failing item (its `sys.path` lines are usually
-the evidence) and the tails of the newest logs. `dlq dump NAME` narrows it
+the evidence) and the tails of the newest logs. `nibbles dump NAME` narrows it
 to one download. Every section is guarded, so it finishes on broken trees —
 which is when it is needed.
 
@@ -191,13 +193,13 @@ without being edited.
 ## Checking on it
 
 ```
-dlq status      # what happens next, and what it turns on
-dlq list        # every download, and how much of it is here
-dlq ui          # the same queue, on a screen that can change it — or just: dlq
-dlq path NAME   # where a finished download landed
-dlq logs        # last 40 lines of the runner log
-dlq run-now     # run the whole queue now, without waiting for the window
-dlq run-now --blind   # ...with no portal reading, on mobile data
+nibbles status      # what happens next, and what it turns on
+nibbles list        # every download, and how much of it is here
+nibbles queue       # the same queue, on a screen that can change it
+nibbles path NAME   # where a finished download landed
+nibbles logs        # last 40 lines of the runner log
+nibbles run-now     # run the whole queue now, without waiting for the window
+nibbles run-now --blind   # ...with no portal reading, on mobile data
 ```
 
 All of these except `path` are in the app too — Run now sits on the Queue
@@ -205,11 +207,10 @@ tab's window card (see [The Queue tab](#the-queue-tab)), and the More tab
 holds the window, the reserve, the destinations, the nightly job and the
 runner log (`s` and `l` on the Queue tab go there directly). The command
 line is what is left for the things a screen cannot do: `path` prints a path
-and nothing else, so `cd (dlq path ubuntu)` works; and a `dlq` with no
-terminal to draw on — in a pipe, or a script — prints the status screen
-rather than opening anything.
+and nothing else, so `cd (nibbles path ubuntu)` works; and `nibbles status`
+prints the status screen in a pipe or a script, where there is no app.
 
-`dlq status` answers "is it going to download tonight, and what". It leads
+`nibbles status` answers "is it going to download tonight, and what". It leads
 with that answer and then shows the working:
 
 ```
@@ -231,7 +232,7 @@ queue (2)
   60-some-talk
     -  0 B/≤505 MiB
 
-  3 done, 1 failed - dlq list
+  3 done, 1 failed - nibbles list
 
 job       armed, fires every 15m
 last run
@@ -254,16 +255,16 @@ screen cannot say one thing while the runner does another.
 
 The figures under `data` are the arithmetic the runner does, in the order it
 does it: what is left, how much of that dies at the reset, the reserve that
-is never spent (100 MB unless `dlq settings` says otherwise), and therefore
+is never spent (100 MB unless `nibbles settings` says otherwise), and therefore
 what tonight may use. The speed under them is what the last download actually
 managed, which is what the runner sizes each slice against. `try 2/3` on an
 item means one night already failed and it has two left before it is set
 aside for you.
 
-`dlq status` is read-only and takes no lock, so it answers while a firing is
+`nibbles status` is read-only and takes no lock, so it answers while a firing is
 in progress. It exits non-zero when it prints a `BROKEN` line.
 
-`dlq list` is the "where is everything" answer — queued, failed and done in
+`nibbles list` is the "where is everything" answer — queued, failed and done in
 that order, done newest first, with what is on the disk against what it is
 going to be:
 
@@ -290,7 +291,7 @@ can start it again. To download it a second time, queue it again.
 It lays itself out to the terminal it is in. On a phone in portrait the
 description goes and, if the names are long, each download takes two lines
 rather than having its name clipped — the name is what you type back at
-`dlq path`, so it is the last thing to lose room. Both lines of a download sit
+`nibbles path`, so it is the last thing to lose room. Both lines of a download sit
 at the same indent and a blank line separates one download from the next,
 since a phone loses two columns to every level of indent and the eye reads the
 gap anyway:
@@ -308,13 +309,13 @@ queued (2)
 or the priority number (`40`). Anything matching two downloads is refused with
 both listed.
 
-`dlq path` prints only the path, so `cd (dlq path ubuntu)` works, and exits
+`nibbles path` prints only the path, so `cd (nibbles path ubuntu)` works, and exits
 non-zero if the download has not finished — it still prints where it is going
 to land. For one that finished and whose file has since gone, it prints where
 it *was* delivered and exits non-zero, because that is the only record of where
 it went and it is still the answer to the question.
 
-`dlq logs` does the same thing to the runner's log: on a phone the date is
+`nibbles logs` does the same thing to the runner's log: on a phone the date is
 lifted off the lines and printed once above them — but only when every line on
 the screen really is that one day, since the queue runs across midnight — and a
 long line is wrapped with its continuations indented rather than left to break
@@ -328,13 +329,13 @@ nights (you get a notification either way something needs you).
 ## The app
 
 ```
-dlq ui     # or just: dlq
+nibbles queue     # the app on its Queue tab
+nibbles           # ...on Search
 ```
 
-`dlq` with nothing after it opens the app on its Queue tab. In a pipe or a
-script — no terminal to draw on — it prints `dlq status` instead, which is what
-a bare `dlq` has always done. `ytq` and `nibbles` open the same app on Search
-(`nibbles queue`, `feed`, `later` or `more` opens another tab).
+`nibbles queue` opens the app on its Queue tab, a bare `nibbles` on Search,
+and `nibbles more` on More. With no terminal to draw on — a pipe, a script —
+there is no app, and it says so; `nibbles status` is the printed view.
 
 **One app, five tabs** along the bottom: **Search · Feed · Later · Queue ·
 More**. The first three are YouTube — see [ytq.md](ytq.md); Queue is the queue
@@ -386,14 +387,14 @@ clock, never UTC. What a change did is said on the line just above the tabs.
 
 The **window card** leads: the verdict, when the window opens and how long
 until then, a bar of what the next window may spend against what expires, and
-the two figures — the same facts `dlq status` opens with, kept in view while
+the two figures — the same facts `nibbles status` opens with, kept in view while
 you work the queue instead of a screen away. **Run now** sits beside it. With
 the keyboard up the card folds into a one-line strip beside Run now.
 
 **Queued · Failed · Done** choose which group the list shows (←→ step
 between them); Done is newest first. Each download is two lines: its name,
 then `↓ 18%` on the one downloading, `0 of ≤505 MiB` on one waiting (`≤` as in
-`dlq list`), the last error on a failed one (`×`), and the size and the file
+`nibbles list`), the last error on a failed one (`×`), and the size and the file
 it delivered on a done one (`✓`).
 
 **The cut line is computed, never an item.** Taps and the cursor skip straight
@@ -426,7 +427,7 @@ A download the window only gets part-way through says so on its own row:
 bytes, and the figure is how many of them. Items that finish in the window and
 items below the line carry nothing extra.
 
-**Run now is `dlq run-now`, and it means now.** The window is a schedule, not
+**Run now is `nibbles run-now`, and it means now.** The window is a schedule, not
 a permission: it ignores the window exactly as Download now does, and so does
 `auto` being off — everything else stays, the reserve floor, the per-item caps,
 and the portal reading the whole budget is derived from. It asks once, on a
@@ -523,7 +524,7 @@ The screens show names and positions ("2nd of 3"); the `NN-` prefix that
 actually carries the order is bookkeeping, and nothing asks you to type it.
 Underneath, dropping one usually renames a single file, and when two
 neighbours have no room between them the whole queue is quietly dealt fresh
-numbers instead. This is the only place an order is chosen: `ytq` queues last
+numbers instead. This is the only place an order is chosen: a new download queues last
 and has no place picker.
 
 ### Downloading one now
@@ -557,18 +558,18 @@ is gone, and the row would otherwise sit there looking like work outstanding.
 
 That only happens on the evidence of having looked: the folder has to be
 readable. A card that is out or a storage permission that was never granted
-changes nothing and waits (`dlq list` calls it **folder away**). It is the
+changes nothing and waits (`nibbles list` calls it **folder away**). It is the
 difference between a file that was deleted and a file that cannot be seen, and
 only the first one is a fact.
 
 ## Where downloads go
 
 ```
-dlq dest                        # show all three, and where they came from
-dlq dest video ~/storage/movies # where ytq puts finished videos
-dlq dest audio ~/storage/music  # where ytq puts audio-only picks
-dlq dest file  ~/storage/downloads
-dlq dest video default          # put the built-in default back
+nibbles dest                        # show all three, and where they came from
+nibbles dest video ~/storage/movies # where finished videos go
+nibbles dest audio ~/storage/music  # where audio-only picks go
+nibbles dest file  ~/storage/downloads
+nibbles dest video default          # put the built-in default back
 ```
 
 Or **destinations** on [the More tab](#settings) (`d`), a sheet showing all
@@ -578,8 +579,8 @@ written to. A tap on one opens its folder in a field; the `default` preset (or
 
 Three destinations, because a film, a song and an installer do not belong in
 the same folder on a phone. **Which one an item uses is decided by the row you
-picked**, not by the file extension: an audio pick on `ytq`'s video sheet
-goes to `audio`, and everything else `ytq` queues goes to `video`. On a phone
+picked**, not by the file extension: an audio pick on a video sheet
+goes to `audio`, and every other video goes to `video`. On a phone
 that matters more than it sounds — the music player and the video player look
 in different folders, and a song delivered among the films is one nothing
 offers to play.
@@ -587,19 +588,19 @@ offers to play.
 **On Termux all three default to Android's own Downloads**
 (`/storage/emulated/0/Download`) — the folder the Downloads app lists and the
 media scanner indexes, and one that survives Termux being uninstalled. That
-needs `termux-setup-storage` to have been run once; until it has, `dlq dest`
+needs `termux-setup-storage` to have been run once; until it has, `nibbles dest`
 says so rather than letting you find out after the data is spent. Anywhere
 else — the container on zero — the default stays the queue's own `out/`.
 
 A setting is read **when the file is delivered**, not when it was queued, so
 changing one moves everything already waiting in the queue as well — including
 the audio ones, which is the point of them being a kind rather than a folder
-chosen once. For a one-off, `ytq --dest DIR` and `dlq --dest DIR` write an
+chosen once. For a one-off, `nibbles <url> --dest DIR` writes an
 absolute path into that item instead, and that wins over the kind.
 
 Finished files land directly in the folder, named as they were downloaded. A
 name already taken gets Android's own suffix — `report (2).pdf` — and nothing
-is ever overwritten. `dlq path NAME` tells you where one went; the queue keeps
+is ever overwritten. `nibbles path NAME` tells you where one went; the queue keeps
 a record, because once a file is in a folder shared with every other app on the
 phone nothing can work out which one was yours by looking.
 
@@ -611,18 +612,18 @@ It is never half-written into a place it cannot go.
 ## Settings
 
 ```
-dlq settings                        # show them all, and what they are set to
-dlq settings window 45              # start downloads 45 min before the reset
-dlq settings window 2h              # ...or say it in hours
-dlq settings reserve 150            # keep 150 MB back instead of 100
-dlq settings reserve-when-paid no   # waive the reserve when paid data is there
-dlq settings paid-min 150           # ...but only with 150 MB of it left
-dlq settings auto off               # the nightly job fires and does nothing
-dlq settings notify-blocked off     # a blocked firing goes to the log only
-dlq settings budget manual          # no portal: spend a daily allowance instead
-dlq settings allowance 2GB          # ...of 2 GB a day
-dlq settings reset 05:30            # ...that starts again at 05:30, phone time
-dlq settings window default         # put the built-in default back
+nibbles settings                        # show them all, and what they are set to
+nibbles settings window 45              # start downloads 45 min before the reset
+nibbles settings window 2h              # ...or say it in hours
+nibbles settings reserve 150            # keep 150 MB back instead of 100
+nibbles settings reserve-when-paid no   # waive the reserve when paid data is there
+nibbles settings paid-min 150           # ...but only with 150 MB of it left
+nibbles settings auto off               # the nightly job fires and does nothing
+nibbles settings notify-blocked off     # a blocked firing goes to the log only
+nibbles settings budget manual          # no portal: spend a daily allowance instead
+nibbles settings allowance 2GB          # ...of 2 GB a day
+nibbles settings reset 05:30            # ...that starts again at 05:30, phone time
+nibbles settings window default         # put the built-in default back
 ```
 
 Or the **More tab** (`s` from the Queue tab), which shows the ones that
@@ -672,14 +673,14 @@ the reserve and `paid-min`; `on`, `off`, `yes`, `no`, `true`, `false`, `1` and
 `0` all work for the switches, case-insensitively. A value hand-edited into
 `config.json` that does not fit the rule — a window that is not a multiple of
 15, a negative reserve — is never applied: the setting reads as its default
-instead, and `dlq settings` and `dlq dump` both say which stored value they
+instead, and `nibbles settings` and `nibbles dump` both say which stored value they
 declined and why, rather than letting a stray character in a file stop a
 night's downloads.
 
 A `config.json` that will not parse **at all** — a trailing comma, a missing
 brace — is the same for the runner: every setting reads as its default and the
-night goes ahead. It is not the same for changing one. `dlq settings NAME
-VALUE` and `dlq dest KIND PATH` refuse and write nothing, saying which file
+night goes ahead. It is not the same for changing one. `nibbles settings NAME
+VALUE` and `nibbles dest KIND PATH` refuse and write nothing, saying which file
 will not parse, and the More tab says the same line in red, because saving
 on top of a file nothing can read means saving the one new key and losing the
 destinations and the other settings with it.
@@ -714,8 +715,8 @@ brings the reserve back for whatever is left to download.
 
 **`auto off` stops the nightly job from downloading; it does not stop the job
 from running.** The job stays armed and keeps firing every ~15 minutes; each
-firing does nothing, and `dlq status` leads with **automatic downloads are
-off** instead of one of the usual verdicts. `dlq run-now` and Run now on the
+firing does nothing, and `nibbles status` leads with **automatic downloads are
+off** instead of one of the usual verdicts. `nibbles run-now` and Run now on the
 Queue tab still download with the switch off, the same way `--force` still overrides
 the clock: a person asking for a download now is not the schedule, and the
 switch is only ever a schedule. Nothing about money moves with it — the
@@ -728,7 +729,7 @@ too old to spend against — posts **Download queue blocked** to the phone. That
 is the one that repeats: a firing lands every ~15 minutes, so a phone away
 from the vessel's wifi says it all evening, which is the fastest way to teach
 anyone to ignore the notification that matters. Turned off, the runner still
-logs why it stopped and `dlq status` still leads with it; only the phone goes
+logs why it stopped and `nibbles status` still leads with it; only the phone goes
 quiet. An item that has run out of nights, a malformed item and a download
 folder that cannot be reached go on notifying either way — each happens once,
 and nothing else is ever going to mention them.
@@ -737,7 +738,7 @@ and nothing else is ever going to mention them.
 
 Every guard the runner keeps spends against one figure: how much it may spend
 before the reset. Where that figure comes from is the **budget source**,
-`dlq settings budget`, and there are two.
+`nibbles settings budget`, and there are two.
 
 - **`zwana`**, the crew portal, read through `~/zwana-quota`. Everything
   else in this guide describes it: the portal knows what is left, how much of
@@ -746,24 +747,24 @@ before the reset. Where that figure comes from is the **budget source**,
   zwana-quota checkout can be imported.
 - **`manual`**, for a plan with no portal — a daily-reset mobile plan, a
   night bundle, a capped link. You say how much the plan gives a day
-  (`dlq settings allowance`, in MB or GB) and when its day starts again
-  (`dlq settings reset`, typed and shown on the phone's own clock, stored in
+  (`nibbles settings allowance`, in MB or GB) and when its day starts again
+  (`nibbles settings reset`, typed and shown on the phone's own clock, stored in
   UTC so a timezone crossed between two resets does not move it). It is the
   default on a phone with no zwana-quota checkout, and nothing about it needs
-  one: the runner, `dlq status`, `dlq settings` and `dlq dump` all work
+  one: the runner, `nibbles status`, `nibbles settings` and `nibbles dump` all work
   without it.
 
 **What a manual budget may spend** is the allowance, less what the runner
 itself has moved since the last reset, less the reserve, less a margin of 32
 MiB for the bytes that move between two looks at a download. The runner keeps
 its own ledger of what it moved, in `state.json` — every nightly item and
-every `dlq now`. **On a phone that count comes from the download itself**:
+every `nibbles now`. **On a phone that count comes from the download itself**:
 Android does not let an app read the interface counters (`/proc/net/dev` is
 permission denied), so the runner reads each download's own progress report
-— the figure `ytq`'s and `dlq`'s items keep, merges and renames included — and
+— the figure video and file items both keep, merges and renames included — and
 failing that, how much its files grew on disk, and charges either at 8% over
 for what the wire costs on top. Where the interface counters can be read, they
-are what is used, and they count every byte on the radio. `dlq status` lays it
+are what is used, and they count every byte on the radio. `nibbles status` lays it
 out:
 
 ```
@@ -803,10 +804,10 @@ place, said with the allowance's figures.
 
 A `state.json` that will not parse, or a ledger that is not a list of spends,
 is a day's spending forgotten — which would read as an allowance nobody had
-touched. A manual budget reads it as spent instead, spends nothing, and `dlq
-status` and `dlq dump` say why.
+touched. A manual budget reads it as spent instead, spends nothing, and `nibbles
+status` and `nibbles dump` say why.
 
-`dlq dump` has a **budget source** section: which source the next reading
+`nibbles dump` has a **budget source** section: which source the next reading
 comes from and how that was decided (set, or the default and why), whether
 zwana-quota imports, and for a manual budget the allowance, the last and next
 reset, what was spent since, and what is left to spend.
@@ -815,9 +816,9 @@ reset, what was spent since, and what is left to spend.
 
 The whole point of the queue is to spend data that is about to be wiped, so
 everything above waits for the window before the reset (an hour by default —
-`dlq settings window` changes it). When you need a file before then, that is
+`nibbles settings window` changes it). When you need a file before then, that is
 Download now on its sheet in the Queue tab — see [Downloading one
-now](#downloading-one-now). Now on a video's sheet (or `ytq --now URL`) is the
+now](#downloading-one-now). Now on a video's sheet (or `nibbles --now URL`) is the
 same thing for something not queued yet: it writes the item and starts it
 detached, so the app stays where it was and the status bar reports the
 download. Pause on the running download's sheet stops either.
@@ -849,7 +850,7 @@ says so:
 data
   no reading, so nothing can be spent
   no credentials: set zwana_username and zwana_password in ~/zwana-quota/.env
-  dlq run-now --blind spends mobile data instead
+  nibbles run-now --blind spends mobile data instead
 ```
 
 That last line is the way through, and it is the same bargain Download now
@@ -858,8 +859,8 @@ Queue tab](#the-queue-tab), which asks the same single question with the same
 figure on its button; on the command line:
 
 ```
-dlq run-now --blind        # run the queue with no portal reading
-dlq run-now --blind --yes  # without being asked to confirm
+nibbles run-now --blind        # run the queue with no portal reading
+nibbles run-now --blind --yes  # without being asked to confirm
 ```
 
 ```
@@ -895,9 +896,9 @@ instead of one.
 ## What to expect
 
 - Nothing runs before the window opens — an hour before the reset unless
-  `dlq settings window` says otherwise. Firings come every ~15 minutes and
+  `nibbles settings window` says otherwise. Firings come every ~15 minutes and
   each works for at most ~9 minutes — Android's limit, not a bug.
-- Big files span nights. Both `dlq` and `ytq` items resume from where they
+- Big files span nights. Both file and video items resume from where they
   stopped; a multi-GB file finishing over several nights is normal.
 - Items run in name order: the `NN-` prefix is the priority, lower first. The
   head of the queue takes what it can and the remainder flows down.
@@ -907,13 +908,13 @@ instead of one.
   00:00 UTC, and the paid reserve is never spent. All three are measured
   against the portal, so all three are off for the two things that
   deliberately spend paid data and say so first — Download now (and Now on a
-  video) and `dlq run-now --blind`.
-- `dlq settings auto off` leaves all of the above scheduled but idle: the job
+  video) and `nibbles run-now --blind`.
+- `nibbles settings auto off` leaves all of the above scheduled but idle: the job
   still fires, it just downloads nothing until a person asks for it by name.
 
 ## When something looks wrong
 
-- `dlq status` — start here. Its first line is what the next firing would do
+- `nibbles status` — start here. Its first line is what the next firing would do
   and why, and the rest is what that turned on: the budget, the window, every
   item's progress and attempts, why any item was rejected, and whether the job
   is still registered. (`python3 expire_runner.py --status` draws the same

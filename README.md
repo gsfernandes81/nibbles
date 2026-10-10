@@ -13,7 +13,7 @@ How much there is to spend comes from a **budget source**: the zwana crew
 portal (the default wherever the zwana-quota checkout is there), or a manual
 daily allowance and reset time for a plan with no portal, spent down from the
 runner's own count of what it moved. `budget` on the More tab chooses (or
-`dlq settings budget`);
+`nibbles settings budget`);
 `docs/download-queue.md` has the section on both.
 
 ytq and dlq were two repos until 2026-10-10; this is both of them, with their
@@ -22,17 +22,20 @@ Queue, More — with buttons first and keys second, laid out for a phone in
 portrait. A tap on a button acts, a drag scrolls, and anything that spends data
 says what it costs on the button that spends it.
 
-- **`nibbles`** opens the app on Search (`nibbles queue`, `feed`, `later` or
-  `more` on another tab).
-- **`ytq`** opens it on Search too, and keeps its words: `ytq crust of rust`
-  searches, `ytq <url>` opens that video, `ytq subs` and `ytq wl` open Feed
-  and Later, and `ytq --list …` prints with no screen at all.
-  `docs/ytq.md` is the guide.
-- **`dlq`** opens it on Queue on a terminal; off one it prints status.
-  `dlq <url>` queues a plain file URL, and every `dlq` verb (`status`, `list`,
-  `settings`, `arm`, `now`, `run-now`, `dump`, …) still works.
-  `docs/download-queue.md` is the guide; `queue/README.md` is the item
-  contract.
+**`nibbles` is the one command** (`nibbles help` lists it all); it installs
+no `ytq` or `dlq`.
+
+- **`nibbles`** opens the app, on Search; `nibbles queue` or `more` on another
+  tab. Feed and Later are a tap away.
+- **`nibbles <url>`** takes whatever yt-dlp would — a link with or without its
+  scheme, a bare video id, `ytsearch:words` — and a plain file URL too. A video
+  page opens its sheet (`--now` starts it); a file is queued as a download.
+  Which is which is the server's own answer, from its headers (~1 KB), unless
+  a flag already says. `nibbles search crust of rust` searches, and
+  `nibbles --list …` prints with no screen at all. `docs/ytq.md` is the guide.
+- **The queue**: every verb (`status`, `list`, `settings`, `arm`, `run-now`,
+  `dump`, …) is a `nibbles` verb. `docs/download-queue.md` is the guide;
+  `queue/README.md` is the item contract.
 
 `design/` holds the agreed design and its mockups, which are the spec the
 screens follow; `design/divergences.md` lists where the build differs.
@@ -43,11 +46,12 @@ screens follow; `design/divergences.md` lists where the build differs.
   taps, drags and keys. `widgets.py`: the buttons, sheets and bars, drawn with
   bewitch. `shell.py`: what the screens share. `yt_screens.py`: Search, Feed,
   Later and the video sheet. `queue_screens.py`: Queue and More.
-- `ytq.py`: the YouTube half's logic and the `ytq` command. `ytdl_item.py`:
+- `ytq.py`: the YouTube half's logic and its command line. `ytdl_item.py`:
   what the items it writes download through.
 - `expire_runner.py`: the scheduled runner. `expire_dl.py`: the shared
-  downloader. `expire_sched.py`, `expire_ui.py`, `dlq.py`: the `dlq` command
-  and the queue's actions.
+  downloader. `expire_sched.py`, `expire_ui.py`, `dlq.py`: the queue's command
+  line and its actions. `nibbles.main` is the one door to all three command
+  lines.
 - `queue/`: the queue, with the item contract in `queue/README.md`.
 - Two separate checkouts, each found as its variable, then a clone beside this
   one, then under `~`: **`~/zwana-quota`** (`$ZWANA_HOME`), the portal client
@@ -57,7 +61,7 @@ screens follow; `design/divergences.md` lists where the build differs.
 - One installed dependency: **blessed**, which owns the terminal.
 
 The queue root is this checkout (`$EXPIRE_HOME` overrides), never an installed
-copy's own directory, so an installed `ytq` or `dlq` still works the real queue.
+copy's own directory, so an installed `nibbles` still works the real queue.
 
 ## Install
 
@@ -66,40 +70,40 @@ either install the commands (which brings blessed with them):
 
 ```
 uv tool install --editable ~/nibbles
-ln -s ~/nibbles/completions/ytq.fish ~/.config/fish/completions/
-ln -s ~/nibbles/completions/dlq.fish ~/.config/fish/completions/
+ln -s ~/nibbles/completions/nibbles.fish ~/.config/fish/completions/
 ```
 
 or run the files as they are, after `pip install blessed`:
-`python3 ~/nibbles/nibbles.py`, `python3 ~/nibbles/ytq.py`,
-`python3 ~/nibbles/expire_sched.py`.
+`python3 ~/nibbles/nibbles.py`, which takes the same words.
 
 ## Moving the phone from ~/dlq and ~/ytq (one-time)
 
 The queue's runtime state lives in the checkout, gitignored, so it moves by
-hand. Do it outside the window, with nothing downloading (`dlq status` says
+hand. Do it outside the window, with nothing downloading (`nibbles status` says
 so):
 
 ```
 git clone https://github.com/gsfernandes81/nibbles ~/nibbles
 git clone https://github.com/gsfernandes81/bewitch ~/bewitch    # if not there yet
-dlq cancel                                              # stop the old job firing
+python3 ~/dlq/expire_sched.py cancel                    # stop the old job firing
 mv ~/dlq/queue/*.py ~/nibbles/queue/                    # pending items
 mv ~/dlq/{work,out,done,failed,logs} ~/nibbles/         # partials + history
 mv ~/dlq/{state.json,config.json} ~/nibbles/ 2>/dev/null
 sed -i 's|/home/dlq|/home/nibbles|g; s|/home/ytq|/home/nibbles|g' ~/nibbles/queue/*.py
-uv tool uninstall dlq; uv tool uninstall ytq
 uv tool install --editable ~/nibbles
-ln -sf ~/nibbles/completions/dlq.fish ~/nibbles/completions/ytq.fish ~/.config/fish/completions/
-dlq arm                                                 # register the runner in ~/nibbles
-dlq status                                              # says what it found
+ln -sf ~/nibbles/completions/nibbles.fish ~/.config/fish/completions/
+nibbles arm                                                 # register the runner in ~/nibbles
+nibbles status                                              # says what it found
 ```
 
 The `sed` matters: an item spells the absolute paths of the modules it imports
 into its own `sys.path.insert` lines, and an item that cannot import its
-downloader fails every night without spending a byte. `dlq dump` shows an
+downloader fails every night without spending a byte. `nibbles dump` shows an
 item's head if one does. Keep `~/dlq` and `~/ytq` until a night has gone
-through, then delete them.
+through, then delete them, along with the old completions (`rm
+~/.config/fish/completions/{dlq,ytq}.fish`) if they are still there. (The old
+commands are run by path above because they may already be uninstalled:
+`uv tool uninstall dlq; uv tool uninstall ytq` if not.)
 
 ## Checks
 
@@ -129,7 +133,7 @@ missing zwana-quota or bewitch checkout.
 
 ## Scheduling on Android — findings the nightly job stands on
 
-Measured on this phone in 2026-08, and still what `dlq arm` relies on:
+Measured on this phone in 2026-08, and still what `nibbles arm` relies on:
 
 - **JobScheduler, not runit/cron/nohup.** A userspace poll loop lives only
   while Termux does; JobScheduler is the system's own scheduler — it survives

@@ -35,14 +35,12 @@ playlist keeps, on the same cookie and the same bound.
 
 Usage::
 
-    ytq                      # search, or paste a URL into the same field
-    ytq crust of rust        # straight to the results
-    ytq subs                 # straight to the subscription feed
-    ytq <url>                # straight to the video sheet
-    ytq --list <url>         # print the formats, write nothing
-    ytq --list --subs        # print the feed, write nothing
-    ytq wl                   # straight to your Watch Later playlist
-    ytq --now <url>          # open the video sheet ready to download now
+    nibbles                       # search, or paste a URL into the same field
+    nibbles search crust of rust  # straight to the results
+    nibbles <url>                 # straight to the video sheet
+    nibbles --now <url>           # open the video sheet ready to download now
+    nibbles --list <url>          # print the formats, write nothing
+    nibbles --list subs           # print the feed, write nothing
 
 The item it writes runs yt-dlp per firing (see :mod:`ytdl_item`); it never
 resolves a media URL up front, because those are signed and expire in hours,
@@ -52,7 +50,7 @@ Downloading now still writes that item first and then asks ``dlq`` to run it,
 rather than waiting for the window. Downloading without the queue would have
 been less code and worse: this way an interrupted download resumes instead of
 restarting, the nightly window finishes anything that stops early, and
-``dlq list`` knows about it like everything else. It is mobile data spent now,
+``nibbles list`` knows about it like everything else. It is mobile data spent now,
 though, which the nightly window is not.
 
 That run is handed to a detached process rather than held in the foreground, so
@@ -60,14 +58,15 @@ choosing it does not end the session: the sheet closes, and the status bar
 along the foot says how far the download has got.
 
 This module is the YouTube half's logic and its printing paths. The screens are
-nibbles' (``nibbles.py``, ``yt_screens.py``): ``ytq`` opens the app on its
-Search tab, ``ytq subs`` on Feed and ``ytq wl`` on Later.
+nibbles' (``nibbles.py``, ``yt_screens.py``); ``nibbles`` opens the app on its
+Search tab, and ``nibbles.main`` decides what reaches :func:`main`.
 """
 
 from __future__ import annotations
 
 import argparse
 import fcntl
+import importlib.util
 import json
 import math
 import os
@@ -141,7 +140,7 @@ ITEM_RE = re.compile(r"^(\d{2,})-")
 #: so ``100`` sorts before ``20`` and an item numbered past 99 does not go to
 #: the back of the queue, it goes to the front. Zero-padded to two, string
 #: order and number order are the same thing, and every screen that talks about
-#: "lower runs first" is telling the truth. ``dlq ui``'s reorder hands out
+#: "lower runs first" is telling the truth. ``nibbles queue``'s reorder hands out
 #: fresh two-digit keys when the room between two items runs out, which is also
 #: what repairs a queue that already has three-digit ones in it.
 MAX_PRIORITY = 99
@@ -336,6 +335,86 @@ def looks_like_url(text: str) -> bool:
     if not text or " " in text:
         return False
     return "://" in text or text.startswith(("www.", "youtu.be/", "youtube.com/"))
+
+
+#: The prefix that says "this is a link yt-dlp takes, whatever it looks like":
+#: ``nibbles <x>`` hands the app a bare video id this way, which the field on
+#: its own would search for. The same shape as :data:`SUBS_KEY`.
+LINK_KEY = ":link:"
+
+#: yt-dlp's own YouTube search keys: ``ytsearch:``, ``ytsearch5:``,
+#: ``ytsearchdate:``, ``ytsearchall:``. The query after it is the app's search.
+_YT_SEARCH = re.compile(r"^ytsearch(?:date)?(?:\d+|all)?:(.+)$", re.S)
+
+#: yt-dlp's fixup for a link typed without its scheme: ``host.tld/path``.
+_NO_SCHEME = re.compile(r"^[^\s/:]+\.[^\s/]+/")
+
+#: Asked of yt-dlp's own extractors, in the interpreter that has them: does one
+#: other than the catch-all take this? Offline — it compiles patterns, nothing
+#: more. Exit 0 for yes, 1 for no; anything else is "could not ask".
+_SUITABLE = (
+    "import sys\n"
+    "from yt_dlp.extractor import gen_extractor_classes\n"
+    "text = sys.argv[1]\n"
+    "sys.exit(0 if any(ie.suitable(text) for ie in gen_extractor_classes()\n"
+    "                  if ie.ie_key() != 'Generic') else 1)\n"
+)
+
+
+def yt_dlp_takes(text: str, timeout: int = 30) -> bool | None:
+    """Whether one of yt-dlp's extractors (not the generic one) takes *text*,
+    asked of yt-dlp itself; ``None`` when there is no yt-dlp to ask.
+
+    In this interpreter if yt-dlp is a module here, else in the one its
+    command names on its first line. A single-file release names
+    ``/usr/bin/env python3`` and is itself the archive the module is in, so it
+    goes on ``PYTHONPATH`` too: for a console script that is a text file and
+    Python passes it over.
+    """
+    if importlib.util.find_spec("yt_dlp") is not None:
+        argv, env = [sys.executable], None
+    else:
+        binary = shutil.which("yt-dlp")
+        if not binary:
+            return None
+        python = shebang_of(binary)
+        if not python:
+            return None
+        if Path(python).name == "env":
+            python = shutil.which("python3") or sys.executable
+        argv = [python]
+        env = {**os.environ, "PYTHONPATH": binary}
+    try:
+        done = subprocess.run([*argv, "-c", _SUITABLE, text], capture_output=True,
+                              timeout=timeout, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {0: True, 1: False}.get(done.returncode)
+
+
+def read_input(text: str) -> tuple[str, str] | None:
+    """What yt-dlp would make of *text* on its command line, as ``nibbles
+    <text>`` takes it: ``("url", link)``, ``("search", words)``, or ``None``
+    for something it would not take either.
+
+    A link (with or without its scheme, which is added the way yt-dlp adds
+    it), ``ytsearch…:words`` (the app's own search), or anything one of
+    yt-dlp's extractors takes — a bare video id, for one — asked of yt-dlp.
+    """
+    text = text.strip()
+    if not text:
+        return None
+    found = _YT_SEARCH.match(text)
+    if found:
+        words = found.group(1).strip()
+        return ("search", words) if words else None
+    if looks_like_url(text):
+        return "url", text
+    if _NO_SCHEME.match(text) and " " not in text:
+        return "url", f"https://{text}"
+    if " " not in text and yt_dlp_takes(text):
+        return "url", text
+    return None
 
 
 def search_argv(query: str, count: int = SEARCH_RESULTS) -> list[str]:
@@ -1234,7 +1313,7 @@ def withheld_advice(
         # One entry, because the worst case — both of these being uv
         # commands — is a row over the phone's budget with two. The em-dash
         # is spaced so the path cannot read as part of the command.
-        f"ytq itself: {mine} — docs: ~/nibbles/docs/ytq.md",
+        f"nibbles itself: {mine} — docs: ~/nibbles/docs/ytq.md",
     ]
 
 
@@ -1567,7 +1646,7 @@ def next_number() -> int:
     otherwise be ``100``, which sorts *before* ``20``: a new download would go
     to the head of the queue rather than the tail, and the only symptom would
     be things running in the wrong order. At the cap new items share the last
-    key and are ordered by their slugs; ``dlq ui``'s reorder is what spreads
+    key and are ordered by their slugs; ``nibbles queue``'s reorder is what spreads
     them out again.
     """
     highest = 0
@@ -1980,7 +2059,7 @@ class Running:
             return
         # Stopped is not done, and resuming later is a different run.
         self.stopped = True
-        # SIGINT, the ctrl-c this replaces: `dlq now` keeps the item in its own
+        # SIGINT, the ctrl-c this replaces: `nibbles now` keeps the item in its own
         # process group, so the interrupt reaches yt-dlp, which closes its part
         # file and stops the way a deadline stops it. Every byte is kept.
         with contextlib.suppress(OSError):
@@ -2547,7 +2626,7 @@ def list_feed(count: int = SUBS_RESULTS, feed: Feed = SUBS) -> int:
         """The same words the screen uses, one to a line, on stderr.
 
         The verdict first and prefixed, the working under it, which is the
-        shape ``dlq status`` prints in — and the reason it is not one long
+        shape ``nibbles status`` prints in — and the reason it is not one long
         line is that these end in a path somebody has to read.
         """
         head, *rest = lines
@@ -2603,23 +2682,22 @@ def list_formats(url: str, dump: str | None = None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
+        prog="nibbles",
         description=__doc__.split("\n")[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             examples:
-              ytq                       search, or paste a URL, then pick
-              ytq crust of rust         search youtube (~0.1 MB)
-              ytq subs                  browse your subscription feed
-              ytq --list --subs         print the feed, write nothing
-              ytq wl                    browse your watch later playlist
-              ytq --list --wl           print watch later, write nothing
-              ytq URL                   probe (~0.1-0.5 MB), pick, queue
-              ytq --now URL             pick, then start it in the background
-              ytq --list URL            print formats and caps, write nothing
-              ytq --list --from-json F  reprint a saved dump; costs no data
+              nibbles                       search, or paste a URL, then pick
+              nibbles search crust of rust  search youtube (~0.1 MB)
+              nibbles --list subs           print the feed, write nothing
+              nibbles --list wl             print watch later, write nothing
+              nibbles URL                   probe (~0.1-0.5 MB), pick, queue
+              nibbles --now URL             pick, then start it in the background
+              nibbles --list URL            print formats and caps, write nothing
+              nibbles --list --from-json F  reprint a saved dump; costs no data
 
-            plain file URLs queue with dlq instead; the queue itself is
-            dlq — bare for the screen, or dlq (status|list|arm|logs).
+            a plain file URL given to nibbles is queued as a file; the queue
+            itself is nibbles queue, or nibbles (status|list|arm|logs).
             docs: ~/nibbles/docs/ytq.md and ~/nibbles/docs/download-queue.md"""),
     )
     parser.add_argument(
@@ -2657,7 +2735,12 @@ def main(argv: list[str] | None = None) -> int:
         "--dest",
         metavar="DIR",
         help="put this one somewhere other than the configured video or audio "
-        "directory (dlq dest sets those)",
+        "directory (nibbles dest sets those)",
+    )
+    parser.add_argument(
+        "--link",
+        action="store_true",
+        help=argparse.SUPPRESS,  # nibbles <x>: the terms are one link yt-dlp takes
     )
     parser.add_argument(
         "--from-json",
@@ -2689,7 +2772,7 @@ def main(argv: list[str] | None = None) -> int:
             return list_feed(feed=WATCH_LATER)
         if not (first or args.from_json):
             parser.error("--list needs a URL or --from-json")
-        if first and not looks_like_url(first):
+        if first and not (args.link or looks_like_url(first)):
             parser.error("--list prints one video's formats, so it needs a URL")
         return list_formats(first, args.from_json)
 
@@ -2701,6 +2784,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+    if args.link and first:
+        first = LINK_KEY + first
     if args.subs:
         # `--subs` is the flag spelling of the word the entry field already
         # takes, handed to `app` down that one road rather than as a second
@@ -2711,8 +2796,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if not sys.stdout.isatty():
         print(
-            "ytq needs a terminal; use --list <url>, --list --subs or "
-            "--list --wl otherwise",
+            "nibbles needs a terminal; use --list <url>, --list subs or "
+            "--list wl otherwise",
             file=sys.stderr,
         )
         return 2
@@ -2720,7 +2805,7 @@ def main(argv: list[str] | None = None) -> int:
     dest = str(Path(args.dest).expanduser()) if args.dest else "video"
     # A list, because a session can queue several items now. The download-now
     # case is already running by the time this returns: it was handed to a
-    # detached `dlq now`, so there is nothing left here to wait for.
+    # detached `nibbles now`, so there is nothing left here to wait for.
     # The one road: ``subs`` and ``wl`` reach the app as the words the
     # search field takes, and the app routes them to the Feed and Later tabs.
     import nibbles

@@ -1,8 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """The queue's management screen: reorder, rename, remove, retry, run now.
 
-``dlq ui``. The queue already had two screens and neither of them changes
-anything: ``dlq status`` says what happens next, ``dlq list`` says where
+``nibbles queue``. The queue already had two screens and neither of them changes
+anything: ``nibbles status`` says what happens next, ``nibbles list`` says where
 everything is. What neither could do is the handful of things that come up once
 an item is *in* the queue and wrong — it should go first, it is called the
 wrong thing, it should not run at all, it failed three nights and deserves
@@ -27,7 +27,7 @@ downloading into; anything finished in ``out/`` is kept, and the screen says
 where it stayed.
 
 A third rule is about *when*: **while the queue is busy nothing may be
-changed.** A firing or a ``dlq now`` writes into ``work/<name>/`` and hands
+changed.** A firing or a ``nibbles now`` writes into ``work/<name>/`` and hands
 the item to ``done/`` when it completes, so moving either underneath it loses
 the download or breaks the archive. Every mutating function starts at
 :func:`busy_problem`, which is checked rather than assumed — the guard lives
@@ -77,7 +77,7 @@ import expire_sched as sched  # noqa: E402  (sibling module, path fixed up above
 import ytq  # noqa: E402  (beside this file, path fixed up above)
 import contextlib
 
-#: What a row says is said the same way ``dlq list`` says it, by calling the
+#: What a row says is said the same way ``nibbles list`` says it, by calling the
 #: same functions rather than by respelling them: the state, the progress, the
 #: colour it is worth and the name with its extension dropped. This screen owns
 #: only the *arrangement*, which differs because a cursor needs rows of a fixed
@@ -125,8 +125,8 @@ def _slug_of(name: str) -> str:
     picking it up and putting it where you want it, not by working out what
     integer lives between two others.
 
-    Nothing needs it typed back any more either. ``dlq now`` and ``dlq open``
-    are gone from the command line, and ``dlq path`` takes any unambiguous
+    Nothing needs it typed back any more either. ``nibbles now`` and ``dlq open``
+    are gone from the command line, and ``nibbles path`` takes any unambiguous
     part of a name, which a slug is.
     """
     parsed = parse_name(name)
@@ -146,7 +146,7 @@ def renumber(name: str, number: int) -> str:
     Not spelled through :func:`ytq.slugify`, which is right for something a
     person typed and wrong here: it truncates at 42 characters, so putting a
     long-titled item first would silently shorten its name as well as move it,
-    and the name is what ``dlq now`` is given.
+    and the name is what ``nibbles now`` is given.
     """
     _, slug = parse_name(name) or (0, name)
     return f"{max(0, min(99999, number)):02d}-{slug}.py"
@@ -415,13 +415,13 @@ def busy_problem() -> str | None:
     Called first by every mutating function in this module rather than by the
     screens that call them, so that the guard cannot be skipped by a caller who
     did not know it was needed. What it guards is not subtle: a firing or a
-    ``dlq now`` is writing into ``work/<name>/`` and will rename the item into
+    ``nibbles now`` is writing into ``work/<name>/`` and will rename the item into
     ``done/`` when it finishes, and moving either underneath it loses the
     download or leaves the archive step renaming a file that is not there.
 
     :func:`ytq.queue_busy` and not the freshness of a progress file, because
     this is the question the *runner* answers with the lock, and a mutation is
-    one of the two things (the other is ``dlq now``) that is entitled to take
+    one of the two things (the other is ``nibbles now``) that is entitled to take
     it. The read-only screens use the progress file precisely because they are
     not entitled to.
     """
@@ -520,7 +520,7 @@ def _move_record(old: str, new: str) -> None:
     """Carry the item's history over to its new name.
 
     The attempts, the bytes spent and — for a finished item — the paths its
-    files were delivered to. Dropping it would cost ``dlq path`` the only
+    files were delivered to. Dropping it would cost ``nibbles path`` the only
     answer it has: once a file is in a folder shared with every other app on
     the phone, nothing can work out which one was ours by looking.
     """
@@ -903,7 +903,7 @@ def item_log(name: str) -> Path | None:
     """The newest log this item wrote, or ``None``.
 
     Both spellings are matched: the runner writes ``<date>-<item>.log`` and a
-    ``dlq now`` writes ``<date>-now-<item>.log``.
+    ``nibbles now`` writes ``<date>-now-<item>.log``.
     """
     try:
         found = sorted(sched.LOGS.glob(f"*-{name}.log"))
@@ -944,7 +944,7 @@ def armed(job: list[tuple[str, str, str]]) -> bool:
 class Firing:
     """The whole-queue run this screen started, if it started one.
 
-    The item screen's ``n`` hands one download to a detached ``dlq now``; this
+    The item screen's ``n`` hands one download to a detached ``nibbles now``; this
     hands the whole queue to a detached runner, which is the same process the
     nightly job fires and takes the same lock. Detached for the same reason:
     the download has to outlive the screen that started it, and the screen has
@@ -1096,7 +1096,7 @@ def run() -> int:
     """The app, opened on the Queue tab: what ``dlq`` with no words opens."""
     if not sys.stdout.isatty():
         print(
-            "dlq ui needs a terminal; dlq list is the same queue, printed",
+            "nibbles queue needs a terminal; nibbles list is the same queue, printed",
             file=sys.stderr,
         )
         return 2
@@ -1115,7 +1115,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv:
         print(f"usage: {Path(sys.argv[0]).name}", file=sys.stderr)
-        print("       dlq ui is the same screen", file=sys.stderr)
+        print("       nibbles queue is the same screen", file=sys.stderr)
         return 2
     return run()
 

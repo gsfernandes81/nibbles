@@ -297,6 +297,10 @@ class Server(http.server.ThreadingHTTPServer):
     #: case where half an answer is still an answer.
     get_code = 200
     etag = '"first"'
+    #: What it says the file is, and whether it says to save it. None is not
+    #: saying, which is most of the servers this suite stands in for.
+    content_type = None
+    disposition = None
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -315,6 +319,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         end = int(last) if last else len(payload) - 1
         return start, min(end, len(payload) - 1)
 
+    def _describe(self):
+        if self.server.content_type:
+            self.send_header("Content-Type", self.server.content_type)
+        if self.server.disposition:
+            self.send_header("Content-Disposition", self.server.disposition)
+
     def do_HEAD(self):  # noqa: N802 - BaseHTTPRequestHandler's own spelling
         self.server.state_of_the_world.setdefault("head", []).append(self.path)
         if self.server.head_code != 200:
@@ -323,6 +333,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         self.send_response(200)
+        self._describe()
         if self.server.state_length:
             self.send_header("Content-Length", str(len(self.server.payload)))
         if self.server.state_ranges:
@@ -345,6 +356,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         start, end = self._asked()
         body = payload[start : end + 1]
         self.send_response(206 if ranged else 200)
+        self._describe()
         self.send_header("Content-Length", str(len(body)))
         self.send_header("ETag", self.server.etag)
         self.send_header("Accept-Ranges", "bytes")

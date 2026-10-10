@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """Arm, inspect and tear down the expiring-allowance download queue.
 
-The queue runs in the window before 00:00 UTC — an hour unless ``dlq settings
+The queue runs in the window before 00:00 UTC — an hour unless ``nibbles settings
 window`` says otherwise — spending free data that would otherwise be wiped at
 the reset. This script manages the Android JobScheduler registration and draws
 the two screens; every decision about whether to actually download lives in
@@ -41,7 +41,7 @@ Usage::
 
     dlq [status|list|ui|path NAME|dest|settings|queue|logs|run-now|arm|cancel]
 
-``dlq`` with nothing after it is ``dlq ui`` — see :func:`default_action`,
+``expire_sched.py`` with nothing after it is ``nibbles queue`` — see :func:`default_action`,
 which falls back to ``status`` when there is no terminal to draw on.
 
 ``ui`` is where the queue is *changed* — reordered, renamed, retried, removed,
@@ -51,7 +51,7 @@ easier to do to a download you are looking at than to a name you have to type
 correctly first. What is left on the command line is the three read-only
 answers, the settings and the job.
 
-``dlq run-now --blind`` is the answer to ``ic.zwana.io`` being unreachable —
+``nibbles run-now --blind`` is the answer to ``ic.zwana.io`` being unreachable —
 the phone on mobile data, or the portal down. The nightly guards are all read
 off that portal, so a blind run has none of them and spends paid data instead;
 it says how much and asks first, exactly as the screen's ``n`` does for one
@@ -64,7 +64,7 @@ ctrl-c is what stops it.
 ``python3 expire_sched.py …`` from the checkout does exactly the same thing.
 
 ``NAME`` is name-ish: any unambiguous part of an item's file name, or its
-priority number. :func:`match` decides, and ``dlq names`` prints the same list
+priority number. :func:`match` decides, and ``nibbles names`` prints the same list
 the fish completions offer.
 """
 
@@ -287,7 +287,7 @@ def do_arm() -> tuple[bool, str]:
 
 
 def arm() -> None:
-    """``dlq arm``: register the job, or stop with the reason it did not."""
+    """``nibbles arm``: register the job, or stop with the reason it did not."""
     worked, said = do_arm()
     if not worked:
         sys.exit(f"error: {said}")
@@ -307,7 +307,7 @@ def do_cancel() -> tuple[bool, str]:
 
 
 def cancel() -> None:
-    """``dlq cancel``: unregister it, or stop with the reason it did not."""
+    """``nibbles cancel``: unregister it, or stop with the reason it did not."""
     worked, said = do_cancel()
     if not worked:
         sys.exit(f"error: {said}")
@@ -435,7 +435,7 @@ def _runner():
     """The runner module, imported from the checkout rather than from beside us.
 
     Imported lazily, and only by the paths that need an item's declared cap:
-    everything else here answers from the filesystem, and ``dlq names`` is run
+    everything else here answers from the filesystem, and ``nibbles names`` is run
     on every press of the tab key.
 
     The ``__main__`` check is for the other direction: ``expire_runner
@@ -650,7 +650,7 @@ def _lost(noted: list[Path]) -> str:
     So the distinction is drawn here, once, and everything that acts on a
     missing file acts on this answer rather than on ``files == []``.
     :func:`_readable` is what makes the difference between the two an
-    observation rather than an assumption, which is what lets ``dlq ui``
+    observation rather than an assumption, which is what lets ``nibbles queue``
     delete on the strength of it.
     """
     return "gone" if all(_readable(path.parent) for path in noted) else "away"
@@ -659,7 +659,7 @@ def _lost(noted: list[Path]) -> str:
 def _state_items() -> dict:
     """The runner's per-item records, read without importing the runner.
 
-    ``dlq names`` runs on every press of the tab key and must not pay for
+    ``nibbles names`` runs on every press of the tab key and must not pay for
     ``quota_widget``; this is the one field it needs out of the state file.
     """
     try:
@@ -933,7 +933,7 @@ def compose_list(rows: list[dict], width: int, paint) -> list[tuple[str, str]]:
     * **narrow** — the description goes. It is mostly the title again, and the
       name is already a slug of the title.
     * **tight** — two lines, the name on one and its figures indented beneath.
-      The name is what has to be typed back at ``dlq path``, so it is the last
+      The name is what has to be typed back at ``nibbles path``, so it is the last
       cell to give up room rather than the first: losing its tail makes two
       downloads look like the same one. It is still clipped if it alone is
       wider than the terminal, which nothing can help.
@@ -1085,7 +1085,7 @@ def _running_now(names: list[str]) -> str:
     """The item being downloaded at this second, or ``""``.
 
     Measured from the freshness of the item's own progress file, so it catches
-    a ``dlq now`` in another terminal as readily as a nightly firing — both
+    a ``nibbles now`` in another terminal as readily as a nightly firing — both
     write it, and neither is visible in the job registration.
     """
     for name in names:
@@ -1134,7 +1134,7 @@ def compose_status(
     * the verdict, in one line: what happens next, and when;
     * the money, as the derivation it is: what is left, what expires, what is
       held back, and therefore what tonight may spend;
-    * the queue, in the shape and with the figures ``dlq list`` uses, because
+    * the queue, in the shape and with the figures ``nibbles list`` uses, because
       two screens disagreeing about a download's progress is worse than either
       of them being wrong;
     * the machinery — job, last firing, root — last, since it is what you read
@@ -1189,7 +1189,7 @@ def compose_status(
 
     doc = facts["portal"]
     if verdict == "empty":
-        wrapped("ytq or dlq to add something", "90")
+        wrapped("nibbles search or nibbles URL to add something", "90")
     elif verdict == "off":
         # The one verdict a reader can undo from the phone in their hand, so
         # it carries the undoing. The second half is there because the switch
@@ -1240,7 +1240,7 @@ def compose_status(
         # reserve as it is set: with reserve-when-paid off and paid data
         # behind the free grant, nothing is being kept back, and the line has
         # to say why — "0 MB is always kept back" is a figure and a lie on the
-        # same line. What it is set to is one command away, in `dlq settings`.
+        # same line. What it is set to is one command away, in `nibbles settings`.
         waived = facts.get("reserve_waived")
         # Read top to bottom it is the arithmetic the runner does: what is
         # there, what of it dies at the reset, what is held back whatever
@@ -1395,7 +1395,7 @@ def _labelled(
 
 
 def _queue_rows(facts: dict, width: int, paint) -> list[tuple[str, str]]:
-    """The queued items, laid out as ``dlq list`` lays out the same downloads.
+    """The queued items, laid out as ``nibbles list`` lays out the same downloads.
 
     Same shape and the same two helpers for the figures, so the two screens
     cannot disagree about how far in a download is. What this one adds is the
@@ -1492,7 +1492,7 @@ def _queue_rows(facts: dict, width: int, paint) -> list[tuple[str, str]]:
             out.append(("", ""))
         titled = f"  {_fit(_display_name(item['name']), width - 2)}"
         out.append((titled, titled))
-        # Word for word what `dlq list` calls it, and the reason in full: an
+        # Word for word what `nibbles list` calls it, and the reason in full: an
         # item is rejected for something about the file, and the reason is the
         # only thing on either screen that says what to do about it. It sits at
         # the download's own indent — the blank line above is what says it
@@ -1501,7 +1501,7 @@ def _queue_rows(facts: dict, width: int, paint) -> list[tuple[str, str]]:
         for line in _wrap(said, width - 2):
             out.append((f"  {line}", f"  {paint(line, '1;31')}"))
 
-    # Everything that is not queued lives in `dlq list`, and saying how much of
+    # Everything that is not queued lives in `nibbles list`, and saying how much of
     # it there is stops this screen reading as the whole story.
     elsewhere = [where for where, _ in _paths() if where != "queued"]
     if elsewhere:
@@ -1542,8 +1542,9 @@ def show_names() -> int:
 # Where downloads go
 # --------------------------------------------------------------------------- #
 
-#: Which command fills each destination, for the line that explains it.
-FILLED_BY = {"video": "ytq", "audio": "ytq, audio only", "file": "dlq"}
+#: What fills each destination, for the line that explains it.
+FILLED_BY = {"video": "videos", "audio": "audio-only picks",
+             "file": "plain file URLs"}
 
 
 def show_dest(argv: list[str]) -> int:
@@ -1583,7 +1584,7 @@ def show_dest(argv: list[str]) -> int:
             note(_short(where), "")
             note(
                 f"{'set' if config.get(f'{kind}_dir') else 'default'}, "
-                f"used by {FILLED_BY[kind]}",
+                f"used for {FILLED_BY[kind]}",
                 "90",
             )
             problem = runner.dest_problem(where)
@@ -1636,7 +1637,7 @@ def show_dest(argv: list[str]) -> int:
 def set_dest(kind: str, value: str) -> tuple[bool, list[str]]:
     """Point *kind* at *value*, or at its default. ``(it worked, what to say)``.
 
-    The deciding half of ``dlq dest``, split from the printing half because
+    The deciding half of ``nibbles dest``, split from the printing half because
     the screen sets destinations too and a second implementation of "is this
     directory usable" is a second answer to it. Nothing here prints or exits;
     what would have gone to stderr comes back as the last line.
@@ -1781,7 +1782,7 @@ def show_settings(argv: list[str]) -> int:
     there, so none of the three can hold its own opinion about what ``2h``
     means or about which stored value is nonsense.
 
-    Laid out the way ``dlq dest`` is — the name as a heading with its facts
+    Laid out the way ``nibbles dest`` is — the name as a heading with its facts
     indented under it — for the same reason: on a phone the value and the note
     behind it do not fit on one line beside a name, and the wrapped remainder
     of a hung column starts further right than the thing it belongs to.
@@ -1823,7 +1824,7 @@ def show_settings(argv: list[str]) -> int:
             if problem:
                 note(f"✗ config.json says {stored!r}: {problem}", "31")
         print()
-        # The command once and the two forms under it, as `dlq dest` prints
+        # The command once and the two forms under it, as `nibbles dest` prints
         # them: at 40 columns the command name alone is a third of the line.
         print(f"{_me()} settings")
         forms = [("NAME VALUE", "change one"), ("NAME default", "put it back")]
@@ -1849,7 +1850,7 @@ def show_settings(argv: list[str]) -> int:
         print(f"usage: {_me()} settings {name} VALUE", file=sys.stderr)
         return 2
 
-    # Joined rather than argv[1] alone, so `dlq settings window 45 min` is a
+    # Joined rather than argv[1] alone, so `nibbles settings window 45 min` is a
     # sentence the shell may split and this still reads as one value.
     worked, lines = set_setting(name, " ".join(argv[1:]))
     for line in lines:
@@ -1863,7 +1864,7 @@ def show_settings(argv: list[str]) -> int:
 def set_setting(name: str, text: str) -> tuple[bool, list[str]]:
     """Set *name* to *text*, or back to its default. ``(worked, what to say)``.
 
-    The deciding half of ``dlq settings``, split from the printing half for
+    The deciding half of ``nibbles settings``, split from the printing half for
     the reason :func:`set_dest` is: the screen sets these too, and a second
     place deciding what ``2h`` means is a second answer to it. Nothing here
     prints or exits — what would have gone to stderr comes back as the last
@@ -1917,9 +1918,9 @@ def set_setting(name: str, text: str) -> tuple[bool, list[str]]:
 def show_path(row: dict) -> int:
     """Print where a download is.
 
-    Only the path goes to stdout, so ``cd (dlq path x)`` works and the exit
+    Only the path goes to stdout, so ``cd (nibbles path x)`` works and the exit
     code says whether there is anything there; anything a human needs to know
-    besides the path goes to stderr. Opening the file is ``dlq ui``'s ``o``,
+    besides the path goes to stderr. Opening the file is ``nibbles queue``'s ``o``,
     which is the screen that already has the download picked.
     """
     files = row["files"]
@@ -1959,7 +1960,7 @@ def show_path(row: dict) -> int:
 def _open(target: Path, quiet: bool = False) -> int:
     """Hand the file to Android, or to a desktop if this is not the phone.
 
-    *quiet* is for ``dlq ui``, which calls this from inside the app: an opener
+    *quiet* is for ``nibbles queue``, which calls this from inside the app: an opener
     writing to the terminal there draws over a screen it does not own, and
     nothing redraws it away. The caller reports the exit code instead.
     """
@@ -2106,7 +2107,7 @@ def queue_run_argv(blind: bool) -> list[str]:
 def run_blind(assume_yes: bool = False) -> int:
     """Fire the whole queue with no portal reading, on ordinary mobile data.
 
-    What ``dlq now`` is for one item, this is for the queue, and for the same
+    What ``nibbles now`` is for one item, this is for the queue, and for the same
     reason: every nightly guard is derived from ``ic.zwana.io`` — spend the
     allowance that is expiring, leave the reserve behind, stay out of the paid
     reserve — and when the phone is on mobile data there is no portal to derive
@@ -2140,7 +2141,7 @@ def run_blind(assume_yes: bool = False) -> int:
     total = runner.blind_budget(items, runner.load_state())
     paint = _paint()
     narrow = _width() < WIDE
-    # The same two-column shape `dlq now` uses, and the same rule about which
+    # The same two-column shape `nibbles now` uses, and the same rule about which
     # words survive a narrow screen: "of mobile data" is the whole warning.
     label = 5 if narrow else 12
     queued = ("queue" if narrow else "the queue").ljust(label)
@@ -2213,7 +2214,7 @@ def _run_item(runner, row: dict, slice_bytes: int) -> int:
         print("ctrl-c stops it; what is downloaded is kept and resumes")
 
     with log_path.open("a") as sink:
-        sink.write(f"\n===== {stamp()} dlq now slice={slice_bytes} =====\n")
+        sink.write(f"\n===== {stamp()} nibbles now slice={slice_bytes} =====\n")
         sink.flush()
         # Deliberately no setsid: the item stays in this terminal's foreground
         # process group, so ctrl-c reaches it directly and it stops itself the
@@ -2368,7 +2369,6 @@ HELP = (
     ("path NAME", "where a finished download landed"),
     ("dest", "show or set where finished downloads are put"),
     ("settings", "show or set the window, the reserve and automatic downloads"),
-    ("queue", "just the queued item files"),
     ("logs", "last 40 lines of the runner log"),
     ("dump", "everything a bug report needs, in one paste"),
     ("run-now", "run the whole queue now; --blind if the portal is unreachable"),
@@ -2384,11 +2384,11 @@ NAMED = ("path", "now")
 #:
 #: ``names`` is shell completion's own entry point, a machine-readable spelling
 #: of ``list``. ``now`` is the machine interface between the screens and the
-#: runner: ``ytq``'s ``n`` key and ``dlq ui``'s both spawn ``dlq now NAME
+#: runner: ``ytq``'s ``n`` key and ``nibbles queue``'s both spawn ``nibbles now NAME
 #: --yes`` detached, because a download has to outlive the screen that started
 #: it and the runner's lock has to be taken by whatever is downloading. The
 #: asking that ``--yes`` skips happened on the screen, which is also where the
-#: reachability of the portal is put in front of someone; a bare ``dlq now``
+#: reachability of the portal is put in front of someone; a bare ``nibbles now``
 #: typed at a shell would ask a worse version of the same question.
 HIDDEN = ("names", "now")
 
@@ -2402,8 +2402,9 @@ ALIASES = {"--now": "now", "--list": "list"}
 def _me() -> str:
     """This command as it was invoked.
 
-    ``dlq`` on PATH and ``expire_sched.py`` in the checkout — printing the
-    other one sends people to the wrong place.
+    ``nibbles`` on PATH and ``expire_sched.py`` in the checkout — printing
+    the other one sends people to the wrong place. (``dlq`` until 2026-10-10,
+    when ``nibbles`` became the one command; its verbs are this file's.)
 
     The exceptions are the other front ends drawing this module's screens:
     the runner's own ``--status``, and ``expire_ui`` composing the status onto
@@ -2415,9 +2416,9 @@ def _me() -> str:
     without having to be listed here.
     """
     name = Path(sys.argv[0]).name
-    if name and name in (Path(__file__).name, "dlq"):
+    if name and name in (Path(__file__).name, "nibbles"):
         return name
-    return "dlq" if shutil.which("dlq") else Path(__file__).name
+    return "nibbles" if shutil.which("nibbles") else Path(__file__).name
 
 
 def dump(target: str | None = None) -> int:
@@ -2442,7 +2443,7 @@ def dump(target: str | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - the dump must finish
             print(f"  (unreadable: {exc})")
 
-    print(f"dlq dump  {stamp()}")
+    print(f"nibbles dump  {stamp()}")
 
     def _environment() -> None:
         print(f"  python     : {sys.version.split()[0]}  {sys.executable}")
@@ -2689,8 +2690,8 @@ def main(argv: list[str] | None = None) -> int:
     assume_yes = "--yes" in argv
     argv = [arg for arg in argv if arg != "--yes"]
 
-    # A URL is the queue ask itself — `dlq <url>` queues a direct file
-    # download, uniform with `ytq <url>`. Routed before the verbs so a verb
+    # A URL is the queue ask itself — run directly, this file queues a direct
+    # file download for one (`nibbles <url>` decides page or file first). Routed before the verbs so a verb
     # can never shadow a URL (no verb contains "://"). The queuer keeps its
     # own module (dlq.py, with its own flags); this is only the door.
     if argv and "://" in argv[0]:
@@ -2727,7 +2728,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {problem}", file=sys.stderr)
             return 1
         # Imported here and not at the top: this is the only action that needs
-        # the app, and `dlq names` runs on every press of the tab key.
+        # the app, and `nibbles names` runs on every press of the tab key.
         import expire_ui
 
         return expire_ui.run()
@@ -2741,22 +2742,6 @@ def main(argv: list[str] | None = None) -> int:
         tail(LOGS / "runner.log", 40)
     elif action == "dump":
         return dump(rest[0] if rest else None)
-    elif action == "queue":
-        # Same filter the runner applies: .staging and __pycache__ are not
-        # items, and listing them here reads as a queue with junk in it.
-        width = _width()
-        for path in sorted(QUEUE.glob("*")):
-            if path.name.startswith(".") or not path.is_file():
-                continue
-            size = f"{path.stat().st_size:,}"
-            # The whole file name, always: this is the raw view, and the names
-            # are what the other commands are given. The size moves under it
-            # rather than the name losing its tail.
-            if 9 + 2 + len(path.name) <= width:
-                print(f"{size:>9}  {path.name}")
-            else:
-                print(path.name)
-                print(f"  {size} bytes")
     elif action == "run-now":
         problem = root_problem() or shebang_problem()
         if problem:

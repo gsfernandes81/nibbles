@@ -12,7 +12,7 @@ a film, which is a normal thing to do. ``away`` means the folder could not be
 read at all: the card is out, or Android's Downloads is there but raises until
 ``termux-setup-storage`` has been run. Calling that "gone" would write off
 every completed download on the phone on the strength of a permissions blip,
-and ``dlq ui`` deletes records on the strength of the answer.
+and ``nibbles queue`` deletes records on the strength of the answer.
 """
 
 from __future__ import annotations
@@ -149,7 +149,7 @@ def test_how_much_of_it_is_here_is_counted_off_the_disk(dlq):
 def test_what_is_here_is_every_payload_file_added_up(dlq):
     """A download that arrived in pieces has all of them on the disk.
 
-    This figure is what ``dlq now`` subtracts from the declaration to say what
+    This figure is what ``nibbles now`` subtracts from the declaration to say what
     it will spend, and what the progress cell counts against, so measuring
     only one of the pieces would ask for agreement to buy bytes already
     bought.
@@ -337,7 +337,7 @@ def test_a_directory_that_is_not_a_queue_root_is_said_so_rather_than_traced(dlq)
 
 
 def test_a_missing_sibling_checkout_is_named_rather_than_imported(dlq, monkeypatch):
-    """``dlq status`` says which checkout is missing instead of tracebacking."""
+    """``nibbles status`` says which checkout is missing instead of tracebacking."""
     monkeypatch.setenv("ZWANA_HOME", str(dlq.root / "nowhere"))
     problem = dlq.sched.root_problem()
     assert problem and "quota_widget.py" in problem
@@ -350,7 +350,7 @@ def test_a_missing_sibling_checkout_is_named_rather_than_imported(dlq, monkeypat
 
 
 def test_a_download_is_live_while_its_progress_file_is_fresh(dlq):
-    """Measured from the file the item writes, so it catches a ``dlq now`` in
+    """Measured from the file the item writes, so it catches a ``nibbles now`` in
     another terminal as readily as a nightly firing — both write it, and
     neither is visible in the job registration.
 
