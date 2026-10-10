@@ -52,6 +52,11 @@ pyte.Stream.csi["T"] = "scroll_down"
 
 QUERY_CPR = b"\x1b[6n"
 QUERY_DECRQM = re.compile(rb"\x1b\[\?(\d+)\$p")
+#: Both, so they are answered in the order they were asked: blessed sends a
+#: DECRQM query and then a cursor-position request as its boundary, and an
+#: answer to the second arriving first tells it the first got none — the late
+#: answer is then read as typing.
+QUERIES = re.compile(rb"\x1b\[6n|\x1b\[\?(\d+)\$p")
 
 UP, DOWN, LEFT, RIGHT = b"\x1b[A", b"\x1b[B", b"\x1b[D", b"\x1b[C"
 ENTER, ESC, TAB = b"\r", b"\x1b", b"\t"
@@ -78,12 +83,17 @@ class Termux:
 
     def _answer(self, chunk: bytes) -> None:
         data = self._pending + chunk
-        for _ in range(data.count(QUERY_CPR)):
-            os.write(self.fd, b"\x1b[1;1R")
-        for found in QUERY_DECRQM.finditer(data):
-            os.write(self.fd, b"\x1b[?" + found.group(1) + b";2$y")
+        for found in QUERIES.finditer(data):
+            if found.group(1) is None:
+                os.write(self.fd, b"\x1b[1;1R")
+            else:
+                os.write(self.fd, b"\x1b[?" + found.group(1) + b";2$y")
         # A query split across two reads is answered when its tail arrives.
-        self._pending = data[-8:] if data.endswith((b"\x1b", b"\x1b[", b"\x1b[?")) else b""
+        # A query cut off at the end of a read is kept, unanswered, until its
+        # tail arrives.
+        tail = data[data.rfind(b"\x1b"):] if b"\x1b" in data else b""
+        partial = re.fullmatch(rb"\x1b(\[(6|\?\d*\$?)?)?", tail)
+        self._pending = tail if partial else b""
 
     def pump(self, seconds: float = 0.2) -> int:
         """Read for *seconds*; how many bytes arrived."""
