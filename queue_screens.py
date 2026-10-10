@@ -58,7 +58,7 @@ STATUS = {
     "go": ("OPEN", "success"),
     "late": ("DONE", "primary"),
     "empty": ("IDLE", "primary"),
-    "unset": ("SET UP", "warn"),
+    "unset": ("WAITING", "primary"),
     "off": ("OFF", "warn"),
     "spent": ("SPENT", "primary"),
     "blind": ("RUNNING", "warn"),
@@ -315,6 +315,8 @@ def verdict_line(model: QueueModel, room: int) -> list[tuple]:
         if model.note:
             return [("no reading", T.fg_base, True)]
         return [("asking zwana…", T.fg_more_subtle)]
+    if f["verdict"] == "unset":
+        return [("no daily allowance set", T.fg_base, True)]
     word = ui.VERDICT_WORDS.get(f["verdict"], f["detail"])
     seconds = model.countdown()
     tails = []
@@ -340,15 +342,12 @@ def figures(model: QueueModel, room: int) -> tuple[float, str]:
         # A manual allowance: spent against what is left of it, never against
         # what "expires", which nothing can know when the rest of the phone's
         # use is not counted.
+        # The spec's own shape, spendable/left (approved 2026-10-10).
         allowance = f.get("allowance") or {}
         if not allowance.get("allowance_bytes"):
-            return 0.0, "no daily allowance set"
+            return 0.0, "set it under More"
         left = max(0, allowance.get("left_bytes") or 0)
-        a, b = shell.size(spend), shell.size(left)
-        for text in (f"{a} of {b} left to spend", f"{a} of {b} left", f"{a}/{b}"):
-            if len(text) <= room:
-                return (spend / left if left else 0.0), text
-        return (spend / left if left else 0.0), f"{a}/{b}"
+        return (spend / left if left else 0.0), pair_of(spend, left, room)
     doc = f.get("portal")
     if doc is None:
         if f.get("blind"):
@@ -359,13 +358,19 @@ def figures(model: QueueModel, room: int) -> tuple[float, str]:
         expires = (doc.get("free") or {}).get("left_bytes") or 0
     expires = max(0, expires)
     frac = spend / expires if expires else 0.0
-    a, b = shell.size(spend), shell.size(expires)
-    # One unit said once when both figures share it: 480/763 MiB.
-    pair = f"{a.split()[0]}/{b}" if a.split()[-1] == b.split()[-1] else f"{a}/{b}"
-    for text in (f"{pair} to spend", pair):
-        if len(text) <= room:
-            return frac, text
-    return frac, pair
+    return frac, pair_of(spend, expires, room)
+
+
+def pair_of(spend: int, of: int, room: int) -> str:
+    """``480/763 MiB to spend``, ``1017/1144 MiB to spend``: one unit said
+    once, MiB below 10 GiB (the spec's own shape, approved for the manual
+    card too), whole figures, so the pair fits the 22 columns beside Run now."""
+    MiB = 1024 * 1024
+    if max(spend, of) < 10 * 1024 * MiB:
+        pair = f"{round(spend / MiB)}/{round(of / MiB)} MiB"
+    else:
+        pair = f"{spend / (1024 * MiB):.1f}/{of / (1024 * MiB):.1f} GiB"
+    return next((text for text in (f"{pair} to spend", pair) if len(text) <= room), pair)
 
 
 def cut(order: list[str], facts: dict | None) -> tuple[int | None, str, dict]:
@@ -540,7 +545,9 @@ class QueueTab(Screen):
         inner = width - (13 if run else 0)
         _, fig = figures(model, inner - 4)
         fig = fig.replace(" to spend", "")
-        words = verdict_line(model, 0)[:1] + ([(f" · {fig}", T.fg_more_subtle)] if fig else [])
+        unset = bool(model.facts and model.facts["verdict"] == "unset")
+        words = verdict_line(model, 0)[:1] + (
+            [(f" · {fig}", T.fg_more_subtle)] if fig and not unset else [])
         left = (w.Style().border(w.rounded_border()).border_foreground(T.fg_most_subtle)
                 .padding(0, 1).width(inner).render(w.spans(words, inner - 4)))
         return w.hstack(Piece(left), self.run_button(app, 13)) if run else Piece(left)
@@ -548,6 +555,10 @@ class QueueTab(Screen):
     def run_button(self, app, width: int) -> Piece:
         if self.asking_run is not None and not self.asking_run.finished:
             return w.button(f"{spin()}Run now", "", width, "off", id="run")
+        facts = app.queue.facts
+        if facts and facts["verdict"] == "unset":
+            # Nothing to run against until an allowance is set.
+            return w.button("Run now", "n", width, "off", id="run")
         return w.button("Run now", "n", width, "spend", id="run", pressed=app.pressed)
 
     def draw(self, app, s: Surface, height: int) -> None:
@@ -763,6 +774,9 @@ class QueueTab(Screen):
 
     def run_now(self, app) -> None:
         model = app.queue
+        if model.facts and model.facts["verdict"] == "unset":
+            app.say("no daily allowance set: set it under More")
+            return
         if model.mine() or model.live:
             app.say("something is downloading already")
             return
@@ -1297,9 +1311,16 @@ ORDER = ("window", "reserve", "reserve-when-paid", "paid-min", "budget", "allowa
 def shown_settings(values: dict) -> list[str]:
     """Which settings are rows, in order: ``paid-min`` only while the waiver
     is on, ``allowance`` and ``reset`` only while the budget is manual."""
+    r = runner()
+    shown = getattr(r, "settings_shown", None)
+    # The runner's own answer for which settings apply to the source, where it
+    # has one (``only`` on each spec); the ordering and the waiver are More's.
+    applies = set(shown(values.get("budget"))) if shown else set(values)
     names = [n for n in ORDER if n in values] + [n for n in values if n not in ORDER]
     out = []
     for name in names:
+        if name not in applies:
+            continue
         if name == "paid-min" and values.get("reserve-when-paid", True):
             continue
         if name in ("allowance", "reset") and values.get("budget", "manual") != "manual":

@@ -183,3 +183,34 @@ def test_a_reading_that_failed_says_so_on_the_card(dlq):
     app.queue.facts, app.queue.note = None, "no route"
     drawn = app.compose().plain()
     assert drawn.count("no route") == 2  # on the card, and in the status bar
+
+
+def test_a_manual_budget_card_spends_against_what_is_left_of_the_allowance(dlq):
+    """The spec's own shape, spendable/left, and never "expires" (the
+    budget-source entry approved 2026-10-10)."""
+    app = headless(dlq)
+    allowance = {"allowance_bytes": 1200 * MiB, "left_bytes": 1144 * MiB,
+                 "spent_bytes": 56 * MiB, "problem": ""}
+    app.queue.facts = dict(dlq.facts(), source="manual", allowance=allowance,
+                           spendable=1017 * MiB, verdict="early")
+    card = app.tabs[3].card(app, 40, True).block.plain()
+    pair = dlq.qs.pair_of(1017 * MiB, 1144 * MiB, 22)
+    assert pair.endswith("to spend") and len(pair) <= 22
+    assert pair in card and "expire" not in card
+    strip = app.tabs[3].strip(app, 40, True).block.plain()
+    assert pair.removesuffix(" to spend") in strip
+
+
+def test_no_allowance_set_says_where_to_set_it_and_runs_nothing(dlq):
+    app = headless(dlq)
+    app.queue.facts = dict(dlq.facts(), source="manual", verdict="unset", spendable=0,
+                           allowance={"allowance_bytes": 0, "left_bytes": 0})
+    drawn = app.compose().plain()
+    assert "no daily allowance set" in drawn and "set it under More" in drawn
+    assert app.queue.status(40)[:3] == ("WAITING", "primary", "no allowance set")
+    app.compose()
+    run = next(h for h in app.hits.hits if h.id == "run")
+    assert "Run now" in drawn
+    tap(app, "run")
+    assert not app.sheets and "allowance" in app.said
+    del run

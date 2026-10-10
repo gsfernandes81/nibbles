@@ -26,7 +26,7 @@ for the same approval.
   at 40 columns; at 32 the band shrinks first, as bewitch's header rule says.
 - Why: it is one app now, and a header that changes name when you change tab
   reads as two apps.
-- Status: awaiting approval
+- Status: approved 2026-10-10
 
 ## The checkbox's label colours — 2026-10-10
 
@@ -39,7 +39,7 @@ for the same approval.
   old to have it, the app draws the same look itself.
 - Why: it is huh's look exactly, which is what the spec asks for, and one
   copy of it in bewitch is better than a second in nibbles.
-- Status: awaiting approval
+- Status: approved 2026-10-10
 
 ---
 
@@ -159,3 +159,14 @@ for the same approval.
 - Built: nothing is skipped until it is set (presets `av01 vp9`, `av01`,
   `vp9`, `none`); the mockup's value is read as the owner's own setting, not
   as a default for everyone.
+
+## The allowance's key on More — 2026-10-10
+
+- Spec: the approved budget-source entry (PR #1's divergences) has
+  `l allowance` on More.
+- Built: `g allowance`. `l` is already `runner log` on More (`k-more`), and a
+  key can only do one thing on a page; `b budget` and `t reset` are as
+  approved. `g` because the presets are in GB.
+- Why: two approved rows asked for the same key; the runner log's was there
+  first, in the mockup.
+- Status: awaiting approval
