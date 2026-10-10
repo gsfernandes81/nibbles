@@ -71,10 +71,8 @@ import threading
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-import expire_sched as sched  # noqa: E402  (sibling module, path fixed up above)
-import ytq  # noqa: E402  (beside this file, path fixed up above)
+from nibbles import expire_sched as sched
+from nibbles import ytq
 import contextlib
 
 #: What a row says is said the same way ``nibbles list`` says it, by calling the
@@ -1104,9 +1102,9 @@ def run() -> int:
     if problem:
         print(f"error: {problem}", file=sys.stderr)
         return 1
-    import nibbles
+    from nibbles import app
 
-    for line in nibbles.run("queue"):
+    for line in app.run("queue"):
         print(line)
     return 0
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import re
 import subprocess
 import sys
@@ -20,7 +21,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-import ytq
+from nibbles import ytq
 from conftest import video_info
 
 MiB = 1024 * 1024
@@ -134,7 +135,7 @@ def test_the_declared_cap_is_the_one_the_runner_reads(queued, tmp_path):
     plain = tmp_path / "30-talk.py"
     plain.write_text(written)
     sys.path.insert(0, str(ytq.HERE))
-    import expire_runner
+    from nibbles import expire_runner
 
     parsed = expire_runner.parse_item(plain)
     assert parsed["cap"] == choice.expect_bytes
@@ -285,12 +286,14 @@ def stub_expire_ui(monkeypatch, place):
 # --------------------------------------------------------------------------- #
 
 
-def test_the_download_is_run_by_path_under_the_queue_root():
-    """An installed copy in site-packages manages a queue that is not there."""
+def test_the_download_is_run_by_this_package_under_this_interpreter():
+    """``nibbles now`` from the copy that is running, not whatever is on PATH;
+    the child finds the package even when nothing installed it."""
     argv = ytq.now_argv("40-talk.py")
-    assert argv[0] == sys.executable
-    assert argv[1] == str(ytq.HERE / "expire_sched.py")
-    assert argv[2:] == ["now", "40-talk.py", "--yes"]
+    assert argv[:3] == [sys.executable, "-m", "nibbles"]
+    assert argv[3:] == ["now", "40-talk.py", "--yes"]
+    path = ytq.home.child_env()["PYTHONPATH"].split(os.pathsep)
+    assert path[0] == str(ytq.home.SOURCE)
 
 
 def test_a_held_lock_is_reported_as_busy(clean_queue):

@@ -14,7 +14,7 @@ import math
 from hypothesis import given
 from hypothesis import strategies as st
 
-import ytq
+from nibbles import ytq
 from conftest import fmt, video_info
 
 MiB = 1024 * 1024

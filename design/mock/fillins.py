@@ -29,11 +29,8 @@ time.tzset()
 ROOT = Path(tempfile.mkdtemp(prefix="nibbles-fillins-"))
 HOME = ROOT / "home"
 HOME.mkdir()
-MODULES = ["dlq.py", "expire_dl.py", "expire_runner.py", "expire_sched.py", "expire_ui.py",
-           "nibbles.py", "queue_screens.py", "shell.py", "tui.py", "widgets.py",
-           "ytdl_item.py", "yt_screens.py", "ytq.py"]
-for name in MODULES:
-    shutil.copy(REPO / name, ROOT / name)
+shutil.copytree(REPO / "nibbles", ROOT / "nibbles",
+                ignore=shutil.ignore_patterns("__pycache__"))
 for sub in ("queue", "done", "failed", "work", "out", "logs"):
     (ROOT / sub).mkdir()
 shutil.copy(REPO / "queue" / "README.md", ROOT / "queue" / "README.md")
@@ -44,12 +41,12 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(1, str(HERE))
 
 import kit  # noqa: E402  (bewitch on the path, and the HTML cells)
-import nibbles  # noqa: E402
-import queue_screens as qs  # noqa: E402
-import shell  # noqa: E402
-import tui  # noqa: E402
-import yt_screens as ys  # noqa: E402
-import ytq  # noqa: E402
+from nibbles import app as nibbles  # noqa: E402
+from nibbles import queue_screens as qs  # noqa: E402
+from nibbles import shell  # noqa: E402
+from nibbles import tui  # noqa: E402
+from nibbles import yt_screens as ys  # noqa: E402
+from nibbles import ytq  # noqa: E402
 
 runner = qs.runner()
 
@@ -140,7 +137,7 @@ def status_strip(_h):
 
 def status_page():
     model = app_at(3, 24).queue
-    import widgets as w
+    from nibbles import widgets as w
 
     rows = []
     cases = [("before a reading", None, ""), ("a reading that failed", None, "no route to host")]

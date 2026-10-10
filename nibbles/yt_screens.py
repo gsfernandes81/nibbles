@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import time
 
-import shell
-import tui
-import widgets as w
-import ytq
-from shell import SHORT, Entry, ListView, Notice, Screen, Sheet, spin
-from widgets import T, Btn, Piece, Surface
+from nibbles import shell
+from nibbles import tui
+from nibbles import widgets as w
+from nibbles import ytq
+from nibbles.shell import SHORT, Entry, ListView, Notice, Screen, Sheet, spin
+from nibbles.widgets import T, Btn, Piece, Surface
 
 APP_NAME = "nibbles"
 

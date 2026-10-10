@@ -75,19 +75,12 @@ settings.load_profile("mutants" if ".poodle-temp" in str(Path.cwd()) else "dlq")
 #: checkouts it reaches across into. Taken out and put back around each test so
 #: a module imported from the temporary root cannot outlive it.
 SWAPPED = (
-    "dlq",
-    "expire_dl",
-    "expire_runner",
-    "expire_sched",
-    "expire_ui",
-    "ytdl_item",
-    "ytq",
-    "tui",
-    "widgets",
-    "shell",
     "nibbles",
-    "yt_screens",
-    "queue_screens",
+    *(f"nibbles.{name}" for name in (
+        "app", "dlq", "expire_dl", "expire_runner", "expire_sched", "expire_ui",
+        "home", "queue_screens", "shell", "tui", "widgets", "yt_screens",
+        "ytdl_item", "ytq",
+    )),
     "quota_widget",
     "zwana_quota",
 )
@@ -226,15 +219,15 @@ def _rooted(root: Path):
     path = list(sys.path)
     sys.path.insert(0, str(root))
     try:
-        import dlq as queuer
-        import expire_dl
-        import expire_runner
-        import expire_sched
-        import expire_ui
-        import nibbles
-        import queue_screens
+        from nibbles import dlq as queuer
+        from nibbles import expire_dl
+        from nibbles import expire_runner
+        from nibbles import expire_sched
+        from nibbles import expire_ui
+        from nibbles import app as nibbles
+        from nibbles import queue_screens
         import quota_widget
-        import ytq
+        from nibbles import ytq
 
         yield SimpleNamespace(
             app=nibbles,
@@ -419,6 +412,9 @@ def _checkout(tmp_path_factory):
             assert root == checkout.runner.ROOT
             assert root == checkout.sched.ROOT
             assert root == checkout.ytq.HERE
+            # And the package is the copy's, never this checkout's (which an
+            # editable install also puts on sys.path).
+            assert Path(checkout.ytq.__file__).resolve().parent == root / "nibbles"
             yield checkout
     finally:
         for name, value in kept.items():

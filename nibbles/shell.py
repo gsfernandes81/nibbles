@@ -14,10 +14,10 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-import tui
-import widgets as w
+from nibbles import tui
+from nibbles import widgets as w
 from bewitch.bubbles.spinner import Dot
-from widgets import T, Piece, Surface
+from nibbles.widgets import T, Piece, Surface
 
 # --------------------------------------------------------------------------- #
 # Words

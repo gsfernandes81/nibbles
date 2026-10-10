@@ -1,0 +1,128 @@
+# Test every push and pull request; publish to PyPI when a push to main carries
+# a version PyPI does not have yet.
+#
+# Releasing is bumping `version` in pyproject.toml (and __version__ in
+# nibbles/__init__.py, which a test holds to it) and landing that on main.
+# bewitch is a dependency, released from its own repo the same way, and has to
+# be on PyPI before a nibbles that needs it.
+#
+# Publishing is PyPI's trusted publishing: PyPI trusts this workflow, in this
+# repository, running in the `pypi` environment, so no token is stored here.
+# Set it up once on pypi.org (a "pending publisher" until the first upload):
+#   owner gsfernandes81, repository nibbles, workflow release.yml,
+#   environment pypi.
+name: release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # The suites need the two sibling checkouts beside this one, as on the
+      # phone: bewitch draws the screens, zwana-quota is the portal client the
+      # zwana budget is tested through. Both are public.
+      - uses: actions/checkout@v4
+        with:
+          path: nibbles
+      - uses: actions/checkout@v4
+        with:
+          repository: gsfernandes81/bewitch
+          path: bewitch
+      - uses: actions/checkout@v4
+        with:
+          repository: gsfernandes81/zwana-quota
+          path: zwana-quota
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - working-directory: nibbles
+        run: uv sync
+      - working-directory: nibbles
+        run: bash .githooks/checks.sh
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      new: ${{ steps.version.outputs.new }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: nibbles
+      - uses: actions/checkout@v4
+        with:
+          repository: gsfernandes81/bewitch
+          path: bewitch
+      - uses: astral-sh/setup-uv@v6
+      - id: version
+        name: Is this version on PyPI yet?
+        working-directory: nibbles
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/nibbles/$version/json")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            404) echo "new=true" >> "$GITHUB_OUTPUT"; echo "nibbles $version is not on PyPI yet" ;;
+            200) echo "new=false" >> "$GITHUB_OUTPUT"; echo "nibbles $version is already on PyPI" ;;
+            *) echo "PyPI answered $code; not deciding a release on that" >&2; exit 1 ;;
+          esac
+      - working-directory: nibbles
+        run: uv build
+      - name: The wheel makes its own queue root in a clean environment
+        working-directory: ${{ runner.temp }}
+        env:
+          HOME: ${{ runner.temp }}/home
+        run: |
+          mkdir -p "$HOME"
+          uv venv smoke
+          # bewitch from the sibling checkout: the nibbles being released may
+          # need a bewitch that is being released alongside it.
+          uv pip install -p smoke/bin/python "$GITHUB_WORKSPACE/bewitch" "$GITHUB_WORKSPACE"/nibbles/dist/*.whl
+          smoke/bin/python -c 'import nibbles, sys; assert nibbles.__version__ == sys.argv[1], nibbles.__version__' "${{ steps.version.outputs.version }}"
+          smoke/bin/nibbles help > /dev/null
+          test -f "$HOME/nibbles/queue/README.md"
+          test -x "$HOME/nibbles/expire_runner.py"
+          # Off Termux the launcher's interpreter is not on disk, so status
+          # says BROKEN and exits 1; what is checked is that it gets that far.
+          { smoke/bin/nibbles status < /dev/null || true; } > status.txt
+          grep -q "root      ~/nibbles" status.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: nibbles/dist/
+
+  publish:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.build.outputs.new == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/nibbles/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  tag:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          git tag "v${{ needs.build.outputs.version }}"
+          git push origin "v${{ needs.build.outputs.version }}"

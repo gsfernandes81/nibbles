@@ -27,7 +27,7 @@ instead; which it is comes from the server's headers (~1 KB), never the name.
 
 `nibbles` is the one command once installed — see
 [Installing](download-queue.md#installing-the-commands). Uninstalled, it is
-`python3 ~/nibbles/nibbles.py <url>`, and every `nibbles` line below reads the
+`python3 -m nibbles <url>` from `~/nibbles`, and every `nibbles` line below reads the
 same way. `nibbles help` lists every word it takes.
 
 `nibbles` opens one app with five tabs along the bottom — **Search · Feed · Later

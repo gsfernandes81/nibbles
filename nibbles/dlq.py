@@ -33,9 +33,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-import ytq  # noqa: E402  (beside this file: shared queue plumbing)
+from nibbles import ytq
 
 BASE_HEADERS = {
     # Sizes are meaningless if the server gzips, and expire_dl will ask for
@@ -215,8 +213,8 @@ def render(
 
 import sys
 
-sys.path.insert(0, {json.dumps(str(ytq.HERE))})
-import expire_dl  # noqa: E402
+sys.path.insert(0, {json.dumps(str(ytq.MODULE_DIR))})
+from nibbles import expire_dl  # noqa: E402
 
 sys.exit(expire_dl.run(
     {json.dumps(url)},

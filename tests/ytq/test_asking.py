@@ -16,7 +16,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-import ytq
+from nibbles import ytq
 
 
 def after(argv: list[str], flag: str) -> str:
@@ -574,7 +574,7 @@ def test_yt_dlp_itself_is_asked_offline(monkeypatch, tmp_path):
 def test_a_link_only_yt_dlp_knows_opens_its_sheet_not_a_search(monkeypatch, capsys):
     """``--link`` (nibbles' own, hidden) hands the app a link the field would
     search for, marked as one."""
-    import nibbles
+    from nibbles import app as nibbles
 
     seen = {}
     monkeypatch.setattr(ytq.sys.stdout, "isatty", lambda: True)

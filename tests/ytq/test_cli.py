@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-import nibbles
-import ytq
+from nibbles import app as nibbles
+from nibbles import ytq
 from conftest import search_info, video_info
 
 

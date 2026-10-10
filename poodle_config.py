@@ -19,8 +19,10 @@ CLAUDE.md are the two old repos', and the first whole run here sets the notch.
 
 Things here that are load-bearing:
 
-* ``source_folders = ["."]``. The modules sit at the repo root, not under
-  ``src/``, which is poodle's default and would find nothing to mutate.
+* ``source_folders = ["."]``, with ``only_files`` naming ``nibbles/…``. The
+  package sits at the repo root, not under ``src/``, which is poodle's default
+  and would find nothing to mutate; the doors beside it at the root are
+  re-exports with nothing to mutate.
 * ``file_copy_filters``. poodle copies the tree per worker; without this it
   drags in ``.venv``, ``.git``, the ``.hypothesis`` cache and — worse — the
   live ``queue/``, ``work/`` and ``state.json``, which is the runtime state of
@@ -47,19 +49,20 @@ HERE = Path(__file__).resolve().parent
 source_folders = ["."]
 
 only_files = [
-    "dlq.py",
-    "expire_dl.py",
-    "expire_runner.py",
-    "expire_sched.py",
-    "expire_ui.py",
-    "nibbles.py",
-    "queue_screens.py",
-    "shell.py",
-    "tui.py",
-    "widgets.py",
-    "ytdl_item.py",
-    "yt_screens.py",
-    "ytq.py",
+    "nibbles/app.py",
+    "nibbles/dlq.py",
+    "nibbles/expire_dl.py",
+    "nibbles/expire_runner.py",
+    "nibbles/expire_sched.py",
+    "nibbles/expire_ui.py",
+    "nibbles/home.py",
+    "nibbles/queue_screens.py",
+    "nibbles/shell.py",
+    "nibbles/tui.py",
+    "nibbles/widgets.py",
+    "nibbles/ytdl_item.py",
+    "nibbles/yt_screens.py",
+    "nibbles/ytq.py",
 ]
 
 file_filters = ["test_*.py", "*_test.py", "conftest.py", "poodle_config.py", "_pty.py",
@@ -102,7 +105,7 @@ max_workers = 2
 #: the way to get an *answer*; it pairs with poodle's own ``--only``)::
 #:
 #:     POODLE_TESTS="tests/dlq/test_gate.py tests/dlq/test_tonight_budget.py" \
-#:         uv run --group mutants poodle --only expire_runner.py
+#:         uv run --group mutants poodle --only nibbles/expire_runner.py
 _PYTEST = f"{sys.executable} -m pytest -x -q -p no:cacheprovider"
 _NARROWED = os.environ.get("POODLE_TESTS")
 

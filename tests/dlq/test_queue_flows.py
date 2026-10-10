@@ -21,7 +21,7 @@ def headless(dlq, tab=3, size=(40, 24)):
 
 def tap(app, id, nth=0):
     """A tap on the middle of the *nth* target called *id*."""
-    import tui
+    from nibbles import tui
 
     app.compose()
     hits = [h for h in app.hits.hits if h.id == id]
@@ -32,7 +32,7 @@ def tap(app, id, nth=0):
 
 
 def key(app, name):
-    import tui
+    from nibbles import tui
 
     app.handle(tui.Key(name))
 
@@ -42,7 +42,7 @@ def open_row(app, name):
     app.compose()
     index = next(i for i, e in enumerate(tab.lists["queued"].entries) if e.key == name)
     hit = next(h for h in app.hits.hits if h.id == "row" and h.data == index)
-    import tui
+    from nibbles import tui
 
     app.guard.opened = -10.0
     app.handle(tui.Tap(hit.x + 1, hit.y))

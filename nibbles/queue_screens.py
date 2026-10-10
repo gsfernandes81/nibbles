@@ -20,14 +20,14 @@ import re
 import time
 from pathlib import Path
 
-import expire_sched as sched
-import expire_ui as ui
-import shell
-import tui
-import widgets as w
-import ytq
-from shell import SHORT, Choice, Confirm, Entry, ListView, Notice, Screen, Sheet, spin
-from widgets import T, Btn, Piece, Surface
+from nibbles import expire_sched as sched
+from nibbles import expire_ui as ui
+from nibbles import shell
+from nibbles import tui
+from nibbles import widgets as w
+from nibbles import ytq
+from nibbles.shell import SHORT, Choice, Confirm, Entry, ListView, Notice, Screen, Sheet, spin
+from nibbles.widgets import T, Btn, Piece, Surface
 
 APP_NAME = "nibbles"
 
@@ -293,10 +293,6 @@ class QueueModel:
                     f"{display(name)} is queued and will follow"]
         if ytq.queue_busy():
             return ["the queue is busy", "a nightly firing or another download holds it",
-                    f"{display(name)} is queued and will run in the window"]
-        if not (ytq.HERE / "expire_sched.py").is_file():
-            return ["the queue manager is not where the queue is",
-                    f"expected it beside the queue at {ytq.HERE}",
                     f"{display(name)} is queued and will run in the window"]
         self.running.start(name)
         ui._note(f"started {name} now, outside the window")

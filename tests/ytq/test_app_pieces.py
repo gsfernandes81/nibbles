@@ -17,10 +17,10 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-import shell
-import tui
-import widgets as w
-import ytq
+from nibbles import shell
+from nibbles import tui
+from nibbles import widgets as w
+from nibbles import ytq
 
 MiB = 1024**2
 

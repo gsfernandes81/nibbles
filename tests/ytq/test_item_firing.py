@@ -15,8 +15,8 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-import expire_dl
-import ytdl_item
+from nibbles import expire_dl
+from nibbles import ytdl_item
 
 
 def after(argv: list[str], flag: str) -> str:

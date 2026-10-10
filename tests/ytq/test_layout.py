@@ -13,7 +13,7 @@ from __future__ import annotations
 from hypothesis import given
 from hypothesis import strategies as st
 
-import ytq
+from nibbles import ytq
 
 #: The narrowest terminal these screens promise to work on, and a comfortable
 #: desk-sized one. Everything below is measured across the lot.
