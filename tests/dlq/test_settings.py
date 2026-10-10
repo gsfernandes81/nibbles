@@ -424,8 +424,17 @@ def test_every_setting_is_reachable_and_has_a_sentence(dlq):
     what just happened.
     """
     assert set(dlq.sched.SETTING_SAYS) == set(dlq.runner.SETTINGS)
-    assert len(dlq.ui.SETTING_KEYS) == len(dlq.runner.SETTINGS)
-    assert len(set(dlq.ui.SETTING_KEYS)) == len(dlq.ui.SETTING_KEYS)
+    assert set(dlq.runner.SETTINGS) <= set(dlq.qs.SETTING_KEYS)
+    # And every one of them is a row on More in some state of the others:
+    # the waiver's two under zwana, the allowance's two under manual.
+    shown = set()
+    for state in ({"reserve-when-paid": False, "budget": "zwana"},
+                  {"reserve-when-paid": False, "budget": "manual"}):
+        values = {**dlq.runner.settings(), **{k: v for k, v in state.items()
+                                              if k in dlq.runner.SETTINGS}}
+        shown |= set(dlq.qs.shown_settings(values))
+    assert shown == set(dlq.runner.SETTINGS)
+    assert len(set(dlq.qs.SETTING_KEYS.values())) == len(dlq.qs.SETTING_KEYS)
     for name in dlq.runner.SETTINGS:
         said = dlq.sched._setting_said(name, dlq.runner.settings()[name])
         assert said.startswith(f"{name}:") and len(said) > len(name) + 2
@@ -433,14 +442,24 @@ def test_every_setting_is_reachable_and_has_a_sentence(dlq):
 
 def test_the_keys_that_set_are_never_the_keys_that_leave(dlq):
     """``q`` and ``x`` are the way out and the way to stop a download."""
-    taken = {chr(key) for key in (*dlq.ui.SETTING_KEYS, *dlq.ui.PAGE_KEYS)}
-    assert not taken & {"q", "x"}
-    assert len(taken) == len(dlq.ui.SETTING_KEYS) + len(dlq.ui.PAGE_KEYS)
+    setting = set(dlq.qs.SETTING_KEYS.values())
+    assert not setting & {"q", "x"}
+    page = list(dlq.qs.PAGE_KEYS.values())
+    taken = setting | set(page)
+    assert len(taken) == len(dlq.qs.SETTING_KEYS) + len(page)
+    # q is the way out and nothing else; x is never taken.
+    assert [k for k, v in dlq.qs.PAGE_KEYS.items() if v == "q"] == ["quit"]
+    assert "x" not in taken
 
 
 def test_every_destination_kind_is_reachable_and_named(dlq):
-    assert len(dlq.ui.DEST_KEYS) == len(dlq.runner.DEST_KINDS)
+    """Every kind is a row on the destinations sheet, and a tap on it."""
     assert set(dlq.sched.FILLED_BY) == set(dlq.runner.DEST_KINDS)
+    app = dlq.app.App(None, 4, size=(40, 24))
+    app.sheets[:] = [dlq.qs.DestSheet()]
+    app.compose()
+    shown = {hit.data for hit in app.hits.hits if hit.id.startswith("dest:")}
+    assert shown == set(dlq.runner.DEST_KINDS)
 
 
 # --------------------------------------------------------------------------- #

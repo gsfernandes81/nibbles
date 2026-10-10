@@ -38,49 +38,6 @@ def a_result(title=LONG_TITLE, channel="Jon Gjengset", duration=5434,
 # --------------------------------------------------------------------------- #
 
 
-def test_every_hint_set_fits_the_room_it_is_written_for():
-    for keys in ytq.HINTS.values():
-        assert len(keys) <= ytq.HINT_WIDTH
-    for keys in ytq.TIGHT_HINTS.values():
-        assert len(keys) <= ytq.TIGHT_WIDTH
-
-
-def test_the_two_sets_answer_for_the_same_screens():
-    """A screen with no tight set would be a screen clipped at the floor."""
-    assert set(ytq.HINTS) == set(ytq.TIGHT_HINTS)
-
-
-def test_every_screen_still_says_how_to_leave_it():
-    for name in ytq.HINTS:
-        for width in (ytq.TIGHT_WIDTH + 2, ytq.HINT_WIDTH + 2, 100):
-            keys = ytq.hint(name, width)
-            assert "back" in keys or "quit" in keys
-
-
-def test_the_narrow_set_is_the_one_a_phone_gets():
-    assert ytq.hint("results", ytq.TIGHT - 1) == ytq.TIGHT_HINTS["results"]
-    assert ytq.hint("results", ytq.TIGHT) == ytq.HINTS["results"]
-
-
-def test_the_confirmation_chooses_its_list_by_what_fits():
-    """The pair a clipped list loses is the last one, and the last one is the
-    way out — so this is decided by room and not by the layout's threshold."""
-    for width in WIDTHS:
-        for now in (True, False):
-            assert len(ytq.confirm_hints(now, width)) <= width - 2
-
-
-def test_the_spot_is_offered_only_while_this_is_not_a_paid_download():
-    """What starts on enter is the file just written, under the name it was
-    written with; renaming it underneath that is a download of a name nothing
-    has."""
-    for width in WIDTHS:
-        assert " p " not in ytq.confirm_hints(True, width)
-    assert any("p spot" in ytq.confirm_hints(False, width)
-               or "p spot it" in ytq.confirm_hints(False, width)
-               for width in WIDTHS)
-
-
 # --------------------------------------------------------------------------- #
 # The rows
 # --------------------------------------------------------------------------- #
@@ -200,46 +157,6 @@ def test_a_running_download_reports_itself_inside_the_line():
 # --------------------------------------------------------------------------- #
 
 
-@given(
-    cursor=st.integers(min_value=-50, max_value=400),
-    top=st.integers(min_value=-50, max_value=400),
-    listed=st.integers(min_value=1, max_value=40),
-    count=st.integers(min_value=0, max_value=200),
-)
-def test_a_restored_place_is_always_one_the_screen_draws(cursor, top, listed, count):
-    """A place restored from a previous visit arrives with a ``top`` that may
-    be nonsense — the list grew under it, or shrank, or the terminal was
-    resized. Handing back a cursor the screen does not draw is worse than
-    forgetting the place: every key still works and nothing appears to move."""
-    got_cursor, got_top = ytq.viewport(cursor, top, listed, count)
-    assert got_top >= 0
-    if count == 0:
-        assert (got_cursor, got_top) == (0, 0)
-        return
-    assert 0 <= got_cursor <= count - 1
-    # On screen: at or after the top of the window, and inside it.
-    assert got_top <= got_cursor < got_top + listed
-    # And the window itself is held inside the list, so a place restored onto
-    # a list that has shrunk does not leave one row alone on an empty screen.
-    assert got_top <= max(0, count - listed)
-
-
-@given(
-    listed=st.integers(min_value=1, max_value=20),
-    count=st.integers(min_value=1, max_value=60),
-)
-def test_a_place_already_on_screen_is_left_exactly_where_it_was(listed, count):
-    """Otherwise every redraw would scroll the list under the reader."""
-    for top in range(0, max(0, count - listed) + 1):
-        for cursor in range(top, min(top + listed, count)):
-            assert ytq.viewport(cursor, top, listed, count) == (cursor, top)
-
-
-def test_the_place_survives_a_list_that_grew_and_one_that_shrank():
-    assert ytq.viewport(90, 80, 10, 60) == (59, 50)
-    assert ytq.viewport(29, 20, 10, 150) == (29, 20)
-
-
 # --------------------------------------------------------------------------- #
 # The one title that moves
 # --------------------------------------------------------------------------- #
@@ -297,37 +214,6 @@ def test_drawing_and_waking_agree_about_which_titles_move():
 # --------------------------------------------------------------------------- #
 
 
-@given(
-    lines=st.lists(st.text(alphabet=st.characters(min_codepoint=32,
-                                                  max_codepoint=126),
-                           min_size=1, max_size=200),
-                   min_size=1, max_size=8),
-    width=st.integers(min_value=20, max_value=100),
-    rows=st.integers(min_value=1, max_value=30),
-)
-def test_a_notice_never_grows_past_its_own_way_out(lines, width, rows):
-    """``message`` draws the key that leaves under the body; a body allowed to
-    run past the bottom takes that line with it and leaves a full-screen
-    notice with no visible way out."""
-    body = ytq.message_body(lines, width, rows)
-    assert len(body) <= rows
-    assert all(len(row) <= width for row in body)
-
-
-def test_a_notice_says_what_it_had_to_drop():
-    """What goes first is the last line, and on these screens the last line is
-    the fix."""
-    lines = [f"sentence number {index}" for index in range(20)]
-    body = ytq.message_body(lines, 40, 5)
-    assert len(body) == 5
-    assert "more" in body[-1]
-
-
-def test_a_notice_that_fits_is_left_alone():
-    body = ytq.message_body(["one", "two"], 40, 10)
-    assert body == ["one", "", "two"]
-
-
 def test_a_path_is_never_broken_across_two_lines():
     """A path broken at a hyphen is a path retyped wrong, on the screens whose
     whole job is telling somebody what to type."""
@@ -373,44 +259,6 @@ def test_there_is_nothing_to_draw_in_no_room_at_all():
 # --------------------------------------------------------------------------- #
 # The place a spot picked on dlq's listing puts a video
 # --------------------------------------------------------------------------- #
-
-
-def test_a_place_is_said_as_a_position_among_what_is_there():
-    """*queued* is what the position was picked among, so the total is one
-    more than it: this video is not in it yet."""
-    queue = ["10-one.py", "20-two.py", "30-three.py"]
-    assert ytq.spot_said(0, queue, 60).startswith("1st of 4")
-    assert ytq.spot_said(1, queue, 60).startswith("2nd of 4")
-    assert "after one" in ytq.spot_said(1, queue, 60)
-    assert ytq.spot_said(3, queue, 60).startswith("4th of 4")
-
-
-@given(
-    pos=st.integers(min_value=-10, max_value=30),
-    size=st.integers(min_value=0, max_value=12),
-    width=st.integers(min_value=8, max_value=60),
-)
-def test_a_place_always_fits_and_the_neighbour_goes_first(pos, size, width):
-    """A name cut in half is a name read as another item; the position is the
-    fact this row exists to carry, so what is dropped is the whole neighbour."""
-    queue = [f"{index:02d}-item-with-a-long-name.py" for index in range(size)]
-    said = ytq.spot_said(pos, queue, width)
-    assert len(said) <= width
-    if "(after" in said:
-        assert said.endswith(")")
-
-
-def test_a_position_is_said_the_way_a_person_says_it():
-    assert [ytq._ordinal(n) for n in (1, 2, 3, 4)] == ["1st", "2nd", "3rd", "4th"]
-    assert [ytq._ordinal(n) for n in (11, 12, 13)] == ["11th", "12th", "13th"]
-    assert [ytq._ordinal(n) for n in (21, 22, 23)] == ["21st", "22nd", "23rd"]
-
-
-def test_the_confirmation_s_labels_clear_their_own_column():
-    """It was typed as 11, reasoned as "file name is nine columns", and the
-    screen rendered ``file namecrust-of-rust``."""
-    for label in ytq.CONFIRM_LABELS:
-        assert len(label) + 2 < ytq.CONFIRM_GUTTER
 
 
 def test_a_row_uses_every_column_it_has():

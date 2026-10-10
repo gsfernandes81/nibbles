@@ -251,7 +251,8 @@ def test_the_verdict_fits_the_narrowest_screen(queued):
     for how in ("source", "name"):
         for where in ("queued", "done", "failed"):
             said = ytq.Duplicate(day / "10-x.py", where, how).says()
-            assert 0 < len(said) <= ytq.TIGHT_WIDTH
+            # "✓ " and the verdict, inside the narrowest sheet: 32 - 4 - 2.
+            assert 0 < len(said) <= 26
 
 
 def test_the_list_marks_what_the_queue_already_holds(queued):
@@ -277,74 +278,6 @@ def stub_expire_ui(monkeypatch, place):
     module.pick_place = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "expire_ui", module)
     return module
-
-
-def test_the_file_exists_before_dlq_is_asked_to_move_it(queued, monkeypatch):
-    """The video is written last and moved afterwards, by dlq and with dlq's
-    own rule — there is no file to move until write_item has returned."""
-    seen = {}
-
-    def place(name, pos):
-        seen["name"], seen["pos"] = name, pos
-        seen["on disk"] = (ytq.QUEUE / name).is_file()
-        return f"{ytq.item_slug(name)} is 2nd of 4", True
-
-    stub_expire_ui(monkeypatch, place)
-    path = ytq.write_item(40, "crust-of-rust", an_item())
-    said = ytq.take_spot(path.name, 1)
-    assert seen["on disk"] is True
-    # The one spelling of the name: a picker handed a second f-string is a
-    # picker holding a file nobody writes.
-    assert seen["name"] == ytq.item_name(40, "crust-of-rust") == path.name
-    assert seen["pos"] == 1
-    assert "2nd of 4" in said
-
-
-def test_no_spot_picked_is_nothing_to_say(queued, monkeypatch):
-    stub_expire_ui(monkeypatch, lambda name, pos: (_ for _ in ()).throw(
-        AssertionError("dlq was asked to move an item nobody placed")
-    ))
-    assert ytq.take_spot("40-talk.py", None) is None
-
-
-def test_a_busy_queue_is_a_receipt_line_and_never_a_traceback(
-    queued, monkeypatch
-):
-    """A firing or another download holds the queue; the item is queued either
-    way and the listing can still move it tomorrow."""
-    stub_expire_ui(monkeypatch, lambda name, pos: ("the queue is busy", False))
-    said = ytq.take_spot("40-talk.py", 2)
-    assert "busy" in said and "last" in said
-
-    def explode(name, pos):
-        raise RuntimeError("the checkout is not there")
-
-    stub_expire_ui(monkeypatch, explode)
-    said = ytq.take_spot("40-talk.py", 2)
-    assert "40-talk.py" in said
-
-
-def test_the_picker_leaves_the_place_alone_when_it_cannot_be_opened(
-    monkeypatch,
-):
-    module = types.ModuleType("expire_ui")
-
-    def explode(*args, **kwargs):
-        raise RuntimeError("no terminal")
-
-    module.pick_place = explode
-    monkeypatch.setitem(sys.modules, "expire_ui", module)
-    spot, why = ytq.pick_spot(None, "40-talk.py", 1, 3)
-    assert spot == 3 and why
-
-
-def test_leaving_the_listing_is_not_taking_the_last_place_in_it(monkeypatch):
-    module = types.ModuleType("expire_ui")
-    module.pick_place = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "expire_ui", module)
-    assert ytq.pick_spot(None, "40-talk.py", 1, 2) == (2, "")
-    module.pick_place = lambda *args, **kwargs: 5
-    assert ytq.pick_spot(None, "40-talk.py", 1, 2) == (5, "")
 
 
 # --------------------------------------------------------------------------- #
@@ -430,46 +363,6 @@ def test_the_probe_and_the_written_item_agree_about_the_video(queued):
 
 
 # --------------------------------------------------------------------------- #
-# A flick scrolls; only a keypress spends
-# --------------------------------------------------------------------------- #
-
-
-def test_a_wheel_event_is_a_signed_step_and_nothing_else():
-    """The screens ask for wheels only: a tap must never press a key on a
-    screen where some keys spend data."""
-    assert ytq.wheel_step(ytq.WHEEL_UP) == -1
-    assert ytq.wheel_step(ytq.WHEEL_DOWN) == 1
-    assert ytq.wheel_step(0) == 0
-    # Any other button — a tap, a drag start — moves nothing.
-    assert ytq.wheel_step(ytq.curses.BUTTON1_PRESSED) == 0
-
-
-def test_a_mouse_report_that_is_not_a_wheel_moves_nothing(monkeypatch):
-    monkeypatch.setattr(ytq.curses, "getmouse",
-                        lambda: (0, 0, 0, 0, ytq.WHEEL_DOWN))
-    assert ytq.read_wheel() == 1
-
-    def no_event():
-        raise ytq.curses.error("no mouse event")
-
-    monkeypatch.setattr(ytq.curses, "getmouse", no_event)
-    assert ytq.read_wheel() == 0
-
-
-def test_asking_for_wheels_asks_for_nothing_else(monkeypatch):
-    asked = []
-    monkeypatch.setattr(ytq.curses, "mousemask", lambda mask: asked.append(mask))
-    ytq.enable_touch_scroll()
-    assert asked == [ytq.WHEEL_UP | ytq.WHEEL_DOWN]
-    # A terminal with no mouse support at all is not a crash.
-    monkeypatch.setattr(
-        ytq.curses, "mousemask",
-        lambda mask: (_ for _ in ()).throw(ytq.curses.error("no mouse")),
-    )
-    ytq.enable_touch_scroll()
-
-
-# --------------------------------------------------------------------------- #
 # The answers that are for a person
 # --------------------------------------------------------------------------- #
 
@@ -480,7 +373,8 @@ def test_the_clipboard_says_what_happened_either_way(monkeypatch):
     monkeypatch.setattr(ytq.shutil, "which", lambda name: None)
     absent = ytq.to_clipboard("https://youtu.be/x")
     assert "termux-api" in absent
-    assert len(absent) <= ytq.HINT_WIDTH
+    # Said on the line above the tabs, which is the whole width at the floor.
+    assert len(absent) <= 32
 
     monkeypatch.setattr(ytq.shutil, "which", lambda name: "/usr/bin/clip")
     monkeypatch.setattr(

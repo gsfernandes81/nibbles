@@ -1959,7 +1959,7 @@ def show_path(row: dict) -> int:
 def _open(target: Path, quiet: bool = False) -> int:
     """Hand the file to Android, or to a desktop if this is not the phone.
 
-    *quiet* is for ``dlq ui``, which calls this from inside curses: an opener
+    *quiet* is for ``dlq ui``, which calls this from inside the app: an opener
     writing to the terminal there draws over a screen it does not own, and
     nothing redraws it away. The caller reports the exit code instead.
     """
@@ -2628,7 +2628,7 @@ def default_action(interactive: bool | None = None) -> str:
     Off a terminal it is ``status`` instead, which is what a bare ``dlq``
     always did. That is not a nicety: ``dlq | less``, an ssh command with no
     tty, a line in a script — all of those used to print the status screen, and
-    curses in any of them is a usage error where there used to be an answer.
+    a full-screen app in any of them is a usage error where there used to be an answer.
     The default may never be an action that *does* something either; a test
     must pin that, because the failure would be a bare command that arms the
     job or spends data.
@@ -2727,7 +2727,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {problem}", file=sys.stderr)
             return 1
         # Imported here and not at the top: this is the only action that needs
-        # curses, and `dlq names` runs on every press of the tab key.
+        # the app, and `dlq names` runs on every press of the tab key.
         import expire_ui
 
         return expire_ui.run()

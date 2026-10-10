@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+import nibbles
 import ytq
 from conftest import search_info, video_info
 
@@ -128,11 +129,11 @@ def test_the_flag_and_the_typed_word_are_the_same_road(monkeypatch, capsys):
     takes, handed to the app down that one road rather than as a second way in."""
     seen = {}
 
-    def wrapper(app, first, preloaded, now, dest):
+    def run(start, first, preloaded, now, dest):
         seen["first"] = first
         return []
 
-    monkeypatch.setattr(ytq.curses, "wrapper", wrapper)
+    monkeypatch.setattr(nibbles, "run", run)
     monkeypatch.setattr(ytq.sys.stdout, "isatty", lambda: True, raising=False)
     assert ytq.main(["--subs"]) == 0
     assert ytq.which_feed(seen["first"]) is ytq.SUBS
@@ -141,7 +142,7 @@ def test_the_flag_and_the_typed_word_are_the_same_road(monkeypatch, capsys):
 
 
 def test_a_session_that_queued_nothing_says_so(monkeypatch, capsys):
-    monkeypatch.setattr(ytq.curses, "wrapper", lambda *args: [])
+    monkeypatch.setattr(nibbles, "run", lambda *args: [])
     monkeypatch.setattr(ytq.sys.stdout, "isatty", lambda: True, raising=False)
     assert ytq.main([]) == 0
     assert "nothing queued" in capsys.readouterr().out
@@ -150,8 +151,7 @@ def test_a_session_that_queued_nothing_says_so(monkeypatch, capsys):
 def test_the_receipts_are_printed_after_the_screen_is_gone(monkeypatch, capsys):
     """A list, because a session can queue several items rather than ending
     at the first one."""
-    monkeypatch.setattr(ytq.curses, "wrapper", lambda *args: ["queued one",
-                                                             "queued two"])
+    monkeypatch.setattr(nibbles, "run", lambda *args: ["queued one", "queued two"])
     monkeypatch.setattr(ytq.sys.stdout, "isatty", lambda: True, raising=False)
     assert ytq.main([]) == 0
     assert capsys.readouterr().out.splitlines() == ["queued one", "queued two"]
@@ -160,8 +160,8 @@ def test_the_receipts_are_printed_after_the_screen_is_gone(monkeypatch, capsys):
 def test_a_dest_given_once_is_a_directory_and_not_a_kind(monkeypatch):
     seen = {}
 
-    monkeypatch.setattr(ytq.curses, "wrapper",
-                        lambda app, first, preloaded, now, dest:
+    monkeypatch.setattr(nibbles, "run",
+                        lambda start, first, preloaded, now, dest:
                         seen.update(dest=dest, now=now) or [])
     monkeypatch.setattr(ytq.sys.stdout, "isatty", lambda: True, raising=False)
     ytq.main(["--now", "--dest", "~/movies", "https://youtu.be/x"])

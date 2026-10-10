@@ -197,169 +197,122 @@ def test_every_verdict_has_words_on_both_screens(dlq, verdict):
     """A verdict the gate grew and a table did not would draw a blank where the
     answer goes."""
     assert verdict in dlq.sched.VERDICTS
-    assert verdict in dlq.ui.TONIGHT_SHORT
+    assert verdict in dlq.ui.VERDICT_WORDS
+    assert verdict in dlq.qs.STATUS
     assert dlq.sched.VERDICTS[verdict][0].strip()
-    assert dlq.ui.TONIGHT_SHORT[verdict].strip()
+    assert dlq.ui.VERDICT_WORDS[verdict].strip()
+    # The status bar's label is a word, never only a colour.
+    assert dlq.qs.STATUS[verdict][0].strip()
+    assert "tonight" not in dlq.ui.VERDICT_WORDS[verdict]
     # Short enough for the narrowest phone unwrapped: this line is the answer.
     assert len(dlq.sched.VERDICTS[verdict][0]) <= 32
     assert set(dlq.sched.VERDICTS) - {"downloading"} == set(dlq.runner.GATE_STATES)
 
 
 # --------------------------------------------------------------------------- #
-# The screen with a cursor on it
+# The app's Queue and More tabs
 # --------------------------------------------------------------------------- #
 
 
+def app_at(dlq, width, height=24, tab=3, facts=None):
+    """The real app, headless, on *tab*, with *facts* as its reading."""
+    app = dlq.app.App(None, tab, size=(width, height))
+    app.queue.facts = facts
+    return app
+
+
+def lines_of(block):
+    return block.plain().split("\n")
+
+
 @pytest.mark.parametrize("width", WIDTHS)
-def test_the_listing_with_a_cursor_fits_a_curses_window(dlq, width):
-    """One column in hand at the right: curses treats a write into the last
-    cell of a line as an error, so the whole screen is laid out one narrower."""
+def test_the_queue_rows_are_exactly_the_screen_wide(dlq, width):
+    """Every row is drawn the width it is given, whatever it holds."""
     rows = stocked(dlq)
     facts = facts_for(dlq)
-    order = [row["name"] for row in rows if row["where"] == "queued"]
-    planned = dlq.ui.tonight_plan(order, facts)
-    cut = dlq.ui.cut_index(order, facts, width, planned)
-    entries = dlq.ui.compose_rows(rows, width, "", cut, planned)
-    for _, lines in entries:
-        for line in lines:
-            assert len(line) <= width - 1, line
+    for entry in dlq.qs.queue_entries(rows, facts, "03:00"):
+        for selected in (False, True):
+            block = entry.draw(width, selected)
+            assert block.width == width
+            assert block.height == entry.height
 
 
 @pytest.mark.parametrize("width", WIDTHS)
-def test_the_two_header_lines_fit(dlq, width):
+def test_the_window_card_fits(dlq, width):
+    """The card's lines (the verdict, the bar, the figures) fit at every
+    width, before a reading, on an ordinary night and on a blind one."""
     stocked(dlq)
     for facts in (None, facts_for(dlq), facts_for(dlq, blind=True)):
-        lines = dlq.ui.tonight_lines(facts, width)
-        assert len(lines) == 2
-        for line in lines:
-            assert len(line) <= width - 2, line
+        app = app_at(dlq, width, facts=facts)
+        tab = app.tabs[3]
+        for piece in (tab.card(app, width, True), tab.strip(app, width, True),
+                      tab.card(app, width, False)):
+            assert piece.width == width
 
 
 @pytest.mark.parametrize("width", WIDTHS)
 def test_a_download_in_flight_outranks_every_verdict(dlq, width):
     """What is being spent now is the answer to "what is happening"; the
-    window it is being spent inside is not."""
+    window it is being spent inside is not. The status bar says it."""
     stocked(dlq)
-    live = dlq.ui.tonight_lines(facts_for(dlq), width, live="20-small.py")
-    assert "small" in live[0]
-    assert len(live[0]) <= width - 2
+    for verdict in dlq.runner.GATE_STATES:
+        app = app_at(dlq, width, facts=dict(facts_for(dlq), verdict=verdict))
+        app.queue.live = "20-small.py"
+        label, _, detail, _ = app.queue.status(width)
+        assert label.startswith("↓"), verdict
+        assert "small" in detail
 
 
 @pytest.mark.parametrize("width", WIDTHS)
-def test_one_item_and_its_facts_fit(dlq, width):
+def test_one_item_and_its_actions_fit(dlq, width):
+    """Every action ``actions_for`` offers is a button on the item's sheet,
+    at every width and both heights: the grid never drops one."""
     rows = stocked(dlq)
-    for row in rows:
-        for downloading in (False, True):
-            lines = dlq.ui.item_lines(row, width, (1, 3), downloading, None)
-            assert lines
-            for line in lines:
-                assert len(line) <= max(12, width - 4), line
+    for height in (24, 14, 11):
+        app = app_at(dlq, width, height, facts=facts_for(dlq))
+        for row in rows:
+            app.sheets[:] = [dlq.qs.ItemSheet(row)]
+            app.compose()
+            offered = {key for key, _ in dlq.ui.actions_for(row)}
+            shown = {hit.data for hit in app.hits.hits if hit.id.startswith("act:")}
+            assert shown == offered, (row["name"], height)
 
 
 @pytest.mark.parametrize("width", WIDTHS)
-def test_the_settings_page_fits_and_keeps_every_row(dlq, width):
-    job = [("nightly job", "armed, fires every 15m", "32")]
-    for height in range(12, 30):
-        body = dlq.ui.settings_body(width, height, job, "something happened just now")
-        heads = [text for _, text, tone in body if tone == "head"]
-        assert len(heads) == len(dlq.runner.settings_shown()) + len(dlq.ui.PAGE_KEYS)
-        for indent, text, _ in body:
-            assert indent + len(text) <= width - 1, text
+def test_every_setting_has_a_row_at_every_height(dlq, width):
+    """A row nobody knows is there is a setting nobody knows is there. The
+    More tab scrolls rather than giving any row up; ``paid-min`` is there only
+    while the waiver is on, which is the one row that comes and goes."""
+    for waived in (False, True):
+        dlq.config({"reserve_when_paid": not waived})
+        for height in range(11, 31):
+            app = app_at(dlq, width, height, tab=4)
+            app.compose()
+            names = [entry.key[1] for entry in app.tabs[4].view.entries
+                     if entry.key[0] == "setting"]
+            values = dlq.runner.settings()
+            assert names == dlq.qs.shown_settings(values), height
+            assert ("paid-min" in names) == waived
+            hidden = set(dlq.runner.SETTINGS) - set(names)
+            # Only the rows that come and go are ever missing.
+            assert hidden <= {"paid-min", "allowance", "reset"}, hidden
 
 
 @pytest.mark.parametrize("width", WIDTHS)
-def test_the_settings_page_gives_things_up_in_one_order(dlq, width):
-    """Blank lines first, then the grey meanings, and the said area last.
-
-    Never a setting's name, its value, or a red line naming a stored figure
-    that is being ignored: a row nobody knows is there is a setting nobody
-    knows is there, and the last of the six sits under the switch that stops
-    the queue downloading at all. The said area goes *after* the meanings
-    rather than before them because it is the reason the page stayed — giving
-    it up first would leave the phone that most needs the sentence the one
-    screen that never shows it.
-
-    Asserted over the whole sweep rather than at one height: what is pinned is
-    that no height exists where a later thing has gone while an earlier one is
-    still there.
-    """
-    job = [("nightly job", "armed, fires every 15m", "32")]
-    said = "auto: off - the nightly job fires and does nothing; run-now still works"
-    heads = None
-    for height in range(34, 11, -1):
-        body = dlq.ui.settings_body(width, height, job, said)
-        blanks = sum(1 for _, text, _ in body if not text)
-        grey = sum(1 for _, _, tone in body if tone == "90")
-        told = sum(1 for _, _, tone in body if tone == dlq.ui.SAID_TONE)
-        rows = [text for _, text, tone in body if tone == "head"]
-
-        if heads is None:
-            heads = rows
-            assert told, "the sentence has to be there to be given up"
-        # Every row survives every height. This is the one that must not vary.
-        assert rows == heads, height
-        # And the order of what does not: nothing later goes while something
-        # earlier is still on the page.
-        assert not (grey == 0 and blanks), height
-        assert not (told == 0 and grey), height
-        # It is cut *to the screen*: either it fits, or there is nothing left
-        # that may be given up. A page cut to a screen taller than the one in
-        # somebody's hand still scrolls a setting off the bottom of it.
-        floor = len(
-            [
-                line
-                for line in dlq.ui.settings_lines(width, job)
-                if line[1] and line[2] != "90"
-            ]
-        )
-        assert len(body) <= max(dlq.ui.settings_room(height), floor), height
-
-
-@pytest.mark.parametrize("source", ["zwana", "manual"])
-@pytest.mark.parametrize("width", WIDTHS)
-def test_the_settings_page_fits_a_phone_with_its_keyboard_up(dlq, width, source):
-    """At 14 rows, every row the page shows is on the screen, under either source.
-
-    The page shows only the settings that do something under the budget
-    source, and with the keyboard up it gives up the blank under its title:
-    that is what keeps the nightly job's row on a phone that is being typed on.
-    """
-    dlq.config({"budget": source})
-    job = [("nightly job", "armed, fires every 15m", "32")]
-    for height in range(14, 30):
-        body = dlq.ui.settings_body(width, height, job, "something happened just now")
-        heads = [text for _, text, tone in body if tone == "head"]
-        assert len(heads) == len(dlq.runner.settings_shown()) + len(dlq.ui.PAGE_KEYS)
-        assert len(body) <= dlq.ui.settings_room(height), (height, len(body))
-    # And the keys the hint names are the keys of the rows that are drawn.
-    letters = dlq.ui.setting_letters().split()
-    heads = [text.split()[0] for _, text, tone in dlq.ui.settings_lines(width, job) if tone == "head"]
-    assert letters == heads
-
-
-@pytest.mark.parametrize("width", WIDTHS)
-def test_the_key_hints_fit_and_always_say_the_way_out(dlq, width):
-    """The hints are the line that must never be the one clipped.
-
-    And every screen but the two confirms names the way off it: a confirm is
-    answered by *any* key, which its own hint says instead.
-    """
-    for name in dlq.ui.HINTS:
-        said = dlq.ui.hint(name, width)
-        assert said.strip()
-        assert len(said) <= width - 2, (name, said)
-        if not name.startswith("confirm"):
-            assert "q" in said or "esc" in said, (name, said)
-    assert set(dlq.ui.TIGHT_HINTS) == set(dlq.ui.HINTS)
-
-
-@pytest.mark.parametrize("width", WIDTHS)
-def test_the_legend_names_the_keys_the_listing_answers_to(dlq, width):
-    """One spelling at every width — at 28 characters it already fits the
-    narrowest phone, so there is nothing for a tight version to give up."""
-    assert len(dlq.ui.LEGEND_KEYS) <= 32 - 2
-    for letter in ("n", "s", "l"):
-        assert f"{letter} " in dlq.ui.LEGEND_KEYS
+def test_every_sheet_keeps_its_way_out(dlq, width):
+    """Every sheet has ``esc ×`` on its title row, and its pinned answers
+    stay on the screen however short it gets."""
+    rows = stocked(dlq)
+    for height in (24, 14, 11):
+        app = app_at(dlq, width, height, facts=facts_for(dlq))
+        for sheet in (dlq.qs.ItemSheet(rows[0]), dlq.qs.DestSheet(),
+                      dlq.qs.SettingSheet("window"),
+                      dlq.qs.remove_sheet(app, rows[0], dlq.qs.ItemSheet(rows[0]))):
+            app.sheets[:] = [sheet]
+            app.compose()
+            assert app.hits.find("close") is not None, (type(sheet), height)
+            for hit in app.hits.hits:
+                assert hit.y + hit.h <= height
 
 
 # --------------------------------------------------------------------------- #
@@ -381,9 +334,6 @@ def test_nothing_is_laid_out_wider_than_the_terminal_at_any_width(dlq, width):
         assert fits(line, width)
     for line in plain(dlq.sched.compose_status(facts, width, paint)):
         assert fits(line, width)
-    for _, lines in dlq.ui.compose_rows(rows, width):
-        for line in lines:
-            assert len(line) <= max(1, width - 1)
 
 
 @given(
@@ -401,26 +351,36 @@ def test_wrapping_always_gives_back_at_least_one_line(dlq, text, width):
         assert len(line) <= max(8, width) or " " not in line.strip()
 
 
-def test_a_bar_is_drawn_in_characters_a_phone_cannot_widen(dlq):
-    """``=`` against ``·``, never block glyphs: they are East-Asian *ambiguous*
-    width, and a terminal that renders them double leaves the bar a column
-    wider than it was measured at."""
+def test_a_bar_is_drawn_in_characters_a_phone_draws_one_column_wide(dlq):
+    """bewitch's ``█`` against ``░``: both one column on the phone (checked
+    2026-10-10, design §10), and the bar is exactly the width it is given."""
+    import widgets
+    from bewitch.lipgloss._cells import char_width
+
     for width in range(12, 60):
-        bar = dlq.ui.progress_bar(3, 4, width)
-        assert len(bar) <= width
-        assert set(bar) <= set("[]=· 0123456789%")
-    # No total means no fraction to draw: a full-looking bar over an unknown
-    # size is the one reading worse than none.
-    assert dlq.ui.progress_bar(3, 0, 40) == ""
-    assert dlq.ui.progress_bar(3, 4, 11) == ""
-    assert dlq.ui.progress_bar(4, 4, 40).endswith("100%")
-    assert dlq.ui.progress_bar(0, 4, 40).endswith("0%")
+        for fraction in (0, 0.18, 0.5, 1):
+            for bar in (widgets.bar(fraction, width), widgets.progress_bar(fraction, width)):
+                assert bar.width == width
+                assert all(char_width(ch) == 1 for ch in bar.plain() if ch.strip())
+
+
+def test_a_download_with_no_stated_total_never_draws_a_full_bar(dlq):
+    """No total means no fraction: a full-looking bar over an unknown size is
+    the one reading worse than none."""
+    dlq.item("10-x.py", cap=100 * MiB)
+    app = app_at(dlq, 40)
+    app.queue.live = "10-x.py"
+    app.sheets[:] = [dlq.qs.DownloadSheet("10-x.py")]
+    drawn = app.compose().plain()
+    assert "█" not in drawn
 
 
 def test_a_size_nobody_has_stated_is_marked_as_the_bound_it_is(dlq):
     """Until a server states one the only figure is the declared cap, which is
     deliberately larger than the file: printed as a size it makes a finished
-    download look 70% done."""
+    download look 70% done. The same on the Queue tab's rows."""
+    assert "≤" in dlq.qs.amount({"have": 1, "stated": 0, "cap": 100})
+    assert "≤" not in dlq.qs.amount({"have": 1, "stated": 100, "cap": 200})
     assert "≤" in dlq.sched._of(1, 0, 100)
     assert "≤" not in dlq.sched._of(1, 100, 200)
     assert dlq.sched._of(1, 100, 200, compact=True).count("/") == 1

@@ -19,22 +19,13 @@ this suite's and not the person's running it.
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
 import json
 import os
-import pty
-import select
 import shutil
-import signal
-import struct
 import sys
 import tempfile
-import termios
 import time
 from pathlib import Path
-
-import pyte
 
 import pytest
 from hypothesis import HealthCheck, Phase
@@ -66,7 +57,8 @@ REPO = Path(__file__).resolve().parents[2]
 
 #: The modules a queue root holds, all of them this checkout's.
 _MODULES = ("expire_dl.py", "expire_runner.py", "expire_sched.py", "expire_ui.py",
-            "dlq.py", "ytdl_item.py", "ytq.py")
+            "dlq.py", "ytdl_item.py", "ytq.py", "nibbles.py", "queue_screens.py",
+            "shell.py", "tui.py", "widgets.py", "yt_screens.py")
 
 
 def _zwana_checkout(dlq: Path) -> Path | None:
@@ -100,6 +92,11 @@ for name in _MODULES:
     shutil.copy2(REPO / name, QUEUE_ROOT / name)
 
 os.environ["EXPIRE_HOME"] = str(QUEUE_ROOT)
+# bewitch draws the screens; the copy under a temporary root has no sibling
+# beside it, so it is named outright, found the way tui finds it.
+os.environ["BEWITCH_HOME"] = str(
+    Path(os.environ.get("BEWITCH_HOME") or REPO.parent / "bewitch").expanduser().resolve()
+)
 if _ZWANA is not None:
     os.environ["ZWANA_HOME"] = str(_ZWANA)
 os.environ["HOME"] = str(HOME)
@@ -255,125 +252,25 @@ def queued(clean_queue):
 
 
 # --------------------------------------------------------------------------- #
-# Driving the curses screens
+# Driving the app on a pty
 # --------------------------------------------------------------------------- #
 
+sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
 
-class Tui:
-    """ytq under a pty, with pyte reading what it drew.
-
-    Assertions are made on *structure* — which screen is up, that a row for a
-    given video exists, that the key letters are on the hint line — because
-    every word on these screens is meant to be rewritten without breaking a
-    test that was checking something else.
-    """
-
-    def __init__(self, argv: list[str], cols: int, rows: int, extra_env: dict):
-        self.screen = pyte.Screen(cols, rows)
-        self.stream = pyte.ByteStream(self.screen)
-        self.raw = bytearray()
-        env = dict(os.environ)
-        env.update({"TERM": "xterm", "LINES": str(rows), "COLUMNS": str(cols)})
-        env.update(extra_env)
-        master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-        self.pid = os.fork()
-        if self.pid == 0:  # pragma: no cover - the child execs immediately
-            os.setsid()
-            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-            for target in (0, 1, 2):
-                os.dup2(slave, target)
-            os.close(master)
-            if slave > 2:
-                os.close(slave)
-            os.execve(sys.executable, [sys.executable, str(QUEUE_ROOT / "ytq.py"), *argv],
-                      env)
-        os.close(slave)
-        self.fd = master
-
-    def pump(self, seconds: float = 0.2) -> int:
-        """Read whatever the app has drawn. Returns how many bytes arrived."""
-        got = 0
-        end = time.monotonic() + seconds
-        while True:
-            left = end - time.monotonic()
-            if left <= 0:
-                return got
-            ready, _, _ = select.select([self.fd], [], [], left)
-            if not ready:
-                continue
-            try:
-                chunk = os.read(self.fd, 65536)
-            except OSError:
-                return got
-            if not chunk:
-                return got
-            got += len(chunk)
-            self.raw += chunk
-            self.stream.feed(chunk)
-
-    def wait_for(self, wants, seconds: float = 8.0) -> str:
-        """Pump until *wants* is happy with the screen, then return the screen."""
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            self.pump(0.2)
-            if wants(self.text):
-                return self.text
-        raise AssertionError(
-            f"the screen never satisfied {getattr(wants, 'name', wants)}:\n{self.text}"
-        )
-
-    def send(self, keys: str) -> None:
-        os.write(self.fd, keys.encode())
-        time.sleep(0.15)
-
-    @property
-    def hints(self) -> str:
-        """The key hints, which every screen draws on its second-to-last row."""
-        return self.screen.display[-2]
-
-    @property
-    def text(self) -> str:
-        return "\n".join(line.rstrip() for line in self.screen.display)
-
-    def row_with(self, needle: str) -> str:
-        for line in self.screen.display:
-            if needle in line:
-                return line.strip()
-        raise AssertionError(f"no row holding {needle!r}:\n{self.text}")
-
-    def wait_exit(self, seconds: float = 8.0) -> int:
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            self.pump(0.2)
-            pid, status = os.waitpid(self.pid, os.WNOHANG)
-            if pid:
-                self.pid = 0
-                return os.waitstatus_to_exitcode(status)
-        raise AssertionError(f"ytq did not exit:\n{self.text}")
-
-    def close(self) -> None:
-        if self.pid:
-            with contextlib.suppress(OSError):
-                os.kill(self.pid, signal.SIGKILL)
-                os.waitpid(self.pid, 0)
-        with contextlib.suppress(OSError):
-            os.close(self.fd)
-
-
-#: The arrow keys as ytq's screens receive them: keypad mode is on, so a
-#: terminal sends SS3 and not CSI.
-UP, DOWN = "\x1bOA", "\x1bOB"
-ESC, ENTER = "\x1b", "\r"
+from termux_pty import Termux  # noqa: E402
 
 
 @pytest.fixture
 def tui():
-    """Start ytq on a pty of a stated size and drive it."""
-    started: list[Tui] = []
+    """Start ``ytq`` (the app, opened on Search) on a pty of a stated size,
+    answering blessed's startup queries the way Termux does."""
+    started: list[Termux] = []
 
-    def start(*argv: str, cols: int = 40, rows: int = 24, **env: str) -> Tui:
-        session = Tui(list(argv), cols, rows, env)
+    def start(*argv: str, cols: int = 40, rows: int = 24, **extra: str) -> Termux:
+        env = dict(os.environ)
+        env.update({"TERM": "xterm-256color", "LINES": str(rows), "COLUMNS": str(cols)})
+        env.update(extra)
+        session = Termux([sys.executable, str(QUEUE_ROOT / "ytq.py"), *argv], cols, rows, env)
         started.append(session)
         return session
 

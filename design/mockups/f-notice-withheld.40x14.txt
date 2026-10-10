@@ -1,0 +1,14 @@
+ nibbles ╱╱╱╱╱╱╱╱╱╱╱╱ crust of rust • 7 
+╭──────────────────────────────────────╮
+│ Only 360p ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
+│ youtube sent one format, not all of ┃│
+│ them                                ┃│
+│ yt-dlp unknown — usually just stale.┃│
+│ upgrade:                            ┃│
+│ yt-dlp is not on PATH               ┃│
+│ then the cookies: there is no yt-dlp││
+│ config at ~/.config/yt-dlp/config   ││
+│ and yt-dlp -v must show a JS runtime││
+│ ╭──────────────────────────────────╮ │
+│ │              esc OK              │ │
+│ ╰──────────────────────────────────╯ │

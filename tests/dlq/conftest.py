@@ -38,8 +38,10 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The Termux stand-in the pty tests share with the ytq suite.
+sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
 
-from _pty import MODULES, ZWANA, make_root  # noqa: E402
+from _pty import BEWITCH, MODULES, ZWANA, make_root  # noqa: E402
 
 from hypothesis import HealthCheck, settings  # noqa: E402
 
@@ -80,6 +82,12 @@ SWAPPED = (
     "expire_ui",
     "ytdl_item",
     "ytq",
+    "tui",
+    "widgets",
+    "shell",
+    "nibbles",
+    "yt_screens",
+    "queue_screens",
     "quota_widget",
     "zwana_quota",
 )
@@ -91,7 +99,8 @@ class Checkout(SimpleNamespace):
     """A temporary queue root, its modules, and the things a test writes into it.
 
     The attributes are the modules as the root sees them — ``runner``,
-    ``sched``, ``ui``, ``dl``, ``queuer`` (``dlq.py``), ``ytq`` and ``qw`` — so
+    ``sched``, ``ui``, ``dl``, ``queuer`` (``dlq.py``), ``ytq``, ``qw``, and
+    the app's ``app`` (``nibbles.py``) and ``qs`` (``queue_screens.py``) — so
     a test asserts against the same objects the screen under it is running.
     """
 
@@ -222,10 +231,14 @@ def _rooted(root: Path):
         import expire_runner
         import expire_sched
         import expire_ui
+        import nibbles
+        import queue_screens
         import quota_widget
         import ytq
 
         yield SimpleNamespace(
+            app=nibbles,
+            qs=queue_screens,
             runner=expire_runner,
             sched=expire_sched,
             ui=expire_ui,
@@ -251,6 +264,7 @@ def _environment(root: Path, home: Path) -> dict[str, str]:
     return {
         "EXPIRE_HOME": str(root),
         "ZWANA_HOME": str(ZWANA),
+        "BEWITCH_HOME": str(BEWITCH),
         "HOME": str(home),
         "COLUMNS": "80",
     }

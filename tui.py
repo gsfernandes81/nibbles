@@ -1,0 +1,473 @@
+"""The terminal: one blessed session, read as events, drawn through bewitch.
+
+nibbles is buttons first and keys second, on a phone, in Termux. Everything
+the screens need from the terminal comes through here and nowhere else:
+
+- **one** :class:`Session` — one blessed ``Terminal``, fullscreen, cbreak, the
+  cursor hidden, clicks and the wheel reported in SGR. The Queue and More tabs
+  draw into it too: nothing opens a second ``Terminal``.
+- :meth:`Session.read` turns what arrives into one of five events —
+  :class:`Key`, :class:`Tap`, :class:`Scroll`, :class:`Resize`, :class:`Done` —
+  and drops everything else: a release, a motion report, a byte of an escape
+  sequence nobody asked for. A mouse report never arrives as a key.
+- :class:`Job` is a fetch in a thread, holding its yt-dlp so Stop can kill it.
+  When one finishes, the loop wakes with a :class:`Done`.
+- :meth:`Session.show` hands a whole screen to :class:`bewitch.screen.Frame`,
+  which writes only the lines that changed, and **nothing at all for an
+  unchanged screen**.
+
+What Termux sends (its ``TerminalView``, read in its source): a tap is a press
+and a release together, sent when the finger lifts and only if it did not
+move; a drag is wheel events, one per row, each stamped with the cell where
+the drag *began*; a fling is more of them; a long press is Termux's own text
+selection and never reaches us. So a drag can never press anything, and
+:class:`Scroll` carries the drag's starting cell, which is what makes a
+scrollbar draggable.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import select
+import signal
+import subprocess
+import sys
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# bewitch is a sibling checkout, found the way every sibling here is found.
+_HERE = Path(__file__).resolve().parent
+
+
+def _bewitch_root() -> Path:
+    override = os.environ.get("BEWITCH_HOME")
+    if override:
+        return Path(override).expanduser()
+    for candidate in (_HERE.parent / "bewitch", Path.home() / "bewitch"):
+        if (candidate / "bewitch").is_dir():
+            return candidate
+    return _HERE.parent / "bewitch"
+
+
+if str(_bewitch_root()) not in sys.path:
+    sys.path.insert(0, str(_bewitch_root()))
+
+from bewitch.colorprofile import detect  # noqa: E402
+from bewitch.lipgloss import Block  # noqa: E402
+from bewitch.screen import Frame  # noqa: E402
+
+# --------------------------------------------------------------------------- #
+# Events
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class Key:
+    """A key: a printable character as itself, anything else by a short name
+    (``enter``, ``esc``, ``up``, ``down``, ``left``, ``right``, ``pgup``,
+    ``pgdn``, ``home``, ``end``, ``backspace``, ``tab``, ``ctrl-u``…)."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class Tap:
+    """A finger lifted without moving, at column *x*, row *y* (0-based)."""
+
+    x: int
+    y: int
+
+
+@dataclass(frozen=True)
+class Scroll:
+    """One row of a drag or a fling: *dy* is +1 to move the view down the
+    list, -1 to move it up; *x*, *y* are where the gesture **began**."""
+
+    dy: int
+    x: int
+    y: int
+
+
+@dataclass(frozen=True)
+class Resize:
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
+class Done:
+    job: Job
+
+
+Event = Key | Tap | Scroll | Resize | Done
+
+#: blessed's names for the keys the screens use, in the short spelling.
+_NAMES = {
+    "KEY_ENTER": "enter",
+    "KEY_ESCAPE": "esc",
+    "KEY_UP": "up",
+    "KEY_DOWN": "down",
+    "KEY_LEFT": "left",
+    "KEY_RIGHT": "right",
+    "KEY_PGUP": "pgup",
+    "KEY_PGDOWN": "pgdn",
+    "KEY_HOME": "home",
+    "KEY_END": "end",
+    "KEY_BACKSPACE": "backspace",
+    "KEY_DELETE": "delete",
+    "KEY_TAB": "tab",
+    "KEY_BTAB": "btab",
+}
+
+#: Control characters a field needs, by their byte.
+_CONTROLS = {
+    "\r": "enter",
+    "\n": "enter",
+    "\t": "tab",
+    "\x7f": "backspace",
+    "\x08": "backspace",
+    "\x15": "ctrl-u",
+    "\x17": "ctrl-w",
+    "\x1b": "esc",
+}
+
+
+def event_of(ks) -> Event | None:
+    """One blessed keystroke as an event, or ``None`` for one nobody wants.
+
+    Pure on the keystroke, so it is tested without a terminal. A mouse report
+    becomes a Tap or a Scroll or nothing; it is never handed on as a key,
+    whatever blessed calls it.
+    """
+    if not ks:
+        return None
+    name = ks.name or ""
+    if name.startswith("MOUSE_"):
+        x, y = ks.mouse_xy
+        if name == "MOUSE_LEFT":
+            return Tap(x, y)
+        if name == "MOUSE_SCROLL_UP":
+            return Scroll(-1, x, y)
+        if name == "MOUSE_SCROLL_DOWN":
+            return Scroll(1, x, y)
+        # A release (Termux sends one with every tap), a motion report, another
+        # button: nothing a screen acts on.
+        return None
+    if name in _NAMES:
+        return Key(_NAMES[name])
+    text = str(ks)
+    if text in _CONTROLS:
+        return Key(_CONTROLS[text])
+    if ks.is_sequence or not text or not text.isprintable() or len(text) != 1:
+        # An escape sequence blessed could not name: dropped whole rather than
+        # let a byte of it through as a letter that presses something.
+        return None
+    return Key(text)
+
+
+# --------------------------------------------------------------------------- #
+# Fetches
+# --------------------------------------------------------------------------- #
+
+#: The job the current thread is running, if it is one, so the code that
+#: spawns a child (``ytq.ask``) can hand it over to be killed.
+_local = threading.local()
+
+
+def current_job() -> Job | None:
+    return getattr(_local, "job", None)
+
+
+class Cancelled(RuntimeError):
+    """The job was stopped before it answered."""
+
+
+@dataclass(eq=False)
+class Job:
+    """A fetch in a thread. ``result`` or ``error`` once it is done.
+
+    *what* names it for the spinner (``asking YouTube for formats``); *key*
+    says what it is a fetch *of*, so a screen can tell its own answer from
+    another's. The thread never touches a screen: it fills ``result`` and
+    wakes the loop, and the loop is the only thing that reads it.
+    """
+
+    work: Callable[[], object]
+    what: str
+    key: object = None
+    result: object = None
+    error: BaseException | None = None
+    cancelled: bool = False
+    finished: bool = False
+    started: float = field(default_factory=time.monotonic)
+    _child: subprocess.Popen | None = None
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def run(self, wake: Callable[[], None]) -> None:
+        def body() -> None:
+            _local.job = self
+            try:
+                self.result = self.work()
+            except BaseException as exc:  # noqa: BLE001 - handed to the screen
+                self.error = exc
+            finally:
+                _local.job = None
+                self.finished = True
+                wake()
+
+        threading.Thread(target=body, daemon=True).start()
+
+    def adopt(self, child: subprocess.Popen) -> None:
+        """Called from the job's thread with the child it just spawned."""
+        with self._lock:
+            self._child = child
+            if self.cancelled:
+                self._kill()
+
+    def cancel(self) -> None:
+        """Stop it: kill whatever it spawned. Its answer, if any, is dropped."""
+        with self._lock:
+            self.cancelled = True
+            self._kill()
+
+    def _kill(self) -> None:
+        child = self._child
+        if child is not None and child.poll() is None:
+            with contextlib.suppress(OSError):
+                os.killpg(os.getpgid(child.pid), signal.SIGTERM)
+
+
+def run_child(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
+    """``subprocess.run`` for a job's thread: the child in a session of its
+    own, handed to the job so Stop can kill it. Raises what ``run`` raises."""
+    job = current_job()
+    child = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        start_new_session=True,
+    )
+    if job is not None:
+        job.adopt(child)
+    try:
+        out, err = child.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(os.getpgid(child.pid), signal.SIGTERM)
+        child.communicate()
+        raise
+    if job is not None and job.cancelled:
+        raise Cancelled("stopped")
+    return subprocess.CompletedProcess(argv, child.returncode, out, err)
+
+
+# --------------------------------------------------------------------------- #
+# The session
+# --------------------------------------------------------------------------- #
+
+
+#: How long a lone ESC waits for the rest of a sequence. Termux writes a
+#: whole sequence at once, so a short wait loses nothing and keeps ``esc``
+#: (close the sheet) from feeling slow.
+ESC_DELAY = 0.05
+
+
+class Session:
+    """The terminal, owned: entered with ``with``, restored on the way out,
+    on Ctrl-Z and on any exception."""
+
+    def __init__(self) -> None:
+        import blessed
+
+        self.term = blessed.Terminal()
+        self.frame = Frame(self._write, profile=detect(), flush=self._flush)
+        self._wake_r, self._wake_w = os.pipe()
+        os.set_blocking(self._wake_r, False)
+        os.set_blocking(self._wake_w, False)
+        self._resized = False
+        self._suspend = False
+        self._stack: contextlib.ExitStack | None = None
+        self._old: dict[int, object] = {}
+        self.size = (self.term.width, self.term.height)
+
+    # Writing ------------------------------------------------------------- #
+
+    def _write(self, text: str) -> None:
+        self.term.stream.write(text)
+
+    def _flush(self) -> None:
+        self.term.stream.flush()
+
+    def show(self, block: Block) -> int:
+        """Bring the terminal to *block*; the characters written."""
+        return self.frame.show(block)
+
+    # Entering and leaving ------------------------------------------------ #
+
+    def _enter(self) -> None:
+        stack = contextlib.ExitStack()
+        try:
+            stack.enter_context(self.term.fullscreen())
+            stack.enter_context(self.term.cbreak())
+            stack.enter_context(self.term.hidden_cursor())
+            # Clicks only: Termux sends a drag as wheel events whatever the
+            # mode, and motion reports would be bytes nobody reads.
+            stack.enter_context(self.term.mouse_enabled(clicks=True))
+        except BaseException:
+            stack.close()
+            raise
+        self._stack = stack
+        self._flush()
+        self.frame.invalidate()
+
+    def _leave(self) -> None:
+        if self._stack is not None:
+            stack, self._stack = self._stack, None
+            stack.close()
+            self._flush()
+
+    def __enter__(self) -> Session:
+        self._enter()
+        for sig, handler in (
+            (signal.SIGWINCH, self._on_winch),
+            (signal.SIGTSTP, self._on_tstp),
+            (signal.SIGCONT, self._on_cont),
+        ):
+            self._old[sig] = signal.signal(sig, handler)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        for sig, handler in self._old.items():
+            signal.signal(sig, handler)
+        self._leave()
+        for fd in (self._wake_r, self._wake_w):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+    # Signals: each only notes what happened and wakes the loop, which acts on
+    # it at a safe point. Nothing here touches the terminal.
+
+    def wake(self) -> None:
+        with contextlib.suppress(OSError):
+            os.write(self._wake_w, b".")
+
+    def _on_winch(self, *_: object) -> None:
+        self._resized = True
+        self.wake()
+
+    def _on_tstp(self, *_: object) -> None:
+        self._suspend = True
+        self.wake()
+
+    def _on_cont(self, *_: object) -> None:
+        self._resized = True
+        self.wake()
+
+    def _do_suspend(self) -> None:
+        self._suspend = False
+        self._leave()
+        old = signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+        try:
+            os.kill(os.getpid(), signal.SIGTSTP)
+        finally:
+            signal.signal(signal.SIGTSTP, old)
+        self._enter()
+        self._resized = True
+
+    # Reading ------------------------------------------------------------- #
+
+    def start(self, job: Job) -> Job:
+        job.run(self.wake)
+        return job
+
+    def read(self, timeout: float | None, jobs: list[Job] = ()) -> Event | None:
+        """The next event, or ``None`` when *timeout* runs out first.
+
+        ``None`` for *timeout* blocks until something happens: a key, a tap,
+        a resize, a job finishing. That is what keeps an idle screen silent.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        # nomut: start — checked on a pty, where a terminal answers it.
+        while True:
+            for job in jobs:
+                if job.finished:
+                    return Done(job)
+            if self._suspend:
+                self._do_suspend()
+            if self._resized:
+                self._resized = False
+                self.size = (self.term.width, self.term.height)
+                self.frame.invalidate()
+                return Resize(*self.size)
+            ks = self.term.inkey(timeout=0, esc_delay=ESC_DELAY)
+            if ks:
+                event = event_of(ks)
+                if event is not None:
+                    return event
+                continue
+            left = None if deadline is None else max(0.0, deadline - time.monotonic())
+            if left == 0.0:
+                return None
+            fds = [self._wake_r]
+            if self.term._keyboard_fd is not None:
+                fds.append(self.term._keyboard_fd)
+            try:
+                ready, _, _ = select.select(fds, [], [], left)
+            except InterruptedError:
+                continue
+            if self._wake_r in ready:
+                with contextlib.suppress(OSError):
+                    while os.read(self._wake_r, 64):
+                        pass
+            if len(ready) == 1 and ready[0] == self._wake_r:
+                continue
+            if not ready and deadline is not None and time.monotonic() >= deadline:
+                return None
+            if self.term._keyboard_fd in ready:
+                # Bytes are waiting: let blessed resolve a whole sequence,
+                # with Termux's short escape delay.
+                ks = self.term.inkey(timeout=ESC_DELAY, esc_delay=ESC_DELAY)
+                event = event_of(ks)
+                if event is not None:
+                    return event
+        # nomut: end
+
+
+# --------------------------------------------------------------------------- #
+# Taps: the guards and the pressed flash
+# --------------------------------------------------------------------------- #
+
+#: A tap this soon after a screen or sheet appears is the tail of the tap
+#: that opened it, and is ignored wherever it lands.
+GUARD_ALL = 0.100
+#: Android's double-tap window: inside it, only a tap on the same cell as the
+#: one that opened the screen is dropped. A tap anywhere else acts at once.
+GUARD_SAME_CELL = 0.300
+#: How long a pressed button stays filled.
+PRESSED = 0.120
+
+
+class Guard:
+    """Decides whether a tap is a new tap or the echo of the last one."""
+
+    def __init__(self) -> None:
+        self.opened = -10.0
+        self.cell: tuple[int, int] | None = None
+
+    def opened_by(self, tap: Tap | None, at: float | None = None) -> None:
+        """A screen or sheet just appeared, opened by *tap* (or by a key)."""
+        self.opened = time.monotonic() if at is None else at
+        self.cell = (tap.x, tap.y) if tap else None
+
+    def allows(self, tap: Tap, at: float | None = None) -> bool:
+        now = time.monotonic() if at is None else at
+        since = now - self.opened
+        if since < GUARD_ALL:
+            return False
+        return not (since < GUARD_SAME_CELL and self.cell == (tap.x, tap.y))

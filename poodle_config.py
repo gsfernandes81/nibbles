@@ -52,11 +52,18 @@ only_files = [
     "expire_runner.py",
     "expire_sched.py",
     "expire_ui.py",
+    "nibbles.py",
+    "queue_screens.py",
+    "shell.py",
+    "tui.py",
+    "widgets.py",
     "ytdl_item.py",
+    "yt_screens.py",
     "ytq.py",
 ]
 
-file_filters = ["test_*.py", "*_test.py", "conftest.py", "poodle_config.py", "_pty.py"]
+file_filters = ["test_*.py", "*_test.py", "conftest.py", "poodle_config.py", "_pty.py",
+                "termux_pty.py"]
 
 file_copy_filters = [
     "__pycache__/**",
@@ -110,5 +117,6 @@ runner_opts = {
     ),
     "command_line_env": {
         "ZWANA_HOME": str(HERE.parent / "zwana-quota"),
+        "BEWITCH_HOME": str(HERE.parent / "bewitch"),
     },
 }

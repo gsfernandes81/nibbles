@@ -38,11 +38,11 @@ Usage::
     ytq                      # search, or paste a URL into the same field
     ytq crust of rust        # straight to the results
     ytq subs                 # straight to the subscription feed
-    ytq <url>                # straight to the format list
+    ytq <url>                # straight to the video sheet
     ytq --list <url>         # print the formats, write nothing
     ytq --list --subs        # print the feed, write nothing
     ytq wl                   # straight to your Watch Later playlist
-    ytq --now <url>          # open the format list ready to download now
+    ytq --now <url>          # open the video sheet ready to download now
 
 The item it writes runs yt-dlp per firing (see :mod:`ytdl_item`); it never
 resolves a media URL up front, because those are signed and expire in hours,
@@ -56,14 +56,17 @@ restarting, the nightly window finishes anything that stops early, and
 though, which the nightly window is not.
 
 That run is handed to a detached process rather than held in the foreground, so
-choosing it does not end the session: the screen goes back to the results with
-the download reporting its progress along the bottom.
+choosing it does not end the session: the sheet closes, and the status bar
+along the foot says how far the download has got.
+
+This module is the YouTube half's logic and its printing paths. The screens are
+nibbles' (``nibbles.py``, ``yt_screens.py``): ``ytq`` opens the app on its
+Search tab, ``ytq subs`` on Feed and ``ytq wl`` on Later.
 """
 
 from __future__ import annotations
 
 import argparse
-import curses
 import fcntl
 import json
 import math
@@ -151,145 +154,12 @@ MAX_PRIORITY = 99
 #: about whether it is wide.
 WIDE = 72
 
-#: The key hints along the bottom of each screen, and the room they get. They
-#: are drawn at x=1 and clipped at ``width - 1``, so a 40-column phone shows 38
-#: columns of them — and a hint that does not fit is not a cosmetic problem,
-#: it is the line saying how to get out of the screen, with the way out cut off.
-HINT_WIDTH = 38
-HINTS = {
-    "entry": "⏎ go   esc quit",
-    "results": "↑↓ pick  ⏎ quality  / new  q back",
-    # Replaces the results hints while a download this session started is still
-    # going: the key that stops it is worth more room than the key that starts
-    # another search, and both do not fit.
-    "running": "x stop  ↑↓ pick  ⏎ quality  q back",
-    # The feed's own pair. What changes is the middle key: a search is re-run
-    # by retyping it, so `/` earns its place there; the feed has nothing to
-    # retype and what it needs instead is a way to read it again.
-    # ↑↓ is dropped from these two and nowhere else: it is the most guessable
-    # key on a list and `↓ more` is the one whose absence costs somebody the
-    # videos they came here for.
-    "subs": "⏎ quality  ↓ more  r fresh  q back",
-    "subs-running": "x stop  ⏎ quality  ↓ more  q back",
-    # And the same two with the deeper look spent. A key drawn in the hints
-    # that does nothing when pressed is the shape somebody presses three times
-    # before deciding the tool is broken — and this one used to look like the
-    # way to the older videos it can no longer reach.
-    "subs-end": "⏎ quality  r fresh  q back",
-    "subs-end-running": "x stop  ⏎ quality  q back",
-    "pick": "↑↓ pick  ⏎ queue  n now  q back  ~ est",
-    "pick-now": "↑↓ pick  ⏎ now PAID  t queue  q back",
-    # `p spot` is the fifth pair on the confirmation, and the reason the word
-    # is `spot` and not `place`: `place` is one column longer, and one column
-    # is what stood between this line and 38. The screen it opens is dlq's, so
-    # this is the only place ytq gives it a name.
-    "queue": "⏎ queue  e edit  p spot  n now  q back",
-    "now": "⏎ start PAID  e edit  t queue  q back",
-    "watch": "x stop  o open when done  q back",
-    "watch-over": "q back",
-}
 
 #: And below 40 there are only 30 of them, so a second and shorter set rather
 #: than a clipped first one — the same reason the listing has three shapes and
 #: not one scaled table. What each of these drops is chosen on the rule above:
 #: the word that must never be the one clipped off the end is the way out.
 TIGHT = 40
-TIGHT_WIDTH = 30
-TIGHT_HINTS = {
-    "entry": "⏎ go  esc quit",
-    "results": "↑↓  ⏎ formats  / new  q back",
-    "running": "x stop  ↑↓  ⏎ formats  q back",
-    "subs": "⏎ pick  ↓ more  r new  q back",
-    "subs-running": "x stop  ⏎ pick  ↓ more  q back",
-    "subs-end": "⏎ pick  r new  q back",
-    "subs-end-running": "x stop  ⏎ pick  q back",
-    "pick": "↑↓  ⏎ queue  n now  q back",
-    "pick-now": "↑↓  ⏎ now PAID  q back",
-    # `e edit` is what the spot costs at the floor — the same key the tight
-    # `now` set below already gives up. The number half of it is what `p spot`
-    # replaces; the name half is on every wider screen and in the docs. Nothing
-    # else here fits a fifth pair into 30 columns.
-    "queue": "⏎ queue  p spot  n now  q back",
-    "now": "⏎ start PAID  t queue  q back",
-    "watch": "x stop  o open at end  q back",
-    "watch-over": "q back",
-}
-
-
-def hint(name: str, width: int) -> str:
-    """The key hints for a screen, at whatever width there is for them."""
-    return (TIGHT_HINTS if width < TIGHT else HINTS)[name]
-
-
-def confirm_hints(now: bool, width: int) -> str:
-    """The confirmation's action list, at whatever width there is for it.
-
-    The one screen with a third and fuller list: it is the last one before
-    something is written, and the only one where naming every key in words is
-    worth a whole line. Which of the three is drawn is decided by **what
-    fits**, and not by the layout's own :data:`WIDE` threshold, because the
-    pair a clipped list loses is the last one and the last one is ``q back`` —
-    the way out. The full list at 72 columns was already losing a letter of it.
-    """
-    full = (
-        "tab switch field   e edit   enter start it now   "
-        "t queue for tonight   q back"
-        if now
-        # The room for `p spot it` came out of `n download it now`, and of
-        # those words the one that had to survive is the one saying what it
-        # costs. A spot is not offered at all while this says NOW: what starts
-        # on enter is the file that was just written, under the name it was
-        # written with, and renaming it underneath that is a download of a name
-        # nothing has.
-        else "tab switch field   e edit   p spot it   enter write it   "
-        "n now PAID   q back"
-    )
-    # Drawn at x=1 and clipped at the last cell, so the room is two columns
-    # less than the terminal — the same two the sets above are measured to.
-    return full if len(full) <= width - 2 else hint("now" if now else "queue", width)
-
-
-#: Wheel events, which is what Termux turns a touch drag into once a
-#: full-screen app switches mouse reporting on. BUTTON5 (wheel down) only
-#: exists on ncurses built with mouse version 2 — Termux's is — so it is
-#: looked up rather than imported, and a build without it simply reports no
-#: wheel-down, which degrades to the arrow keys still working.
-WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0)
-WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0)
-
-
-def enable_touch_scroll() -> None:
-    """Ask for wheel events and nothing else.
-
-    Wheels only, on purpose: a tap must never press a key — a flick is
-    momentum, not a decision, and on this app some keys spend data. The
-    mask keeps taps unreported, so a stray touch is a no-op rather than an
-    enter. Harmless where there is no mouse support at all.
-    """
-    with contextlib.suppress(curses.error):
-        curses.mousemask(WHEEL_UP | WHEEL_DOWN)
-
-
-def wheel_step(bstate: int) -> int:
-    """A mouse bstate as a signed cursor step: up is -1, down is +1."""
-    if WHEEL_UP and bstate & WHEEL_UP:
-        return -1
-    if WHEEL_DOWN and bstate & WHEEL_DOWN:
-        return 1
-    return 0
-
-
-def read_wheel() -> int:
-    """The step of the wheel event KEY_MOUSE announced, or 0.
-
-    The screens call this and :func:`wheel_step` carries the logic, so the
-    mapping is checkable without a terminal to click in.
-    """
-    try:
-        bstate = curses.getmouse()[4]
-    except curses.error:
-        return 0
-    return wheel_step(bstate)
 
 
 #: How many results one search asks for. One request either way — paging costs
@@ -378,8 +248,16 @@ def ask(argv: list[str], timeout: int) -> dict:
     them fails in exactly the same four ways. Written out three times it was
     three places for "yt-dlp is not installed" to drift apart in.
     """
+    # Inside one of the screen's fetches, the child goes to the fetch so Stop
+    # can kill it; anywhere else (the printing paths, the tests) it is the
+    # plain run it always was. Looked up rather than imported: nothing that
+    # prints a listing needs the terminal module loaded.
+    tui = sys.modules.get("tui")
     try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        if tui is not None and tui.current_job() is not None:
+            done = tui.run_child(argv, timeout)
+        else:
+            done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
         raise ProbeError("yt-dlp is not installed (pip install yt-dlp)")
     except subprocess.TimeoutExpired:
@@ -1645,7 +1523,7 @@ class Duplicate(RuntimeError):
             got = f"{same} done {when}" if same else f"downloaded {when}"
             return got.strip() or "already downloaded"
         if self.where == "failed":
-            return f"{same} tried and failed".strip() if same else "tried, and failed"
+            return f"{same} failed before".strip() if same else "tried, and failed"
         return f"{same} already queued".strip()
 
 
@@ -2003,7 +1881,7 @@ def open_file(path: Path) -> str:
     """Hand *path* to Android (or a desktop) to open, and say how it went.
 
     Never raises and never writes to the terminal: it runs off a thread while
-    curses owns the screen, after a download that has already succeeded.
+    the app owns the terminal, after a download that has already succeeded.
     """
     for opener in ("termux-open", "xdg-open"):
         if shutil.which(opener) is None:
@@ -2102,25 +1980,19 @@ class Running:
             return
         # Stopped is not done, and resuming later is a different run.
         self.stopped = True
+        # SIGINT, the ctrl-c this replaces: `dlq now` keeps the item in its own
+        # process group, so the interrupt reaches yt-dlp, which closes its part
+        # file and stops the way a deadline stops it. Every byte is kept.
         with contextlib.suppress(OSError):
-            os.killpg(os.getpgid(self.child.pid), signal.SIGTERM)
+            os.killpg(os.getpgid(self.child.pid), signal.SIGINT)
 
     def line(self, width: int) -> str:
         return progress_line(self.name, now_progress(self.name), width)
 
 
 # --------------------------------------------------------------------------- #
-# Curses
+# Rows and words, for the printing paths and the screens
 # --------------------------------------------------------------------------- #
-
-
-def _addstr(win, y: int, x: int, text: str, attr: int = 0) -> None:
-    """Write clipped to the window; curses errors on the last cell."""
-    height, width = win.getmaxyx()
-    if not 0 <= y < height or x >= width:
-        return
-    with contextlib.suppress(curses.error):
-        win.addnstr(y, x, text, max(0, width - x - 1), attr)
 
 
 def fit(text: str, width: int) -> str:
@@ -2222,29 +2094,6 @@ def scrolls(result: Result, width: int) -> bool:
     return len(result.title) > title_room(result, width)
 
 
-def viewport(cursor: int, top: int, listed: int, count: int) -> tuple[int, int]:
-    """Clamp *cursor* into the list and slide *top* until the cursor is on screen.
-
-    Extracted from the two listing screens that had it written out identically,
-    and then given a second job: a position **restored** from a previous visit
-    arrives with a ``top`` that may be nonsense — the list has grown under it,
-    or shrunk, or it was saved at a different terminal size. This is what makes
-    that safe. Handing back a cursor the screen does not draw would be worse
-    than forgetting the position, because every key would still work and
-    nothing would appear to move.
-
-    The window is held inside the list as well as around the cursor — the
-    ``count - listed`` term — which the two screens did not need while the
-    only thing moving ``top`` was the cursor one row at a time. A place
-    restored onto a list that has since shrunk reaches it immediately: without
-    it, a saved cursor of 90 landing in a list of 60 puts the last row alone
-    at the top of an otherwise empty screen.
-    """
-    cursor = max(0, min(cursor, count - 1))
-    top = max(min(top, cursor, max(0, count - listed)), cursor - listed + 1, 0)
-    return cursor, top
-
-
 def nights(size: int) -> int:
     """How many nightly windows a download this big needs, at the least.
 
@@ -2274,36 +2123,6 @@ def nights_note(size: int) -> str:
     return f" ({count} nights)" if count > 1 else ""
 
 
-def ink(win) -> dict[str, int]:
-    """``name -> curses attribute``, with no colour at all if there is none.
-
-    Termux sets ``TERM=xterm-256color``, but this also runs over ssh and in
-    whatever a scheduled shell inherits, so every step is allowed to fail and
-    leave the attribute at 0 — which is exactly "draw it plain".
-    """
-    wanted = {
-        "fits": curses.COLOR_GREEN,
-        "night": curses.COLOR_YELLOW,
-        "nights": curses.COLOR_RED,
-        "head": curses.COLOR_CYAN,
-    }
-    got = dict.fromkeys(wanted, 0)
-    try:
-        if not curses.has_colors():
-            return got
-        curses.start_color()
-        curses.use_default_colors()
-    except curses.error:
-        return got
-    for index, (name, colour) in enumerate(wanted.items(), start=1):
-        try:
-            curses.init_pair(index, colour, -1)
-        except curses.error:
-            continue
-        got[name] = curses.color_pair(index)
-    return got
-
-
 def to_clipboard(text: str) -> str:
     """Put *text* on the Android clipboard. The answer is for a person.
 
@@ -2314,9 +2133,10 @@ def to_clipboard(text: str) -> str:
     """
     tool = shutil.which("termux-clipboard-set")
     if not tool:
-        # Fits a 38-column flash whole: the fix IS the message, and a command
-        # clipped at the edge of a phone is a command retyped wrong.
-        return "no clipboard - pkg install termux-api"
+        # Fits the line above the tabs whole at 32 columns: the fix IS the
+        # message, and a command clipped at the edge of a phone is a command
+        # retyped wrong.
+        return "pkg install termux-api to copy"
     try:
         done = subprocess.run(
             [tool], input=text, text=True, capture_output=True, timeout=10
@@ -2482,569 +2302,192 @@ def remember_format(choice: Choice) -> None:
         pass
 
 
-def text_input(win, y: int, x: int, initial: str = "", width: int = 60) -> str | None:
-    """A one-line editor. ``None`` if the user backed out with Esc."""
-    buffer = list(initial)
-    curses.curs_set(1)
-    try:
-        # nomut: start — a mutant inside a curses event loop does not fail a
-        # test, it hangs a terminal until the runner's timeout kills it. What
-        # these loops do is checked under a pty instead (tests/test_screens.py).
-        while True:
-            shown = "".join(buffer)[-width:]
-            _addstr(win, y, x, shown + " " * (width - len(shown)), curses.A_UNDERLINE)
-            win.move(y, min(x + len(shown), win.getmaxyx()[1] - 1))
-            win.refresh()
-            key = win.getch()
-            if key in (curses.KEY_ENTER, 10, 13):
-                return "".join(buffer).strip()
-            if key == 27:
-                return None
-            if key in (curses.KEY_BACKSPACE, 127, 8):
-                if buffer:
-                    buffer.pop()
-            elif key == 21:  # ctrl-U
-                buffer.clear()
-            elif 32 <= key < 127:
-                buffer.append(chr(key))
-        # nomut: end
-    finally:
-        curses.curs_set(0)
+#: The characters Android's shared storage refuses in a file name.
+REFUSED = re.compile(r'\s*[/\\:*?"<>|]+\s*')
+
+#: A name is capped well under the 255 bytes a file name may be, leaving
+#: room for the ``NN-`` prefix, ``.py`` and a container suffix.
+NAME_BYTES = 120
 
 
-def spinner_while(win, message: str, work) -> tuple[object, Exception | None]:
-    """Run *work* in a thread, saying so in a box over the screen that asked.
+def title_name(title: str) -> str:
+    """A video's download name: its title, cleaned only of what Android's
+    shared storage refuses (``/ \\ : * ? " < > |``) and capped well under 255
+    bytes. ``Crust of Rust: Subtyping and Variance`` becomes ``Crust of Rust -
+    Subtyping and Variance``: the same name in the queue (behind ``NN-``) and
+    in Downloads. One name everywhere (design §6)."""
+    name = REFUSED.sub(" - ", title or "")
+    name = re.sub(r"\s+", " ", "".join(ch for ch in name if ch.isprintable()))
+    name = name.strip(" -.")
+    while len(name.encode("utf-8")) > NAME_BYTES:
+        name = name[:-1]
+    name = name.rstrip(" -.")
+    return name or "video"
 
-    A modal rather than a page of its own (2026-08-28): every fetch this
-    waits on was started FROM somewhere — the results being deepened, the
-    search just typed — and blanking that context made a two-second wait read
-    as a navigation. Nothing here erases, so the last frame the caller drew
-    stays behind the box, and whatever comes back redraws over the lot.
-    Esc still abandons the wait, exactly as it did on the full page.
+
+def codec_families(choice: Choice) -> list[str]:
+    """``["avc1", "mp4a"]``: the codec families in a choice, in its order.
+
+    The family is the part before the first dot, with yt-dlp's two spellings
+    of VP9 made one. It is what the skip-codecs setting names.
     """
-    result: list = [None, None]
-
-    def target():
-        try:
-            result[0] = work()
-        except Exception as exc:  # noqa: BLE001 - reported to the user
-            result[1] = exc
-
-    thread = threading.Thread(target=target, daemon=True)
-    thread.start()
-    win.nodelay(True)
-    frames = "|/-\\"
-    tick = 0
-    try:
-        # nomut: start — a mutant inside a curses event loop does not fail a
-        # test, it hangs a terminal until the runner's timeout kills it. What
-        # these loops do is checked under a pty instead (tests/test_screens.py).
-        while thread.is_alive():
-            height, width = win.getmaxyx()
-            note = (
-                "metadata only, no media"
-                if width < WIDE
-                else "metadata only, no media is downloaded"
-            )
-            body = [f"{frames[tick % 4]} {message}", note]
-            # An ASCII box, sized to its longest line and clamped to the
-            # terminal; the frame is what says "this is on top of that".
-            inner = min(max(len(row) for row in body) + 2, max(10, width - 4))
-            left = max(0, (width - inner - 2) // 2)
-            row0 = max(0, height // 2 - 2)
-            _addstr(win, row0, left, "+" + "-" * inner + "+")
-            for offset, row in enumerate(body, start=1):
-                _addstr(
-                    win,
-                    row0 + offset,
-                    left,
-                    "|" + f" {fit(row, inner - 2)}".ljust(inner) + "|",
-                    curses.A_BOLD if offset == 1 else 0,
-                )
-            _addstr(win, row0 + len(body) + 1, left, "+" + "-" * inner + "+")
-            win.refresh()
-            tick += 1
-            time.sleep(0.12)
-            if win.getch() == 27:
-                break
-        # nomut: end
-    finally:
-        win.nodelay(False)
-    thread.join(timeout=1)
-    return result[0], result[1]
+    out = []
+    for part in re.split(r"\s*\+\s*", choice.codecs or ""):
+        family = part.split(".")[0].strip().lower()
+        family = {"vp09": "vp9", "vp8.0": "vp8"}.get(family, family)
+        if family and family not in ("none", "?") and family not in out:
+            out.append(family)
+    return out
 
 
-def pick(
-    win,
-    info: dict,
-    options: list[Choice],
-    unsized: int,
-    paint: dict | None = None,
-    start: int = 0,
-    recalled: bool = False,
-    now_default: bool = False,
-) -> tuple[Choice, bool] | None:
-    """The format list.
+def height_of(choice: Choice) -> int | None:
+    """A video choice's height (``480``), or ``None`` for audio."""
+    return None if choice.kind == "audio" else _height_of(choice.label)
 
-    Returns the chosen download and whether it was chosen to run *now*, or
-    ``None`` to go back. ``⏎`` takes *now_default* (which ``--now`` sets), and
-    ``n``/``t`` say so explicitly from either mode — so the answer to "is this
-    going to cost me" is never more than one key away from the size it costs.
+
+def bitrate_of(choice: Choice) -> int | None:
+    """An audio choice's bitrate in kb/s (``129``), or ``None``."""
+    found = re.match(r"audio (\d+)k", choice.label)
+    return int(found.group(1)) if choice.kind == "audio" and found else None
+
+
+def tier_of(choice: Choice) -> tuple[str, int]:
+    """``("video", 480)`` or ``("audio", 129)``: the button a choice is under."""
+    if choice.kind == "audio":
+        return ("audio", bitrate_of(choice) or 0)
+    return ("video", height_of(choice) or 0)
+
+
+def in_tier(options: list[Choice], tier: tuple[str, int]) -> list[Choice]:
+    return [o for o in options if tier_of(o) == tier]
+
+
+def pick_in_tier(
+    options: list[Choice], tier: tuple[str, int], rule: str, skip: list[str]
+) -> tuple[Choice | None, list[str]]:
+    """The choice Smallest or Largest makes inside a tier, and the codec
+    families it passed over to make it.
+
+    A choice whose codecs the skip list names is passed over when anything
+    else in the tier is left; the families passed over are only those of
+    choices that would have won otherwise, which is what ``skipped vp9`` on
+    the sheet reports. With nothing else left, the skipped ones are offered
+    after all: a tier is never emptied by a preference.
     """
-    title = info.get("title") or "(untitled)"
-    duration = info.get("duration")
-    paint = paint if paint is not None else dict.fromkeys(("fits", "head"), 0)
-    top = 0
-    cursor = max(0, min(start, len(options) - 1))
-    flash: str | None = None
-
-    # nomut: start — a mutant inside a curses event loop does not fail a
-    # test, it hangs a terminal until the runner's timeout kills it. What
-    # these loops do is checked under a pty instead (tests/test_screens.py).
-    while True:
-        win.erase()
-        height, width = win.getmaxyx()
-        narrow = width < WIDE
-        _addstr(
-            win,
-            0,
-            0,
-            f" {title} ".ljust(width - 1)[: width - 1],
-            curses.A_REVERSE | curses.A_BOLD | paint.get("head", 0),
-        )
-        length = f"{int(duration) // 60}m{int(duration) % 60:02d}s" if duration else "?"
-        meta = f"{length}  ·  {len(options)} format{'' if len(options) == 1 else 's'}"
-        if not narrow:
-            meta = f"{info.get('extractor_key', '?')}  ·  {meta}"
-        if unsized:
-            meta += (
-                f"  ·  {unsized} unsized"
-                if narrow
-                else (f"  ·  {unsized} without a size, hidden")
-            )
-        # Only where there is room for it. On a phone the cursor sitting part
-        # way down the list already says it opened somewhere chosen, and saying
-        # so twice is what makes a 40-column screen feel busy.
-        if recalled and not narrow:
-            meta += "  ·  last used"
-        _addstr(win, 1, 1, fit(meta, width - 2), curses.A_DIM)
-        # Its own line and not another `·` clause on the meta, because it is
-        # not a detail about this list — it is the reason the list is wrong.
-        # Bold and cost-red where there is colour, and saying it in words
-        # where there is not, on the rule the size column already follows.
-        if withheld(info):
-            _addstr(
-                win,
-                2,
-                1,
-                fit(withheld_note(width), width - 2),
-                curses.A_BOLD | paint.get("nights", 0),
-            )
-
-        listed = max(1, height - 6)
-        cursor, top = viewport(cursor, top, listed, len(options))
-
-        for row in range(listed):
-            index = top + row
-            if index >= len(options):
-                break
-            option = options[index]
-            chosen = index == cursor
-            line = format_row(option, width)
-            # The size is coloured by what it will cost, so the shape of the
-            # list answers "which of these can this connection actually have"
-            # before any of them is read. Reversed on the cursor line, where a
-            # colour on a reversed cell is unreadable on some terminals.
-            attr = curses.A_REVERSE if chosen else paint.get(cost_band(option.size), 0)
-            _addstr(win, 3 + row, 0, line.ljust(width - 1), attr)
-
-        # The row under the cursor says its codecs in full, on the spare line
-        # above the hints. The list columns carry only the family (avc1, vp9)
-        # because a column has a width budget — but which av01 profile a
-        # stream is decides whether the player on the other end can play it,
-        # and yt-dlp already said exactly. One row at a time on purpose: all
-        # of them at once is a wall nothing can be read off. A flash — the
-        # clipboard's answer to `c` — borrows the line for one keypress.
-        if flash:
-            _addstr(win, height - 3, 1, fit(flash, width - 2), curses.A_BOLD)
-        elif options:
-            _addstr(
-                win,
-                height - 3,
-                1,
-                fit(options[cursor].codecs, width - 2),
-                curses.A_DIM,
-            )
-
-        if narrow:
-            keys = hint("pick-now" if now_default else "pick", width)
-        elif now_default:
-            keys = (
-                "↑↓ choose   enter download it now   "
-                "t queue for tonight instead   q back"
-            )
-        else:
-            keys = (
-                "↑↓ choose   enter queue it   n download it now   "
-                "c copy url   q back   ~ = estimate"
-            )
-        _addstr(win, height - 2, 1, keys, curses.A_DIM)
-        win.refresh()
-
-        key = win.getch()
-        flash = None
-        if key in (ord("q"), 27):
-            return None
-        if key == ord("c"):
-            # The page URL, not a stream URL: streams are signed and expire in
-            # hours, and what somebody pastes elsewhere is the video.
-            flash = to_clipboard(
-                str(
-                    info.get("webpage_url")
-                    or info.get("original_url")
-                    or info.get("url")
-                    or ""
-                )
-            )
-        if key in (curses.KEY_UP, ord("k")):
-            cursor -= 1
-        elif key in (curses.KEY_DOWN, ord("j")):
-            cursor += 1
-        elif key == curses.KEY_MOUSE:
-            cursor += read_wheel()
-        elif key == curses.KEY_NPAGE:
-            cursor += listed
-        elif key == curses.KEY_PPAGE:
-            cursor -= listed
-        elif key == curses.KEY_HOME:
-            cursor = 0
-        elif key == curses.KEY_END:
-            cursor = len(options) - 1
-        elif key == ord("n"):
-            return options[cursor], True
-        elif key == ord("t"):
-            return options[cursor], False
-        elif key in (curses.KEY_ENTER, 10, 13):
-            return options[cursor], now_default
-    # nomut: end
+    tier_options = in_tier(options, tier)
+    if not tier_options:
+        return None, []
+    order = sorted(tier_options, key=lambda o: o.size, reverse=rule == "largest")
+    kept = [o for o in order if not set(codec_families(o)) & set(skip)]
+    if not kept:
+        return order[0], []
+    chosen = kept[0]
+    passed: list[str] = []
+    for o in order:
+        if o is chosen:
+            break
+        for family in codec_families(o):
+            if family in skip and family not in passed:
+                passed.append(family)
+    return chosen, passed
 
 
-def _ordinal(number: int) -> str:
-    """``1st``, ``2nd``, ``3rd`` — a position said the way a person says it.
-
-    Spelled here as well as on dlq's own listing, and deliberately: this row is
-    redrawn on every keystroke, and a confirmation that could not draw its own
-    priority row without the sibling checkout imported would be a screen that
-    goes blank on the one night the checkout is missing. Two spellings of
-    English, not two spellings of a rule — nothing about the queue is decided
-    here, and what the order actually becomes is dlq's answer either way.
-    """
-    if 10 <= number % 100 <= 20:
-        return f"{number}th"
-    return f"{number}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(number % 10, 'th') }"
+#: The heights the quality buttons start from, before anything is learned.
+DEFAULT_HEIGHTS = (240, 480, 720)
+#: And the codecs passed over before anything is set.
+DEFAULT_SKIP: tuple[str, ...] = ()
 
 
-def spot_said(pos: int, queued: list[str], width: int) -> str:
-    """Where a spot picked on dlq's listing puts this video, in the room given.
-
-    The priority row's value while a spot is in force, and the whole of what
-    says so: a number in that column is the number this item is written with,
-    and ``3rd of 6`` is dlq deciding it instead. The two are exclusive and the
-    row never shows both, because a screen showing a number beside a place is a
-    screen nobody can tell the answer off.
-
-    *queued* is the queue as it stood when the spot was picked — the items the
-    position was picked *among*, which do not include this video, so it is one
-    longer than they are. The neighbour is dropped whole rather than clipped
-    when the room runs out: a name cut in half is a name read as another item,
-    and the position is the fact this row exists to carry.
-    """
-    pos = max(0, min(pos, len(queued)))
-    where = f"{_ordinal(pos + 1)} of {len(queued) + 1}"
-    if not pos:
-        return fit(where, width)
-    after = f"{where} (after {item_slug(queued[pos - 1])})"
-    return after if len(after) <= width else fit(where, width)
-
-
-def pick_spot(win, name: str, cap: int, pos: int | None) -> tuple[int | None, str]:
-    """dlq's own listing with this video held in it: the spot, or why not.
-
-    Returns the position picked and nothing to say, or what went wrong with the
-    position left exactly as it was. Nothing here draws the queue: the screen
-    is dlq's, held-item mode and all, so there is one listing and not a second
-    one that could disagree with it about what is queued or where the night's
-    allowance runs out.
-
-    ``expire_ui`` is imported **here** rather than at the top of this module,
-    which is not a style: it reads ``ytq._addstr`` while it loads, and at the
-    top of ytq that name does not exist yet — expire_ui imports expire_sched,
-    which imports this half-built module back. The screen would then die at
-    the import rather than at the key. By the time a key can be pressed, all
-    of it is there.
-    """
+def prefs() -> dict:
+    """The YouTube half's remembered choices, from the queue's config file:
+    ``rule`` (``{"video": "smallest", "audio": "largest"}``), ``heights``
+    (``{"480": 12}``, how often each was picked), ``chips`` (heights set by
+    hand, or absent), ``skip`` (codec families to pass over)."""
     try:
         sys.path.insert(0, str(HERE))
-        import expire_ui
+        import expire_runner
 
-        picked = expire_ui.pick_place(win, name, cap, partial=True, pos=pos)
-    except Exception as exc:  # noqa: BLE001 - a screen, never a blocker
-        return pos, repr(exc)
-    # Leaving that listing is not the same as taking the last place in it:
-    # whatever was in force before stays in force.
-    return (pos if picked is None else picked), ""
+        found = expire_runner.load_config().get("ytq_prefs")
+    except Exception:  # noqa: BLE001 - a convenience, never a blocker
+        return {}
+    return found if isinstance(found, dict) else {}
 
 
-def take_spot(name: str, pos: int | None) -> str | None:
-    """Put the item just written at the spot that was picked; say what happened.
-
-    ``None`` when no spot was picked, which is the whole of that condition —
-    the caller keeps no second copy of it. Asked *after* the item exists,
-    because what dlq moves is a file and there is no file until
-    :func:`write_item` has returned; and it is asked of dlq rather than
-    answered here, because the number that comes out of a position is the one
-    numbering rule and it lives on that side.
-
-    A refusal — a firing or another download holding the queue — comes back as
-    a sentence and never as an exception. The item is written and queued either
-    way; what a refusal costs is the order, which the listing can still change
-    tomorrow, so there is nothing here worth a second attempt.
-    """
-    if pos is None:
-        return None
+def save_prefs(changes: dict) -> str | None:
+    """Merge *changes* into the remembered choices. Refused (with the reason)
+    when ``config.json`` will not parse, because writing over a file that
+    could not be read is how the destinations get lost."""
     try:
         sys.path.insert(0, str(HERE))
-        import expire_ui
+        import expire_runner
 
-        said, moved = expire_ui.place(name, pos)
-    except Exception as exc:  # noqa: BLE001 - a receipt, never a blocker
-        return f"{name} kept the place it was queued at: {exc!r}"
-    return said if moved else f"{said} — {name} is last in the queue"
-
-
-#: The confirmation's two field labels, drawn at x=2 with their values in a
-#: column to the right of them.
-CONFIRM_LABELS = ("priority", "file name")
-
-#: Where that column starts on a phone. **Derived, not typed**: it was 11,
-#: reasoned as "file name is nine columns", which is true and one short —
-#: nine columns starting at 2 end at 10, so 11 is flush against the label and
-#: the screen rendered `file namecrust-of-rust-subtyping`. Computed from the
-#: labels themselves so that arithmetic cannot be got wrong again, and so that
-#: a third label is a wider gutter rather than another one touching.
-CONFIRM_GUTTER = 2 + max(len(label) for label in CONFIRM_LABELS) + 1
+        problem = expire_runner.config_problem()
+        if problem:
+            return problem
+        config = expire_runner.load_config()
+        current = config.get("ytq_prefs")
+        current = dict(current) if isinstance(current, dict) else {}
+        current.update(changes)
+        config["ytq_prefs"] = current
+        expire_runner.save_config(config)
+    except Exception as exc:  # noqa: BLE001 - a convenience, never a blocker
+        return str(exc)
+    return None
 
 
-def confirm(
-    win,
-    url: str,
-    info: dict,
-    choice: Choice,
-    now: bool = False,
-    paint: dict | None = None,
-    dest: str = "video",
-) -> tuple[int, str, bool, int | None] | None:
-    """Let the priority, the file name and free-or-paid be settled.
+def rule_for(kind: str, remembered: dict | None = None) -> str:
+    """``smallest`` or ``largest``: what the sheet opens on, per kind."""
+    rules = (remembered if remembered is not None else prefs()).get("rule") or {}
+    got = rules.get("audio" if kind == "audio" else "video") if isinstance(rules, dict) else None
+    return got if got in ("smallest", "largest") else ("largest" if kind == "audio" else "smallest")
 
-    Returns the priority, the slug, whether to download now, and the spot in
-    the queue that was picked for it, if one was. ``n`` and ``t`` switch
-    between the two modes here as well as on the format list, because this is
-    the screen showing the number that decides it.
 
-    The priority and the spot are the same field answered two ways and are
-    exclusive on purpose: a number typed here is the number the item is written
-    with, and a spot is dlq being asked to work the number out from where the
-    video was put. Whichever was chosen last is the one in force, and the row
-    shows that one alone.
-    """
-    number = next_number()
-    slug = slugify(info.get("title") or "")
-    # The spot picked on dlq's listing, and the queue it was picked among. A
-    # position and not a number, because a position is still true after the
-    # slug is edited, after another item is queued, and after dlq renumbers the
-    # queue on its way to honouring it.
-    spot: int | None = None
-    queued: list[str] = []
-    paint = paint if paint is not None else dict.fromkeys(("fits", "head"), 0)
-    # Resolved once: it needs the runner's config, and this redraws on
-    # every keystroke.
-    where = landing(dest)
-    field = 0
+def chip_heights(remembered: dict | None = None, count: int = 3) -> list[int]:
+    """The heights the quality buttons offer, in height order: set by hand,
+    or the *count* picked most often, or :data:`DEFAULT_HEIGHTS`."""
+    got = remembered if remembered is not None else prefs()
+    chips = got.get("chips")
+    if isinstance(chips, list) and all(isinstance(h, int) and h > 0 for h in chips) and chips:
+        return sorted(set(chips))[:max(count, len(chips))]
+    counts = got.get("heights")
+    learned: list[int] = []
+    if isinstance(counts, dict):
+        pairs = []
+        for key, n in counts.items():
+            if str(key).isdigit() and isinstance(n, int) and n > 0:
+                pairs.append((n, int(key)))
+        learned = [h for _, h in sorted(pairs, key=lambda p: (-p[0], p[1]))]
+    for h in DEFAULT_HEIGHTS:
+        if h not in learned:
+            learned.append(h)
+    return sorted(learned[:count])
 
-    # nomut: start — a mutant inside a curses event loop does not fail a
-    # test, it hangs a terminal until the runner's timeout kills it. What
-    # these loops do is checked under a pty instead (tests/test_screens.py).
-    while True:
-        win.erase()
-        height, width = win.getmaxyx()
-        narrow = width < WIDE
-        # As far left as the column can go on a phone, and roomier where there
-        # is room. Both clear the longest label, which a check pins.
-        gutter = CONFIRM_GUTTER if narrow else 14
-        # The header is the screen's identity, and the fact it has to carry is
-        # not "now versus later" but "paid versus free". Said in words because
-        # a terminal without colours must not be the one that loses it.
-        _addstr(
-            win,
-            0,
-            0,
-            (" download NOW — paid " if now else " queue tonight — free ").ljust(
-                width - 1
-            ),
-            curses.A_REVERSE | curses.A_BOLD | paint.get("head", 0),
-        )
-        _addstr(
-            win,
-            2,
-            2,
-            f"{choice.label}  {choice.fmt}"
-            if narrow
-            else f"{choice.label}   format {choice.fmt}   {choice.detail}",
-        )
-        _addstr(
-            win,
-            3,
-            2,
-            f"yt-dlp says {human(choice.size)}{'' if choice.exact else ' (estimated)'}",
-        )
-        # The cap is the number this screen exists to show, so it is bold and
-        # coloured by how many nights it will take — the same scale the format
-        # list used, so a red row stays red here.
-        cost = paint.get(cost_band(choice.expect_bytes), 0)
-        _addstr(
-            win,
-            4,
-            2,
-            f"cap {human(choice.expect_bytes)}"
-            if narrow
-            else f"EXPECT_BYTES {choice.expect_bytes:,} "
-            f"({human(choice.expect_bytes)}) — the cap the runner "
-            f"holds it to",
-            curses.A_BOLD | cost,
-        )
-        _addstr(win, 6, 2, CONFIRM_LABELS[0], curses.A_DIM)
-        _addstr(win, 7, 2, CONFIRM_LABELS[1], curses.A_DIM)
-        if narrow:
-            # Only the saved file, and only its name: the queue path is the
-            # same information twice and the leading directories are the part
-            # nobody needs at 40 columns.
-            _addstr(win, 9, 2, f"→ {slug}.{choice.ext}")
-        else:
-            # The name it is *written* with, which is what the number on it
-            # means. A spot taken renames it a second later — said here rather
-            # than left to be noticed, because the receipt names the file.
-            wrote = f"→ queue/{item_name(number, slug)}"
-            if spot is not None:
-                wrote += ", renumbered at the spot"
-            _addstr(win, 9, 2, fit(wrote, width - 3))
-            _addstr(win, 10, 2, fit(f"→ {where}/{slug}.{choice.ext}", width - 3))
-        if now:
-            # The second of the three places this says paid, and the only one
-            # carrying the number. Bold and cost-banded where there is colour;
-            # the sentence stands on its own where there is not.
-            _addstr(
-                win,
-                11,
-                2,
-                fit(
-                    f"this spends {human(choice.expect_bytes)} of PAID data", width - 3
-                ),
-                curses.A_BOLD | cost,
-            )
-            note = (
-                "starts on enter and runs in the background; dlq list "
-                "shows it, x stops it"
-            )
-            for offset, piece in enumerate(wrapped(note, max(20, width - 4))):
-                _addstr(win, 13 + offset, 2, piece, curses.A_DIM)
-        _addstr(
-            win,
-            height - 2,
-            1,
-            confirm_hints(now, width),
-            curses.A_DIM,
-        )
 
-        # The editor must not be told it has more room than the window does, or
-        # the field it underlines runs off the right of a phone. The same room
-        # bounds the priority row, which says a place in words when one is in
-        # force and is otherwise the two digits it always was.
-        room = max(8, width - gutter - 2)
-        _addstr(
-            win,
-            6,
-            gutter,
-            f"{number:02d}" if spot is None else spot_said(spot, queued, room),
-            curses.A_REVERSE if field == 0 else 0,
-        )
-        # Clipped with an ellipsis rather than by the window edge: a long slug
-        # cut off at the last column looks like the whole file name, and this
-        # is the screen where the file name is being decided.
-        _addstr(
-            win,
-            7,
-            gutter,
-            fit(slug, max(8, width - gutter - 2)),
-            curses.A_REVERSE if field == 1 else 0,
-        )
-        win.refresh()
+def skip_codecs(remembered: dict | None = None) -> list[str]:
+    got = (remembered if remembered is not None else prefs()).get("skip")
+    if isinstance(got, list):
+        return [str(f).lower() for f in got if isinstance(f, str)]
+    return list(DEFAULT_SKIP)
 
-        key = win.getch()
-        if key in (ord("q"), 27):
-            return None
-        if key in (9, curses.KEY_DOWN, curses.KEY_UP):
-            field = 1 - field
-        elif key == ord("n"):
-            now = True
-            # A download that starts now takes no place in the queue: it is run
-            # from the file the moment it is written, under the name it was
-            # written with, and moving that file underneath it is a download of
-            # a name nothing has. So the spot goes, visibly — the row is a
-            # number again — rather than being quietly not honoured.
-            spot = None
-        elif key == ord("t"):
-            now = False
-        elif key in (curses.KEY_ENTER, 10, 13):
-            return number, slug, now, spot
-        elif key == ord("p") and not now:
-            spot, why = pick_spot(
-                win, item_name(number, slug), choice.expect_bytes, spot
-            )
-            # Read after the listing closes and not before it opens: it is what
-            # the position was picked among, and it is the same walk the
-            # duplicate check already does rather than a second reading of the
-            # queue through the manager.
-            queued = [found.name for state, found in items() if state == "queued"]
-            if why:
-                message(
-                    win,
-                    [
-                        "the queue listing could not be opened",
-                        why,
-                        # Whatever was in force stays in force, which for a
-                        # first attempt is no place at all: last.
-                        "the place picked before it still stands"
-                        if spot is not None
-                        else "the video will be queued last",
-                    ],
-                )
-        elif key in (ord("e"), ord("i")):
-            if field == 0:
-                # Cleared first: the row may be holding a place in words, which
-                # is wider than the eight columns the editor draws over.
-                _addstr(win, 6, gutter, " " * room)
-                typed = text_input(win, 6, gutter, f"{number:02d}", min(8, room))
-                if typed and typed.isdigit():
-                    number = max(0, min(99999, int(typed)))
-                    # A number typed is the number in force, so the spot picked
-                    # before it is not. The other way round is `p`, which is
-                    # the same rule from the other end.
-                    spot = None
-            else:
-                typed = text_input(win, 7, gutter, slug, min(48, room))
-                if typed:
-                    slug = slugify(typed)
-    # nomut: end
+
+def learn(choice: Choice, rule: str) -> None:
+    """Remember a choice that was queued: its height counted, its rule kept
+    for its kind, and :func:`remember_format`'s last format."""
+    got = prefs()
+    rules = dict(got.get("rule") or {}) if isinstance(got.get("rule"), dict) else {}
+    rules["audio" if choice.kind == "audio" else "video"] = rule
+    changes: dict = {"rule": rules}
+    height = height_of(choice)
+    if height:
+        counts = dict(got.get("heights") or {}) if isinstance(got.get("heights"), dict) else {}
+        counts[str(height)] = int(counts.get(str(height), 0) or 0) + 1
+        changes["heights"] = counts
+    save_prefs(changes)
+    remember_format(choice)
+
+
+
+
 
 
 def already_queued(hits: list[Result]) -> set[int]:
@@ -3065,814 +2508,10 @@ def already_queued(hits: list[Result]) -> set[int]:
     return {index for index, hit in enumerate(hits) if hit.key and hit.key in known}
 
 
-def duplicate_screen(win, paint: dict, dup: Duplicate) -> bool:
-    """Say this has been queued before. ``True`` if it is to be queued anyway.
-
-    A screen of its own rather than a line on the confirmation, for the same
-    reason the confirmation exists at all: this is a moment where data gets
-    spent twice, and a warning sharing a screen with nine other facts is a
-    warning that gets skimmed past.
-
-    The override is written on the screen rather than left to be known. A key
-    that is live on one screen and silent on another is how somebody presses it
-    three times and concludes the tool is broken.
-    """
-    win.erase()
-    height, width = win.getmaxyx()
-    titles = {
-        "queued": " already in the queue ",
-        "done": " already downloaded ",
-        "failed": " already tried ",
-    }
-    _addstr(
-        win,
-        0,
-        0,
-        titles.get(dup.where, " already queued ").ljust(width - 1),
-        curses.A_REVERSE | curses.A_BOLD | paint.get("night", 0),
-    )
-    row = 2
-    for text in (dup.says(), f"as {dup.stem}"):
-        # Through `wrapped`, not textwrap: the second of these is `as
-        # 10-crust-of-rust-subtyping`, and the default breaks it at a hyphen.
-        for piece in wrapped(text, max(12, width - 4)):
-            _addstr(win, row, 2, piece, curses.A_BOLD if row == 2 else 0)
-            row += 1
-    row += 1
-    if dup.how == "name":
-        # Weaker evidence, said as such: the id is what proves two items are
-        # the same video, and an item queued before SOURCE existed has none.
-        for piece in wrapped(
-            "matched by name, not by id — it may be a different video with "
-            "the same title",
-            max(12, width - 4),
-        ):
-            _addstr(win, row, 2, piece, curses.A_DIM)
-            row += 1
-        row += 1
-    _addstr(win, min(row, height - 4), 2, "a  queue it again anyway")
-    _addstr(win, height - 2, 1, "a  again   any other key: back", curses.A_DIM)
-    win.refresh()
-    return win.getch() == ord("a")
 
 
-def message_body(lines: list[str], width: int, rows: int) -> list[str]:
-    """*lines* wrapped and blank-separated, bounded to *rows* of them.
-
-    Pure, so the one thing that must never happen on this screen can be
-    checked without a terminal. :func:`message` draws its own way out under
-    the body; a body allowed to run past the bottom takes that line with it
-    and leaves a full-screen notice with no visible key to leave it — which is
-    the same failure as a hint clipped at the floor, arrived at from the other
-    direction, and it turned up here the moment a notice grew long enough to
-    matter.
-
-    Overflow is said and not dropped quietly, because the line that goes first
-    is the last one and on these screens the last line is the fix.
-    """
-    out: list[str] = []
-    for index, line in enumerate(lines):
-        if index:
-            out.append("")
-        out.extend(wrapped(line, width))
-    if len(out) <= rows:
-        return out
-    keep = max(0, rows - 1)
-    return out[:keep] + [fit(f"…{len(out) - keep} more — see ~/nibbles/docs/ytq.md", width)]
 
 
-def message(win, lines: list[str]) -> None:
-    """A full-screen notice, wrapped to whatever width there is.
-
-    Wrapped rather than clipped: these are the sentences that explain why
-    nothing was queued, and half of one is no explanation at all.
-    """
-    win.erase()
-    height, columns = win.getmaxyx()
-    width = max(20, columns - 4)
-    body = message_body(lines, width, max(1, height - 4))
-    # The whole first entry is the verdict, however many lines it wrapped to.
-    head = len(wrapped(lines[0], width)) if lines else 0
-    for row, text in enumerate(body, start=1):
-        _addstr(win, row, 2, text, curses.A_BOLD if row <= head else 0)
-    _addstr(win, height - 2, 1, "any key to continue", curses.A_DIM)
-    win.refresh()
-    win.getch()
-
-
-def entry(win, paint: dict, initial: str = "") -> str | None:
-    """The one field that takes either words to search for or a URL.
-
-    One field rather than two, because the alternative on a phone is a mode key
-    to remember; :func:`looks_like_url` tells them apart by looking. What is
-    printed under it is the cost of each answer, standing there before anything
-    is spent rather than in a dialog afterwards.
-    """
-    win.erase()
-    height, width = win.getmaxyx()
-    narrow = width < WIDE
-    _addstr(
-        win,
-        1,
-        2,
-        "search, or paste a URL" if narrow else "search youtube, or paste a URL",
-        curses.A_BOLD | paint.get("head", 0),
-    )
-    # Four answers now, and the last two are written here or they do not
-    # exist: `subs` and `wl` are words typed into a field, with nothing on any
-    # screen to discover them from. The costs stand under it for the same reason they
-    # always did — before anything is spent, rather than in a dialog after.
-    if width < 40:
-        _addstr(win, 6, 2, "search ~0.1 MB · a URL ~0.3 MB", curses.A_DIM)
-        _addstr(win, 7, 2, "subs → your feed ~0.2 MB", curses.A_DIM)
-        _addstr(win, 8, 2, "wl → watch later ~0.2 MB", curses.A_DIM)
-    else:
-        _addstr(win, 6, 2, "words → youtube      ~0.1 MB", curses.A_DIM)
-        _addstr(win, 7, 2, "a URL → the formats  ~0.1-0.5 MB", curses.A_DIM)
-        _addstr(win, 8, 2, "subs  → your feed    ~0.2 MB", curses.A_DIM)
-        _addstr(win, 9, 2, "wl    → watch later  ~0.2 MB", curses.A_DIM)
-    _addstr(
-        win,
-        height - 2,
-        1,
-        hint("entry", width) if narrow else "enter go   esc quit",
-        curses.A_DIM,
-    )
-    return text_input(win, 3, 2, initial, max(12, width - 4))
-
-
-def results(
-    win,
-    query: str,
-    hits: list[Result],
-    paint: dict,
-    queued: set[int],
-    running: Running,
-    feed: Feed | None = None,
-    fetched: float | None = None,
-    more: int | None = None,
-    at_cap: bool = False,
-    place: tuple[int, int] = (0, 0),
-) -> tuple[int | str | None, tuple[int, int]]:
-    """A list of videos, and where it was left. An index, ``"/"``, ``"r"`` or
-    ``"more"``, or ``None`` to go back — paired with the place to hand back
-    in.
-
-    Below :data:`WIDE` each result takes two lines, so ten of them are ten
-    titles a thumb can read rather than twenty truncated columns. The cursor
-    reverses both lines of the one it is on; ``✓`` is the only other mark, and
-    only on what this session has already queued.
-
-    One screen for the search results and the subscription feed, because they
-    are the same list of the same things and everything below them — the
-    duplicate marks, the format screen, the confirmation — takes a
-    :class:`Result` and does not care where it came from. *feed* — which of
-    the two signed-in lists, or ``None`` for a search — changes the
-    four things that are genuinely different: what the banner calls it, that
-    the listing has an age worth saying (*fetched*), that the middle key reads
-    it again instead of searching again, and that there is more of it to be
-    bought (*more*, the total a deeper look would ask for, with *at_cap*
-    telling the two ways of having none apart — see :func:`next_page`).
-
-    The title under the cursor scrolls when it does not fit. The screen only
-    wakes up to do that while there is actually something scrolling, so a list
-    of short titles still blocks on the keyboard and costs nothing at all,
-    which is the property this loop was written for in the first place.
-
-    *place* is handed back with the answer rather than kept here, because
-    every way out of this screen comes back to it: queueing a video redraws
-    the list, and a deeper look and ``r`` fetch and redraw it. Starting at the
-    top each time turned "find three things to download in one search" — which
-    is what this screen is *for* — into three scrolls back to where you were,
-    and made the deeper look useless past the first page.
-
-    ``←`` and ``→`` jump a screenful, the same as page up and page down and
-    for the same reason those are here: a feed read deeply runs to
-    :data:`SUBS_MAX`, and on a phone the page keys are two taps into an
-    extra-keys row that the arrows are already on. Neither pair is in the
-    hints — there is no room at 38 columns and less at 30 — so both are in
-    ``docs/ytq.md`` instead.
-    """
-    cursor, top = place
-    #: The scroll step for the cursor's title, and the cursor it belongs to.
-    #: Reset on every move, so a title just arrived at starts from its
-    #: beginning rather than half way through somebody else's lap.
-    tick = 0
-    ticking_for = -1
-
-    # nomut: start — a mutant inside a curses event loop does not fail a
-    # test, it hangs a terminal until the runner's timeout kills it. What
-    # these loops do is checked under a pty instead (tests/test_screens.py).
-    while True:
-        win.erase()
-        height, width = win.getmaxyx()
-        narrow = width < WIDE
-        tall = 1 if not narrow else 2
-        _addstr(
-            win,
-            0,
-            0,
-            fit(feed.banner if feed else f" search: {query} ", width - 1).ljust(
-                width - 1
-            ),
-            curses.A_REVERSE | curses.A_BOLD | paint.get("head", 0),
-        )
-        if feed:
-            # What the deeper look costs stands on the screen before ↓ is
-            # pressed, which is the entry screen's rule applied to the one key
-            # here that spends.
-            meta = feed_meta(
-                len(hits), freshness(fetched), more, at_cap, width, feed.whole
-            )
-        else:
-            meta = f"{len(hits)} results  ·  ~ approx dates"
-            if not narrow:
-                meta = f"{len(hits)} results  ·  youtube  ·  ~ dates are approximate"
-        _addstr(win, 1, 1, fit(meta, width - 2), curses.A_DIM)
-
-        listed = max(1, (height - 6) // tall)
-        cursor, top = viewport(cursor, top, listed, len(hits))
-        if cursor != ticking_for:
-            tick, ticking_for = 0, cursor
-
-        for row in range(listed):
-            index = top + row
-            if index >= len(hits):
-                break
-            attr = curses.A_REVERSE if index == cursor else 0
-            for offset, line in enumerate(
-                result_row(
-                    hits[index], width, index in queued, tick if index == cursor else None
-                )
-            ):
-                _addstr(win, 3 + row * tall + offset, 0, line.ljust(width - 1), attr)
-
-        if running.alive:
-            _addstr(win, height - 3, 1, running.line(width), curses.A_BOLD)
-        if narrow:
-            if feed:
-                # `-end` when there is nothing further back to buy, so the
-                # hints and the meta line agree about whether ↓ buys more.
-                name = "subs" if more else "subs-end"
-                name += "-running" if running.alive else ""
-            else:
-                name = "running" if running.alive else "results"
-            keys = hint(name, width)
-        else:
-            keys = "↑↓ choose   enter see the formats"
-            if feed:
-                if more:
-                    keys += f"   ↓ {more - len(hits)} more"
-                keys += "   r read it again"
-            else:
-                keys += "   / search again"
-            keys += "   q back"
-            if running.alive:
-                keys += "   x stop the download"
-        _addstr(win, height - 2, 1, keys, curses.A_DIM)
-        win.refresh()
-
-        # Blocking unless there is something to redraw for, so an idle screen
-        # costs no wakeups at all: a live download redraws twice a second, a
-        # title too long for its room a little faster than that, and a screen
-        # with neither waits on the keyboard the way it always did.
-        moving = bool(hits) and scrolls(hits[cursor], width)
-        waits = [500] if running.alive else []
-        if moving:
-            waits.append(MARQUEE_MS)
-        win.timeout(min(waits) if waits else -1)
-        try:
-            key = win.getch()
-        finally:
-            win.timeout(-1)
-
-        if key == -1:
-            # A timeout and not a keypress: the only thing a step of the clock
-            # advances is the scroll.
-            tick += 1
-            continue
-        # Every way out of here carries the place with it, so that whatever
-        # brings the list back — a queued video, a deeper look, a re-read —
-        # brings it back where it was left.
-        here = (cursor, top)
-        if key in (ord("q"), 27):
-            return None, here
-        if key == ord("/"):
-            return "/", here
-        # Live on the feed alone, and named in its hints. A key that is silent
-        # on one list and does something on the other is the shape somebody
-        # presses three times before concluding the tool is broken, so the
-        # feed's own hint carries it and the search's does not.
-        if feed and key == ord("r"):
-            return "r", here
-        if key == ord("x"):
-            running.stop()
-        elif key in (curses.KEY_UP, ord("k")):
-            cursor -= 1
-        elif key in (curses.KEY_DOWN, ord("j")):
-            # On the feed, down at the last row keeps going: it fetches the
-            # next page instead of stopping dead (2026-08-28, taking it over
-            # from `m`, since removed). The consent rule holds — the meta
-            # line above has been saying what it costs since before this key
-            # was pressed — and at the end of the feed or the cap `more` is
-            # None, so this is the same key doing nothing at the same floor.
-            if feed and more and hits and cursor == len(hits) - 1:
-                return "more", here
-            cursor += 1
-        elif key == curses.KEY_MOUSE:
-            # A flick, not a keypress: the wheel moves the cursor and stops
-            # dead at both ends. Deliberately NOT the deeper look at the
-            # bottom — ↓ is a decision and a flick is momentum, and only a
-            # decision may spend data.
-            cursor += read_wheel()
-        # The arrows alias the page keys rather than replacing them: a deeper
-        # look can make this list five times longer than it was, and on a
-        # phone the page keys are two taps into an extra-keys row the arrows
-        # sit on.
-        elif key in (curses.KEY_NPAGE, curses.KEY_RIGHT):
-            cursor += listed
-        elif key in (curses.KEY_PPAGE, curses.KEY_LEFT):
-            cursor -= listed
-        elif key == curses.KEY_HOME:
-            cursor = 0
-        elif key == curses.KEY_END:
-            cursor = len(hits) - 1
-        elif key in (curses.KEY_ENTER, 10, 13):
-            return cursor, here
-    # nomut: end
-
-
-def watch(win, paint: dict, running: Running) -> None:
-    """Stay with a background download when there is no list to go back to.
-
-    The URL path has no results screen behind it, and a download that vanishes
-    the moment it starts is worse than one that never went to the background at
-    all. ``q`` leaves it running.
-    """
-    # nomut: start — a mutant inside a curses event loop does not fail a
-    # test, it hangs a terminal until the runner's timeout kills it. What
-    # these loops do is checked under a pty instead (tests/test_screens.py).
-    while True:
-        win.erase()
-        height, width = win.getmaxyx()
-        # `o` only while the bytes move and nobody has said stop: never a key
-        # drawn in the hints that does nothing.
-        offered = running.askable
-        _addstr(
-            win,
-            0,
-            0,
-            " downloading now — paid ".ljust(width - 1),
-            curses.A_REVERSE | curses.A_BOLD | paint.get("head", 0),
-        )
-        if running.alive:
-            _addstr(win, 2, 2, running.line(width), curses.A_BOLD)
-        else:
-            _addstr(
-                win,
-                2,
-                2,
-                "no longer running — dlq list says how it went"
-                if width >= WIDE
-                else "no longer running",
-                curses.A_BOLD,
-            )
-        if running.opened or (offered and running.open_when_done):
-            said = running.opened or "opens when done"
-            _addstr(win, 3, 2, fit(said, width - 3))
-        _addstr(
-            win,
-            height - 2,
-            1,
-            hint("watch" if offered else "watch-over", width)
-            if width < WIDE
-            else (
-                "x stop it   o open when done   q leave it running and go back"
-                if offered
-                else "q go back"
-            ),
-            curses.A_DIM,
-        )
-        win.refresh()
-        win.timeout(500 if running.alive or not running.settled else -1)
-        try:
-            key = win.getch()
-        finally:
-            win.timeout(-1)
-        if key == ord("x"):
-            running.stop()
-        elif key == ord("o") and offered:
-            # Said by the line under the progress, which stays.
-            running.toggle_open()
-        elif key in (ord("q"), 27):
-            return
-    # nomut: end
-
-
-def app(
-    win,
-    first: str | None,
-    preloaded: dict | None = None,
-    now: bool = False,
-    dest: str = "video",
-) -> list[str]:
-    """The whole flow: find it, choose a quality, queue it or start it.
-
-    Returns the receipts to print once curses has been torn down — a list,
-    because a session can queue several items now rather than ending at the
-    first one.
-
-    Written as an explicit screen name and a loop rather than nested calls, so
-    that "where does q go from here" is one table in one place. Both caches are
-    the point of that shape: backing out of a video and into another costs
-    nothing, and coming back to the first one costs nothing either, which on
-    this link is the difference between browsing and rationing.
-    """
-    curses.curs_set(0)
-    win.keypad(True)
-    enable_touch_scroll()
-    paint = ink(win)
-
-    receipts: list[str] = []
-    running = Running()
-    searched: dict[str, list[Result]] = {}
-    #: When each cached listing was fetched, so the feed can say how old what
-    #: is on screen is. Keyed the same as :data:`searched`.
-    stamps: dict[str, float] = {}
-    #: And where each was left. Keyed the same again, so backing out of one
-    #: search into another and returning lands where you were in both — and so
-    #: that a listing never seen before starts at the top, which is the only
-    #: time starting at the top is right.
-    places: dict[str, tuple[int, int]] = {}
-    probed: dict[str, tuple[dict, list[Choice], int]] = {}
-    marks: dict[str, set[int]] = {}
-    #: Videos this session has been told to queue again despite already having
-    #: them. Per target, so agreeing to one is not agreeing to the next.
-    agreed: set[str] = set()
-    #: Whether the bot check has already been explained. Once a session and
-    #: not once per video: the fix is a config edit that cannot be made from
-    #: here, so saying it again on the next video is a keypress charged for
-    #: nothing. The format screen goes on marking every list it applies to.
-    warned = False
-
-    typed = first or ""
-    query = ""
-    hits: list[Result] = []
-    target = ""
-    chosen_index = -1
-    came_from = "entry"
-    screen = "entry"
-    #: Set by ``r`` on the feed and cleared by the fetch it asks for. A flag
-    #: rather than dropping the cache entry, so a look that does not come back
-    #: leaves the listing that was on screen still on screen.
-    refetch = False
-    #: How deep the feed has been asked for, which ↓ at the last row raises a
-    #: page at a time. Kept here rather than derived from ``len(hits)``: a
-    #: feed that handed back 28 of the 30 asked for has been asked for 30, and
-    #: it is the gap between those two numbers that says there is no more to
-    #: come.
-    #:
-    #: Two of them, and that is the point: ``subs_want`` is what the next
-    #: fetch will ask for and ``subs_asked`` is what the listing on screen was
-    #: actually answered at. One variable said the deeper number the moment
-    #: ↓ was pressed, so a deeper fetch that FAILED left thirty videos on
-    #: screen beside a claim that sixty had been asked for — which
-    #: :func:`next_page` reads as the end of the feed, and the screen then
-    #: says "the whole feed" over a third of it with the deeper look switched
-    #: off.
-    #:
-    #: Per list, keyed on :attr:`Feed.key`: the feed and Watch Later are read
-    #: to their own depths, and going deeper in one is not going deeper in both.
-    subs_asked = {key: SUBS_RESULTS for key in FEEDS}
-    subs_want = dict(subs_asked)
-    #: Which signed-in list the ``subs`` screen is reading.
-    reading = SUBS
-
-    # A saved dump stands in for whichever call would have fetched it, so both
-    # halves of this can be worked on without spending anything.
-    if preloaded is not None:
-        if preloaded.get("entries") is not None:
-            query = preloaded.get("title") or "(saved search)"
-            hits = searched[query] = entries(preloaded)
-            screen = "results"
-        else:
-            target = preloaded.get("webpage_url") or preloaded.get("url") or first or ""
-            probed[target] = (preloaded, *choices(preloaded))
-            screen = "formats"
-    elif first and looks_like_feed(first):
-        # Before the URL test, because the feed's own URL passes that one too.
-        reading, screen = which_feed(first), "subs"
-    elif first and looks_like_url(first):
-        target, screen = first, "formats"
-    elif first:
-        query, screen = first, "search"
-
-    # nomut: start — a mutant inside a curses event loop does not fail a
-    # test, it hangs a terminal until the runner's timeout kills it. What
-    # these loops do is checked under a pty instead (tests/test_screens.py).
-    while True:
-        if screen == "entry":
-            text = entry(win, paint, typed)
-            typed = ""
-            if not text:
-                return receipts
-            if looks_like_feed(text):
-                reading, screen = which_feed(text), "subs"
-            elif looks_like_url(text):
-                target, came_from, screen = text, "entry", "formats"
-            else:
-                query, screen = text, "search"
-
-        elif screen == "subs":
-            # Asked before the spinner and before anything is spent: a feed
-            # request with no session behind it does not fail, it comes back
-            # empty, so the page is bought and buys no explanation with it.
-            state, detail = cookie_state()
-            if state in ("none", "missing"):
-                message(win, cookie_advice(state, detail))
-                typed, screen = "", "entry"
-                continue
-            key = reading.key
-            if key in searched and not refetch:
-                hits = searched[key]
-            else:
-                want = subs_want[key]
-                found, failure = spinner_while(
-                    win,
-                    f"reading {reading.name} — {want}, {feed_cost(want)}…",
-                    lambda count=want, feed=reading: read_feed(feed, count),
-                )
-                if failure is not None:
-                    message(
-                        win,
-                        [f"{reading.name} did not come back", str(failure)]
-                        # The fix and not a second verdict: yt-dlp has already
-                        # said what went wrong on the line above, and expired
-                        # cookies are what it usually means.
-                        + cookie_fix(detail),
-                    )
-                    # Back to the depth the listing on screen really is: a
-                    # deeper ask that did not come back is not a deeper ask.
-                    subs_want[key] = subs_asked[key]
-                    refetch = False
-                    typed, screen = "", "entry"
-                    continue
-                if found is None:
-                    return receipts
-                hits = searched[key] = found
-                stamps[key] = time.time()
-                # Committed here and nowhere else — the depth the answer on
-                # screen was actually answered at.
-                subs_asked[key] = subs_want[key]
-                refetch = False
-            if not hits:
-                message(win, reading.empty(detail))
-                typed, screen = "", "entry"
-                continue
-            query, screen = key, "results"
-
-        elif screen == "search":
-            if query in searched:
-                hits = searched[query]
-            else:
-                room = max(12, win.getmaxyx()[1] - 20)
-                found, failure = spinner_while(
-                    win,
-                    f"searching for {query[:room]}…",
-                    # Bound rather than closed over: this is inside the screen
-                    # loop, and a lambda that reads the variable later would
-                    # read whatever the next screen put there.
-                    lambda words=query: search(words),
-                )
-                if failure is not None:
-                    message(win, ["that search did not come back", str(failure)])
-                    typed, screen = query, "entry"
-                    continue
-                if found is None:
-                    return receipts
-                hits = searched[query] = found
-                stamps[query] = time.time()
-            if not hits:
-                message(win, ["nothing found for that", "try different words"])
-                typed, screen = query, "entry"
-                continue
-            screen = "results"
-
-        elif screen == "results":
-            # Marked with what this session queued *and* what the queue
-            # already holds, which are the same fact to whoever is reading it.
-            feed = FEEDS.get(query)
-            more, at_cap = (
-                next_page(len(hits), subs_asked[query]) if feed else (None, False)
-            )
-            picked, places[query] = results(
-                win,
-                query,
-                hits,
-                paint,
-                marks.setdefault(query, set()) | already_queued(hits),
-                running,
-                feed=feed,
-                fetched=stamps.get(query),
-                more=more,
-                at_cap=at_cap,
-                place=places.get(query, (0, 0)),
-            )
-            if picked is None:
-                typed, screen = "", "entry"
-            elif picked == "r":
-                reading, refetch, screen = feed, True, "subs"
-            elif picked == "more":
-                # The whole listing is bought again, not the extra thirty —
-                # `feed_cost` is the total for that reason, and the screen
-                # that offered this key said the total.
-                places[query] = bumped_place(places[query], len(hits))
-                subs_want[query] = more
-                reading, refetch, screen = feed, True, "subs"
-            elif isinstance(picked, str):
-                # `/` — the search prefills the field with the words that got
-                # here, and the feed has none to prefill it with.
-                typed, screen = ("" if feed else query), "entry"
-            else:
-                chosen_index = picked
-                target, came_from, screen = hits[picked].url, "results", "formats"
-
-        elif screen == "formats":
-            if target not in probed:
-                room = max(12, win.getmaxyx()[1] - 22)
-                info, failure = spinner_while(
-                    win,
-                    f"asking yt-dlp about {target[:room]}…",
-                    lambda page=target: probe(page),
-                )
-                if failure is not None:
-                    message(win, ["could not read that URL", str(failure)])
-                    typed, screen = "", came_from
-                    continue
-                if info is None:
-                    return receipts
-                probed[target] = (info, *choices(info))
-            info, options, unsized = probed[target]
-            # Before the list rather than after a choice has been made from
-            # it, because the whole trouble with a withheld extraction is that
-            # what comes back looks exactly like an answer.
-            if withheld(info) and not warned:
-                message(win, withheld_advice(cookie_state()[1]))
-                warned = True
-            if not options:
-                message(
-                    win,
-                    [
-                        "no format has a size yt-dlp will state",
-                        "nothing can be queued without one — see the queue "
-                        "contract on EXPECT_BYTES.",
-                        "if this is a plain file URL, expire_dl handles those "
-                        "better anyway: it slices by Range.",
-                    ],
-                )
-                typed, screen = "", came_from
-                continue
-
-            # Before a format is chosen rather than after: the probe is spent
-            # either way, but nothing else needs to be.
-            if target not in agreed:
-                clash = find_duplicate(
-                    source_key(info), slugify(info.get("title") or "")
-                )
-                if clash is not None:
-                    if not duplicate_screen(win, paint, clash):
-                        typed, screen = "", came_from
-                        continue
-                    agreed.add(target)
-
-            remembered = recalled_format()
-            start = preferred_index(options, remembered)
-            # Backing out of the confirmation returns to the format list rather
-            # than any further: re-probing would spend another extraction's
-            # worth of data to show what is already in hand.
-            decided = None
-            while decided is None:
-                chosen = pick(win, info, options, unsized, paint, start, start > 0, now)
-                if chosen is None:
-                    break
-                choice, run_now = chosen
-                start = options.index(choice)
-                # The resolved destination and not the one asked for: this
-                # screen prints the folder the file lands in, and a line that
-                # disagrees with where it turns up is worse than no line.
-                decided = confirm(
-                    win, target, info, choice, run_now, paint, dest_for(choice, dest)
-                )
-            if decided is None:
-                typed, screen = "", came_from
-                continue
-            number, slug, run_now, spot = decided
-
-            item = render(
-                target,
-                slug,
-                choice,
-                info.get("title") or slug,
-                time.strftime("%Y-%m-%d", time.gmtime()),
-                dest_for(choice, dest),
-                source_key(info),
-            )
-            try:
-                path = write_item(number, slug, item, again=target in agreed)
-            except Duplicate as clash:
-                # Reachable when the name typed on the confirmation collides
-                # with something the id did not, and it is the check that makes
-                # the door a door: no route to here can skip it.
-                if not duplicate_screen(win, paint, clash):
-                    typed, screen = "", came_from
-                    continue
-                agreed.add(target)
-                path = write_item(number, slug, item, again=True)
-            problem = validate(path)
-            if problem:
-                message(
-                    win,
-                    [
-                        "the runner would reject this item",
-                        problem,
-                        f"written anyway at {path}",
-                    ],
-                )
-            remember_format(choice)
-            receipt = (
-                f"queued {path.name} — {human(choice.size)} "
-                f"({choice.label}), cap {human(choice.expect_bytes)}"
-            )
-            if run_now:
-                receipt = _start_or_say_why(win, running, path, choice) or receipt
-            receipts.append(receipt)
-            # And then, and only then, the place picked for it: the item is
-            # written and queued whatever this says, which is why it is a
-            # second line rather than a condition on the first.
-            placed = take_spot(path.name, spot)
-            if placed:
-                receipts.append(placed)
-
-            if came_from == "results":
-                marks.setdefault(query, set()).add(chosen_index)
-                screen = "results"
-            elif run_now and running.child is not None:
-                # Nothing behind this screen to go back to, and something did
-                # start — so stay with it rather than exiting into silence.
-                # Guarded on the child, because a download that was refused for
-                # a busy queue has already said so and has nothing to watch.
-                watch(win, paint, running)
-                return receipts
-            else:
-                return receipts
-    # nomut: end
-
-
-def _start_or_say_why(win, running: Running, path: Path, choice: Choice) -> str | None:
-    """Start the background download, or explain what is in the way.
-
-    Either way the item is already written and queued, so the worst outcome is
-    that it waits for the nightly window — which is the free one anyway.
-    """
-    if running.alive:
-        message(
-            win,
-            [
-                "one download is already running",
-                f"{running.name} has the queue until it finishes",
-                f"{path.name} is queued and will follow",
-            ],
-        )
-        return None
-    if queue_busy():
-        message(
-            win,
-            [
-                "the queue is busy",
-                "a nightly firing or another download holds it",
-                f"{path.name} is queued and will run at the window",
-            ],
-        )
-        return None
-    # Said here rather than discovered in a log nobody opens. The queue root
-    # holds the modules as well as the queue — a test must pin that — so
-    # this failing means the anchor is wrong, and a download that quietly does
-    # nothing is exactly the failure `_root` exists to prevent.
-    if not (HERE / "expire_sched.py").is_file():
-        message(
-            win,
-            [
-                "the queue manager is not where the queue is",
-                f"expected it beside the queue at {HERE}",
-                f"{path.name} is queued and will run at the window",
-            ],
-        )
-        return None
-    running.start(path.name)
-    return (
-        f"downloading {path.name} now — {human(choice.size)} "
-        f"({choice.label}); dlq list shows it"
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -3902,7 +2541,7 @@ def list_feed(count: int = SUBS_RESULTS, feed: Feed = SUBS) -> int:
     Here for the same reason ``dlq``'s read-only screens are: this is the one
     thing on the feed side that something with no terminal can still ask for —
     a pipe, a script, an ssh session with no tty — and the alternative is that
-    the only way to see the feed at all is a curses app.
+    the only way to see the feed at all is a full-screen app.
     """
     def refuse(lines: list[str]) -> int:
         """The same words the screen uses, one to a line, on stderr.
@@ -4012,7 +2651,7 @@ def main(argv: list[str] | None = None) -> int:
         "--now",
         action="store_true",
         help="start it in the background instead of waiting for the nightly "
-        "window; the same as pressing n on the format list",
+        "window; the same as Now on the video sheet",
     )
     parser.add_argument(
         "--dest",
@@ -4078,12 +2717,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    os.environ.setdefault("ESCDELAY", "25")
     dest = str(Path(args.dest).expanduser()) if args.dest else "video"
     # A list, because a session can queue several items now. The download-now
     # case is already running by the time this returns: it was handed to a
     # detached `dlq now`, so there is nothing left here to wait for.
-    receipts = curses.wrapper(app, first or None, preloaded, args.now, dest)
+    # The one road: ``subs`` and ``wl`` reach the app as the words the
+    # search field takes, and the app routes them to the Feed and Later tabs.
+    import nibbles
+
+    receipts = nibbles.run("search", first or None, preloaded, args.now, dest)
     if not receipts:
         print("nothing queued")
         return 0

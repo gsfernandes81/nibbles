@@ -15,6 +15,8 @@ Downloads among the phone's other files and belongs to whoever asked for it.
 
 from __future__ import annotations
 
+import time
+
 import fcntl
 import json
 
@@ -534,10 +536,9 @@ def test_what_an_item_may_be_called(dlq, name, parsed):
 def test_every_action_an_item_offers_is_one_the_screen_can_carry_out(dlq):
     """An action that is offered and does nothing cannot ship.
 
-    ``actions_for`` decides what a download is worth being asked, ``ACTS`` is
-    what each of those keys runs, and ``SCREEN_KEYS`` is the one whose effect
-    can only be seen back on the list. A key in the first and in neither of the
-    others is a key that reads as broken.
+    ``actions_for`` decides what a download is worth being asked, and
+    ``ACTION_WORDS`` is the button each of those keys is on the download's
+    sheet. A key in the first and not the second is a key with no button.
     """
     stock(dlq, "queued")
     dlq.item("20-failed.py", where="failed")
@@ -554,7 +555,7 @@ def test_every_action_an_item_offers_is_one_the_screen_can_carry_out(dlq):
         assert len(keys) == len(set(keys)), row["name"]
         for key, label in dlq.ui.actions_for(row):
             assert label.strip()
-            assert key in dlq.ui.ACTS or key in dlq.ui.SCREEN_KEYS, key
+            assert key in dlq.qs.ACTION_WORDS, key
         offered |= set(keys)
     # And the ones that only make sense somewhere are only offered there.
     assert offered >= {"n", "u", "m", "r", "o", "l", "d"}
@@ -581,8 +582,9 @@ def test_every_colour_a_row_can_be_worth_can_be_drawn(dlq):
     """A tone missing from the screen's table is a row that loses its colour
     with nothing saying so.
 
-    ``expire_sched._tone`` is where "what colour is this row worth" is decided;
-    ``expire_ui.TONES`` is only the translation of it into curses attributes.
+    ``expire_sched._tone`` is where "what colour is this row worth" is decided
+    for the printed listing; on the Queue tab a failed and a finished download
+    carry their state as a mark as well as a colour.
     """
     rows = [
         {"error": "no header", "files": [], "where": "queued", "have": 0},
@@ -591,10 +593,14 @@ def test_every_colour_a_row_can_be_worth_can_be_drawn(dlq):
         {"error": None, "files": [], "where": "queued", "have": 10},
         {"error": None, "files": [], "where": "queued", "have": 0},
     ]
-    for row in rows:
-        assert dlq.sched._tone(row) in dlq.ui.TONES
-    # Four different answers, so the palette is saying something.
+    # Different answers, so the palette is saying something.
     assert len({dlq.sched._tone(row) for row in rows}) == len(rows)
+    dlq.item("20-failed.py", where="failed")
+    dlq.item("30-done.py", where="done/2026-09-01")
+    for row in dlq.sched.items():
+        drawn = dlq.qs.row_entry(row, 0, "03:00").draw(40, False).plain()
+        mark = {"failed": "×", "done": "✓"}[row["where"]]
+        assert drawn.split("\n")[0][1] == mark, drawn
 
 
 # --------------------------------------------------------------------------- #
@@ -621,31 +627,49 @@ def test_the_confirm_that_stops_the_nightly_job_names_the_key_that_starts_it(dlq
     """
     lines = dlq.ui.cancel_note()
     assert lines and all(line.strip() for line in lines)
-    assert chr(dlq.ui.PAGE_KEYS[1]) in lines[-1]
-    assert chr(dlq.ui.SETTING_KEYS[0]) not in lines[-1].split()[0]
+    # It names the row that arms it again, which is a row on More now.
+    assert "nightly job" in lines[-1]
+    sheet = None
+    app = dlq.app.App(None, 4, size=(40, 24))
+    app.tabs[4].job_rows = [("job", f"{dlq.sched.ARMED}, fires every 15m", "32")]
+    app.tabs[4].act(app, ("job",))
+    sheet = app.sheets[-1]
+    # Confirmed, with the stop in the danger style and No last.
+    assert sheet.answers[0].kind == "danger" and sheet.answers[-1].key == "esc"
 
 
 def test_the_number_is_the_whole_point_of_asking(dlq):
-    """Both confirms say what it costs, and both say who is counting it."""
+    """Both confirms put what it costs on the yes, and both say who is
+    counting it: the one yes for a spend nothing is counting."""
     dlq.item("10-thing.py", cap=200 * MiB)
     row = dlq.sched.items()[0]
     facts = dlq.facts(portal=dlq.reading(free=300 * MiB), force=True)
+    app = dlq.app.App(None, 3, size=(40, 24))
+    app.queue.facts = facts
+    item = dlq.qs.ItemSheet(row)
+    shell = dlq.qs.shell
 
-    for note, size in (
-        (dlq.ui.now_note(row, seen=True), dlq.ytq.human(200 * MiB)),
-        (dlq.ui.run_note(facts), dlq.ytq.human(facts["spendable"])),
-    ):
-        assert any(size in line for line in note)
-        assert all(line.strip() for line in note)
+    # Counted: zwana answered the fresh connect the sheet asks as it opens.
+    app.queue.reached, app.queue.reached_at = True, time.monotonic()
+    now = dlq.qs.now_sheet(app, row, item)
+    run = dlq.qs.run_sheet(app, facts)
+    assert shell.size(200 * MiB) in now.answers[0].note
+    assert shell.size(facts["spendable"]) in run.answers[0].note
+    for sheet in (now, run):
+        assert sheet.answers[-1].key == "esc"
+        assert sheet.question.strip() and sheet.grey.strip()
 
     # With no portal answering, nothing is counting it — and that is said as
     # well as the number, because mobile data and a portal that is down look
-    # identical from here.
-    blind_facts = dlq.facts(blind=True, force=True)
-    for note in (dlq.ui.now_note(row, seen=False), dlq.ui.run_note(blind_facts)):
-        said = " ".join(note)
-        assert "mobile data" in said
-        assert "counting" in said
+    # identical from here. The border turns warning-coloured.
+    blind = dlq.facts(blind=True, force=True)
+    app.queue.facts = blind
+    app.queue.reached, app.queue.reached_at = False, time.monotonic()
+    for sheet in (dlq.qs.now_sheet(app, row, item), dlq.qs.run_sheet(app, blind)):
+        assert "not answering" in sheet.question
+        assert sheet.border is not None
+    assert "mobile data" in dlq.qs.now_sheet(app, row, item).grey
+    assert "≤" in dlq.qs.run_sheet(app, blind).answers[0].note
 
 
 def test_what_an_item_owns_is_decided_in_one_place(dlq):
@@ -676,21 +700,28 @@ def test_what_an_item_owns_is_decided_in_one_place(dlq):
 
 def test_o_asks_for_the_file_only_on_a_download_this_screen_started(dlq):
     """The ask is held in memory by the ``ytq.Running`` watching the download,
-    so it is offered only where there is one: this screen's own download of
-    this item, while it runs. Pressed again, the label says it takes it back."""
+    so "Open it when done" is offered only where there is one: this session's
+    own download of this item, while it runs. A tap ticks it."""
     dlq.item("10-queued.py")
-    row = next(row for row in dlq.sched.items() if row["name"] == "10-queued.py")
+    app = dlq.app.App(None, 3, size=(40, 24))
 
     class Run:
-        askable, name, open_when_done = True, "10-queued.py", False
+        askable, alive, name, open_when_done = True, True, "10-queued.py", False
 
-    run = Run()
-    offer = dlq.ui.open_offer(row, run)
-    assert offer and "o" not in {key for key, _ in dlq.ui.actions_for(row)}
-    run.open_when_done = True
-    assert dlq.ui.open_offer(row, run) not in ("", offer)
+        def toggle_open(self):
+            self.open_when_done = not self.open_when_done
+
+    app.queue.running = run = Run()
+    app.sheets[:] = [dlq.qs.DownloadSheet("10-queued.py")]
+    app.compose()
+    box = app.hits.find("open")
+    assert box is not None and "•" in app.compose().plain()
+    app.sheets[-1].tap(app, box, None)
+    assert run.open_when_done and "✓ Open it when done" in app.compose().plain()
 
     run.name = "20-other.py"  # ours, but another item
-    assert dlq.ui.open_offer(row, run) == ""
+    app.compose()
+    assert app.hits.find("open") is None
     run.name, run.askable = "10-queued.py", False  # ended, stopped, or not ours
-    assert dlq.ui.open_offer(row, run) == ""
+    app.compose()
+    assert app.hits.find("open") is None

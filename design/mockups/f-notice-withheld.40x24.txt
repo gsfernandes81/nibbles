@@ -1,0 +1,24 @@
+ nibbles ╱╱╱╱╱╱╱╱╱╱╱╱ crust of rust • 7 
+╭────────────────────────────╮╭────────╮
+│ crust of rust              ││  ⏎ Go  │
+╰────────────────────────────╯╰────────╯
+7 results · ~ dates approx              
+   Crust of Rust: Subtyping and Varia… ┃
+   Jon Gjengset · ~3d · 90m34s · 41K   ┃
+╭──────────────────────────────────────╮
+│ Only 360p ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
+│ youtube sent one format, not all of  │
+│ them                                 │
+│ yt-dlp unknown — usually just stale. │
+│ upgrade:                             │
+│ yt-dlp is not on PATH                │
+│ then the cookies: there is no yt-dlp │
+│ config at ~/.config/yt-dlp/config    │
+│ and yt-dlp -v must show a JS runtime │
+│ and yt_dlp_ejs.                      │
+│ ytq itself: reinstall nibbles from   │
+│ the checkout — docs:                 │
+│ ~/nibbles/docs/ytq.md                │
+│ ╭──────────────────────────────────╮ │
+│ │              esc OK              │ │
+│ ╰──────────────────────────────────╯ │

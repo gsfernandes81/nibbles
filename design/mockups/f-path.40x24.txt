@@ -1,0 +1,24 @@
+ nibbles ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ settings 
+ w window                       60 min ┃
+   ahead of the reset, at 04:00 here   ┃
+ r reserve                      100 MB ┃
+   kept back, never spent              ┃
+ p reserve when paid             ◉ yes ┃
+   keep it when paid data is there     ┃
+ b budget                        zwana ┃
+   what says how much may be spent     ┃
+ a auto                           ◉ on ┃
+   the nightly job downloads           ┃
+ n notify blocked                 ◉ on ┃
+╭──────────────────────────────────────╮
+│ video ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
+│ ╭──────────────────────────────────╮ │
+│ │ tmp/nibbles-fillins-oyfl6vwl/out │ │
+│ ╰──────────────────────────────────╯ │
+│ one level is created if it is not t… │
+│ ╭──────────────────────────────────╮ │
+│ │             default              │ │
+│ ╰──────────────────────────────────╯ │
+│ ╭───────────────────╮╭─────────────╮ │
+│ │    esc Cancel     ││    ⏎ Set    │ │
+│ ╰───────────────────╯╰─────────────╯ │

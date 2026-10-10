@@ -48,7 +48,13 @@ MODULES = (
     "expire_runner.py",
     "expire_sched.py",
     "expire_ui.py",
+    "nibbles.py",
+    "queue_screens.py",
+    "shell.py",
+    "tui.py",
+    "widgets.py",
     "ytdl_item.py",
+    "yt_screens.py",
     "ytq.py",
 )
 
@@ -76,6 +82,8 @@ def sibling(name: str, env: str) -> Path:
 
 
 ZWANA = sibling("zwana-quota", "ZWANA_HOME")
+#: bewitch, which draws every screen, found the same way.
+BEWITCH = sibling("bewitch", "BEWITCH_HOME")
 
 
 def make_root(where: Path, items: dict[str, str] | None = None) -> Path:
@@ -121,6 +129,7 @@ def env(root: Path, home: Path, cols: int = 40, rows: int = 24) -> dict[str, str
         {
             "EXPIRE_HOME": str(root),
             "ZWANA_HOME": str(ZWANA),
+            "BEWITCH_HOME": str(BEWITCH),
             "HOME": str(home),
             "TERM": "xterm-256color",
             "LINES": str(rows),

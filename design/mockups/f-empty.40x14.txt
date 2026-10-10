@@ -1,0 +1,14 @@
+ nibbles ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ queue • 19:43 
+╭─────────────────────────╮╭───────────╮
+│ nothing queued · 636/7… ││ n Run now │
+╰─────────────────────────╯╰───────────╯
+╭────────────╮╭────────────╮╭──────────╮
+│  Queued 0  ││  Failed 1  ││  Done 1  │
+╰────────────╯╰────────────╯╰──────────╯
+  nothing queued — Search or Feed adds  
+  something                             
+                                        
+────────────────────────────────────────
+ Search   Feed   Later   Queue    More  
+                                        
+ IDLE  nothing queued                   

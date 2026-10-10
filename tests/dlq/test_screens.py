@@ -1,25 +1,27 @@
-"""The listing, driven on a real terminal.
+"""The Queue and More tabs, driven on a real terminal.
 
-The front ends *are* their screens: a page that leaves when it should stay, a
-cut line drawn over a row, a move that says it happened and renames nothing —
-none of those show in a return value. So these open the real ``dlq ui`` on a
-pty, read it back through a terminal emulator, and press the keys somebody
-would press.
+The app *is* its screens: a sheet that will not close, a tap that lands on
+nothing, a move that says it happened and renames nothing — none of those
+show in a return value. So these open the real ``dlq ui`` on a pty, answer
+blessed's startup queries the way Termux does (``termux_pty``), read it back
+through a terminal emulator, and tap and press what somebody would.
 
-Everything asserted is *structure*: which screen is up, according to the title
-bar; that a row for a download exists; that the keys are on the key row; that
-after a move the file on disk has a smaller number than its neighbour. Nothing
-here knows what any line says, because the wording is the part that improves.
+Everything asserted is *structure*: which tab is up, according to the header;
+that a row for a download exists; that the tab bar is on its row; that after a
+move the file on disk has a smaller number than its neighbour. Nothing here
+knows what any sentence says, because the wording is the part that improves.
 
-They are marked ``tui`` and are most of the suite's wall clock; the mutation
-run skips them for that reason, and the code they drive is fenced out of it.
+They are marked ``tui`` and are most of the suite's wall clock.
 """
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
-from _pty import DOWN, ENTER, drive, make_root
+from _pty import env, make_root
+from termux_pty import DOWN, ENTER, ESC, Termux
 
 pytestmark = pytest.mark.tui
 
@@ -40,109 +42,163 @@ def order_on_disk(root):
     ]
 
 
-def row_with(shot, text):
-    """The line the download *text* is drawn on, or ``""``."""
-    return next((line for line in shot if text in line), "")
+@pytest.fixture
+def opened(pty_root):
+    """``dlq ui`` on a 40x24 pty, opened on its Queue tab."""
+    started = []
+
+    def start(cols=40, rows=24, items=ITEMS, config=None):
+        root = make_root(pty_root.root.parent, items)
+        if config:
+            (root / "config.json").write_text(config, encoding="utf-8")
+        app = Termux([sys.executable, str(root / "expire_sched.py"), "ui"], cols, rows,
+                     env(root, pty_root.home, cols, rows), cwd=str(root))
+        started.append(app)
+        app.wait_for(lambda lines: "queue" in lines[0] and "alpha" in "\n".join(lines))
+        app.settle()
+        app.root = root
+        return app
+
+    yield start
+    for app in started:
+        app.close()
 
 
-def test_the_listing_opens_on_the_queue_with_its_keys_on_it(pty_root):
-    """A bare ``dlq`` lands here, and everything the old queue screen did is
-    behind the three keys on the legend row."""
-    root = make_root(pty_root.root.parent, ITEMS)
-    shots, _ = drive(root, pty_root.home, 40, 24, [b"q"])
-    listing = shots[0]
-
-    assert "queue" in listing[0]
-    for slug in ("alpha", "bravo", "charlie"):
-        assert row_with(listing, slug)
-    # The three keys that act on the whole queue, and the hints under them.
-    legend = listing[-3]
-    for letter in ("n", "s", "l"):
-        assert f"{letter} " in legend
-    assert listing[-2].strip()
+def test_dlq_opens_on_the_queue_tab_with_the_tabs_under_it(opened):
+    """A bare ``dlq`` lands on Queue, and the other four tabs are a tap away."""
+    app = opened()
+    assert "queue" in app.header
+    for tab in ("Search", "Feed", "Later", "Queue", "More"):
+        assert tab in app.tab_row
+    # The window card's spend button, and every download on the list.
+    assert "Run now" in app.text
+    for name in ("alpha", "bravo", "charlie"):
+        assert name in app.text
+    # The status bar is the last row, a word at its left.
+    assert app.lines[-1].split()
 
 
-def test_the_cut_line_is_drawn_through_the_queued_group(pty_root):
+def test_the_cut_line_is_drawn_through_the_queued_group(opened):
     """With no portal there is nothing to spend, so the line goes to the top of
     the group and says why — which is the only place that answer can be."""
-    root = make_root(pty_root.root.parent, ITEMS)
-    # After a keypress rather than on the opening screen: the reading is taken
-    # off the screen's own thread, so the listing opens saying it is asking and
-    # fills the answer in when it lands.
-    shots, _ = drive(root, pty_root.home, 40, 24, [DOWN, b"q"])
-    listing = shots[1]
+    app = opened()
+    def ruled(line):
+        return "── " in line and any(ch.isalpha() for ch in line)
 
-    ruled = [line for line in listing if "─" in line]
-    assert ruled, listing
-    # It is drawn *inside* the queued group: above the first download and below
-    # the heading that counts them.
-    where = listing.index(ruled[0])
-    assert where < listing.index(row_with(listing, "alpha"))
-    assert "queued" in "\n".join(listing[:where])
+    app.wait_for(lambda lines: any(ruled(line) for line in lines[9:-4]))
+    rule = next(i for i, line in enumerate(app.lines) if i > 8 and ruled(line))
+    first = next(i for i, line in enumerate(app.lines) if "alpha" in line)
+    assert rule < first
 
 
-def test_moving_a_download_renames_it_and_says_where_it_went(pty_root):
-    """``m``, ↓, ⏎ — and the file on disk has a smaller number afterwards.
+def test_a_tap_on_a_row_opens_its_sheet_and_esc_closes_it(opened):
+    """One tap opens a row; the sheet names it and has its way out."""
+    app = opened()
+    app.tap_on("bravo")
+    assert "esc ×" in app.text
+    assert "Remove" in app.text and "Move" in app.text
+    app.send(ESC)
+    assert "esc ×" not in app.text
+    assert "queue" in app.header
+
+
+def test_a_tap_on_the_dimmed_screen_closes_the_sheet(opened):
+    app = opened()
+    app.tap_on("bravo")
+    assert "esc ×" in app.text
+    app.tap(5, 1)  # the dimmed window card, above the sheet
+    assert "esc ×" not in app.text
+
+
+def test_a_tap_outside_every_button_does_nothing(opened):
+    """The header is not a target: tapping it changes nothing on the disk or
+    on the screen."""
+    app = opened()
+    before, files = app.text, order_on_disk(app.root)
+    app.tap(app.cols - 2, 0)
+    app.settle()
+    assert order_on_disk(app.root) == files
+    assert "esc ×" not in app.text and "queue" in app.header
+    assert app.text.split("\n")[1:-1] == before.split("\n")[1:-1]
+
+
+def test_moving_a_download_renames_it_and_says_where_it_went(opened):
+    """Move on its sheet, ↓, ⏎ — and the file on disk has a smaller number.
 
     The whole of what a move means is where the item is in the run order, and
     the run order is the file names: a screen that reordered its own list and
     renamed nothing would look exactly like this one and download in the order
     it always did.
     """
-    root = make_root(pty_root.root.parent, ITEMS)
-    assert order_on_disk(root) == ["alpha", "bravo", "charlie"]
-
-    shots, tail = drive(
-        root, pty_root.home, 40, 24, [b"m", DOWN, ENTER, b"q"]
-    )
-    _, held, moved, dropped, _gone = shots
-
-    # Held: the title bar says so, and it names what is in the air.
-    assert "moving" in held[0]
-    assert "alpha" in held[0]
-    # Dropped: back on the listing, and the queue is in the new order.
-    assert "queue" in dropped[0]
-    assert order_on_disk(root) == ["bravo", "alpha", "charlie"]
-    # And the session says what it changed, once curses is down.
-    assert b"alpha" in tail
+    app = opened()
+    assert order_on_disk(app.root) == ["alpha", "bravo", "charlie"]
+    app.tap_on("alpha")
+    app.tap_on("Move")
+    assert "moving alpha" in app.header
+    app.send(DOWN)
+    app.send(ENTER)
+    assert "queue" in app.header
+    assert order_on_disk(app.root) == ["bravo", "alpha", "charlie"]
 
 
-def test_a_move_that_is_thought_better_of_costs_nothing(pty_root):
-    """esc leaves it where it was, and nothing was renamed to find that out."""
-    root = make_root(pty_root.root.parent, ITEMS)
-    before = order_on_disk(root)
-    shots, _ = drive(root, pty_root.home, 40, 24, [b"m", DOWN, b"\x1b", b"q"])
-    assert "moving" in shots[1][0]
-    assert "queue" in shots[3][0]
-    assert order_on_disk(root) == before
+def test_put_here_by_tapping_the_buttons(opened):
+    """The dock under a held row: ↓ then Put here, by taps alone."""
+    app = opened()
+    app.tap_on("alpha")
+    app.tap_on("Move")
+    app.tap_on("↓")
+    app.tap_on("Put here")
+    assert order_on_disk(app.root) == ["bravo", "alpha", "charlie"]
 
 
-def test_enter_opens_the_download_and_q_comes_back(pty_root):
-    """The list picks and the item screen acts: every key that changes a
-    download is on a screen showing that download and nothing else."""
-    root = make_root(pty_root.root.parent, ITEMS)
-    shots, _ = drive(root, pty_root.home, 40, 24, [ENTER, b"q", b"q"])
-    listing, item, back, _gone = shots
-
-    assert "queue" in listing[0]
-    # The item screen names the download it is about in its title bar.
-    assert "alpha" in item[0]
-    assert "queue" not in item[0]
-    # Its actions are spelled out in words, one key each.
-    keys = [line.strip()[0] for line in item[2:-4] if line.strip()[1:2] == " "]
-    for letter in ("d", "l"):
-        assert letter in keys
-    assert "queue" in back[0]
+def test_a_move_that_is_thought_better_of_costs_nothing(opened):
+    """Cancel leaves it where it was, and nothing was renamed to find that out."""
+    app = opened()
+    before = order_on_disk(app.root)
+    app.tap_on("alpha")
+    app.tap_on("Move")
+    app.send(DOWN)
+    app.tap_on("Cancel")
+    assert "queue" in app.header
+    assert order_on_disk(app.root) == before
 
 
-def test_the_settings_page_is_a_key_away_from_the_listing(pty_root):
-    """``s`` opens it; ``q`` comes back to the listing it was opened from."""
-    root = make_root(pty_root.root.parent, ITEMS)
-    shots, _ = drive(root, pty_root.home, 40, 24, [b"s", b"q", b"q"])
-    listing, settings, back, _gone = shots
-    assert "settings" in settings[0]
-    assert "queue" in listing[0] and "queue" in back[0]
-    # Every setting and both page rows answer to a key, and each is named.
-    letters = [line.strip()[0] for line in settings if line.strip()[1:3] == "  "]
-    for letter in "wrpman":
-        assert letter in letters
+def test_more_is_a_tab_away_and_a_switch_flips_where_it_stands(opened):
+    """``s`` (or the More tab) opens the settings; tapping a switch flips it
+    on the page, which stays, and says what changed on the line above the
+    tabs. The receipt survives the screen."""
+    app = opened(config='{\n  "auto": false\n}\n')
+    app.tap_on("More")
+    assert "settings" in app.header
+    auto = next(line for line in app.lines if " auto " in f" {line} ")
+    app.tap_on(auto.strip().split()[1] if auto.strip().split()[0] == "a" else "auto")
+    assert "settings" in app.header
+    flipped = next(line for line in app.lines if " auto " in f" {line} ")
+    assert flipped != auto
+    # Said on the line directly above the rule over the tabs.
+    assert "auto" in app.lines[-5]
+    app.send(b"q")
+    assert app.wait_exit() == 0
+    assert b"auto" in bytes(app.raw)
+
+
+def test_a_swipe_moves_the_list_and_never_opens_anything(opened):
+    """A drag is wheel events; it never presses a row, however many."""
+    items = {f"{n:02d}-item{n:02d}.py": "# EXPIRE: v1\n# EXPECT_BYTES: 1000000\n"
+             for n in range(10, 60, 2)}
+    app = opened(items={**ITEMS, **items})
+    x, y = app.find("alpha")
+    app.drag(6, x, y)
+    assert "esc ×" not in app.text
+    app.drag(-6, x, y)
+    assert "esc ×" not in app.text
+    assert "queue" in app.header
+
+
+def test_mouse_reporting_asks_for_clicks_and_nothing_more(opened):
+    """Termux sends a drag as wheel events whatever the mode; asking for drag
+    or motion reports would only be bytes nobody reads."""
+    app = opened()
+    sent = bytes(app.raw)
+    assert b"\x1b[?1006;1000h" in sent or (b"?1000h" in sent and b"?1006h" in sent)
+    assert b"?1002h" not in sent and b"?1003h" not in sent

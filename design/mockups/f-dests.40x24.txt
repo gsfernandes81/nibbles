@@ -1,0 +1,24 @@
+ nibbles ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ settings 
+ w window                       60 min ┃
+   ahead of the reset, at 04:00 here   ┃
+ r reserve                      100 MB ┃
+   kept back, never spent              ┃
+ p reserve when paid             ◉ yes ┃
+   keep it when paid data is there     ┃
+ b budget                        zwana ┃
+   what says how much may be spent     ┃
+ a auto                           ◉ on ┃
+   the nightly job downloads           ┃
+ n notify blocked                 ◉ on ┃
+   say when a firing is blocked        ┃
+ c skip codecs                    none ┃
+   the quality buttons pass these over ┃
+ h quality chips               240-720 │
+╭──────────────────────────────────────╮
+│ Destinations ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
+│    video · /tmp/nibbles-fillins-oy…  │
+│    default, used by ytq              │
+│    audio · /tmp/nibbles-fillins-oy…  │
+│    default, used by ytq, audio only  │
+│    file · /tmp/nibbles-fillins-oyf…  │
+│    default, used by dlq              │
