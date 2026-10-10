@@ -196,6 +196,9 @@ class Choice:
     kind: str = "normal"
     note: str = ""
     act: Callable[[], None] | None = None
+    #: Other keys that give the same answer (``removal_answers``' ``"yb"``:
+    #: one answer wearing two keys, so the keys never vary with the item).
+    also: str = ""
 
 
 class Confirm(Sheet):
@@ -230,6 +233,8 @@ class Confirm(Sheet):
 
     def _answer(self, app, i: int) -> None:
         a = self.answers[i]
+        if a.kind == "off":
+            return
         app.close(self)
         if a.act is not None:
             a.act()
@@ -240,8 +245,8 @@ class Confirm(Sheet):
 
     def key(self, app, key: str) -> bool:
         for i, a in enumerate(self.answers):
-            keys = {"⏎": "enter"}.get(a.key, a.key)
-            if key == keys or (a.key == "esc" and key == "esc"):
+            keys = {{"⏎": "enter"}.get(a.key, a.key), *a.also}
+            if key in keys:
                 self._answer(app, i)
                 return True
         return super().key(app, key)

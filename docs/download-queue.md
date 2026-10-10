@@ -8,13 +8,15 @@ reserve. `dlq settings` changes the window, the floor, what the job says, or
 turns it off outright — see [Settings](#settings).
 
 The queue and its YouTube front end live in one checkout, `~/nibbles/` (they
-were two repos, `dlq` and `ytq`, until 2026-10-10). Two commands are installable (see
-[Installing](#installing-the-commands)) and then work from any directory:
-`ytq` queues videos, `dlq` is the queue itself — typed on its own it opens
-[the screen](#changing-what-is-queued), which is where the queue is worked on,
-and `dlq <url>` queues a plain file URL. Without installing, every line
-in these docs also works as `python3 ~/nibbles/ytq.py …` — and `dlq` as
-`python3 ~/nibbles/expire_sched.py …`.
+were two repos, `dlq` and `ytq`, until 2026-10-10). Three commands are installable (see
+[Installing](#installing-the-commands)) and then work from any directory, and
+all three open [the same app](#the-app): `nibbles` opens it on Search, `ytq`
+queues videos (and opens it on Search), and `dlq` is the queue itself — typed
+on its own it opens the app on its Queue tab, which is where the queue is
+worked on, and `dlq <url>` queues a plain file URL. Without installing, every
+line in these docs also works as `python3 ~/nibbles/ytq.py …` — `dlq` as
+`python3 ~/nibbles/expire_sched.py …` and `nibbles` as
+`python3 ~/nibbles/nibbles.py`.
 
 The runner reads the portal through the quota widget in a second checkout,
 `~/zwana-quota`, found beside this one or under `~`. `EXPIRE_HOME` and
@@ -60,10 +62,12 @@ Nothing downloads when you queue — the item just waits for the nightly window.
 ## Installing the commands
 
 Optional — the scripts run fine as `python3 ~/nibbles/expire_sched.py`. Installing
-just puts them on PATH as `dlq` and `ytq`, both from the one checkout. The
-pyproject declares no dependency (stdlib only;
-yt-dlp is a separate binary on PATH), so nothing but the build backend is ever
-fetched.
+just puts them on PATH as `dlq`, `ytq` and `nibbles`, all from the one
+checkout. The pyproject declares one dependency, **blessed**, which owns the
+terminal for the screens (run uninstalled, that is `pip install blessed`);
+yt-dlp is a separate binary on PATH, and **bewitch**, the library the screens
+are drawn with, is a checkout beside this one (`~/bewitch`, or
+`$BEWITCH_HOME`), like `~/zwana-quota`.
 
 **Editable** — the installed commands run the files in the checkouts as they
 are, so edits take effect immediately and pulling a repo needs no reinstall:
@@ -102,8 +106,8 @@ and links the commands into `~/.local/bin` — nothing is written inside the
 checkouts and no other project's environment is touched. If they are not found
 afterwards, `~/.local/bin` is not on PATH; `uv tool update-shell` fixes that.
 
-The install fetches at most the **≈1 MB** hatchling build backend from PyPI,
-once — after that it is served from `uv`'s cache. (Add `--offline` if you want
+The install fetches blessed and the **≈1 MB** hatchling build backend from
+PyPI, once — after that they are served from `uv`'s cache. (Add `--offline` if you want
 the install to refuse rather than fetch on a metered connection.)
 
 The package needs hatchling rather than `uv_build` (which is compiled into
@@ -146,19 +150,27 @@ dlq arm
 
 Registers the job with Android's scheduler (needs the **Termux:API app**, not
 just the package). It survives reboots and Termux being killed; `dlq cancel`
-unregisters it. Both are also `j` on [the settings page](#settings), under the
-line that says which it currently is — arm when it says not armed, cancel
-(with a confirm, because what follows is silence) when it says armed. `arm`
+unregisters it. Both are also the **nightly job** row on [the More
+tab](#settings) (`j`), which says which it currently is — a tap arms it when
+it says not armed, and stops it, after asking (because what follows is
+silence), when it says armed. `arm`
 registers the runner **in the checkout** whether or not `dlq` itself is
 installed, so re-arm after moving `~/nibbles`.
 
 ## Watching one download
 
-Opening an item that is downloading says `downloading · 45%  20 MiB/44 MiB`
-at the top and draws a bar at the bottom. The two are one reading — the
-download's own progress file, asked once per redraw — so they cannot
-disagree. An item that is merely queued says `queued` and draws no bar; if
-some *other* item is downloading, the foot names that one instead.
+While anything downloads, the status bar on every tab says `↓ 18%`, its name
+and the time left. On the Queue tab a tap on its row opens the running
+download's sheet: `downloading · now · 1h left`, a bar, and `1.02 of 5.61 GiB ·
+1.1 MiB/s`. The words and the bar are one reading — the download's own
+progress file, asked once per redraw — so they cannot disagree, and a total no
+server has stated is never invented: the bar stays empty until there is one.
+
+For a download this session started, the sheet has **Pause** (`x`), which
+interrupts it rather than killing it, so every byte is kept and it resumes in
+the next window or with Download now. One started with Download now (or Now on
+a video) also gets **Open it when done** (`o`): ticked, the file is handed to
+Android the moment this run delivers it. `esc Back` leaves it running.
 
 ## When something fails
 
@@ -186,9 +198,10 @@ dlq run-now     # run the whole queue now, without waiting for the window
 dlq run-now --blind   # ...with no portal reading, on mobile data
 ```
 
-All of these except `path` are on the main screen too — `n` and `l` sit on it
-directly, and `s` opens the rest: the window, the reserve, the destinations
-and the nightly job — see [The queue itself](#the-queue-itself). The command
+All of these except `path` are in the app too — Run now sits on the Queue
+tab's window card (see [The Queue tab](#the-queue-tab)), and the More tab
+holds the window, the reserve, the destinations, the nightly job and the
+runner log (`s` and `l` on the Queue tab go there directly). The command
 line is what is left for the things a screen cannot do: `path` prints a path
 and nothing else, so `cd (dlq path ubuntu)` works; and a `dlq` with no
 terminal to draw on — in a pipe, or a script — prints the status screen
@@ -310,72 +323,169 @@ go](#where-downloads-go); on the phone that is Android's Downloads. The item
 script itself moves to `done/` when finished, or to `failed/` after three failed
 nights (you get a notification either way something needs you).
 
-## Changing what is queued
+## The app
 
 ```
 dlq ui     # or just: dlq
 ```
 
-`dlq` with nothing after it opens this screen. In a pipe or a script — no
-terminal to draw on — it prints `dlq status` instead, which is what a bare
-`dlq` has always done.
+`dlq` with nothing after it opens the app on its Queue tab. In a pipe or a
+script — no terminal to draw on — it prints `dlq status` instead, which is what
+a bare `dlq` has always done. `ytq` and `nibbles` open the same app on Search
+(`nibbles queue`, `feed`, `later` or `more` opens another tab).
 
-The listing is the whole screen now — there is no second screen to step up
-to for the queue as a whole. Reorder, rename, remove, put a failed download
-back, give it its nights back, download one now, open a finished one, read
-its log: there are no commands for any of those — each is easier to do to a
-download you are looking at than to a name you have to type correctly first.
-`n`, `s` and `l` sit on the listing itself, on a dim legend row of their own
-where no download in flight has claimed that line instead: `n` runs the
-whole queue now, `s` opens the window, the reserve, the destinations and the
-nightly job, and `l` opens the runner's own log — see [The queue
-itself](#the-queue-itself).
+**One app, five tabs** along the bottom: **Search · Feed · Later · Queue ·
+More**. The first three are YouTube — see [ytq.md](ytq.md); Queue is the queue
+and More the settings. There are no pages to step back through: the only depth
+is a **sheet**, which comes up from the bottom over the tab it was opened from
+— a download, a confirm, a setting — with the tab still there above it,
+dimmed. Esc, `esc ×` at its top right, or a tap on the dimmed part closes it.
+`q` quits from anywhere (Tab and Shift-Tab step through the tabs), and what was
+changed is printed on the terminal on the way out.
 
-The listing picks and the item screen acts. `↑↓` moves, `⏎` opens whatever the
-cursor is on, and every key that changes one download is on that second
-screen, under a bar naming the one it will act on — so the download being
-removed is the download on the screen. `q` goes back, and again to leave; what
-was changed is printed on the terminal on the way out.
+**Buttons first, keys second.** Every button is three rows tall and shows its
+key in grey before its word, so the buttons are the hint line: `n Run now` is a
+tap or an `n`. A tap acts at once, and the button flashes so you see what you
+hit; just after a sheet opens a tap is ignored, so the second half of a double
+tap cannot press what the sheet put under your finger.
 
-| On an item | |
+**A tap is a tap; a drag scrolls.** Termux reports a finger that moved as
+scrolling, never as a tap, so a drag can never press a button. A swipe moves
+the list; the selection stays on its row until it nears the edge, then rides
+along one row in. The last three columns of a list are its **scrollbar**: a tap
+there jumps to that point, and a drag that starts there moves the thumb a row
+per row of finger travel — a page at a time through a long list.
+
+**The status bar** is the last row of every tab: a word at the left —
+`WAITING`, `OPEN`, `DONE`, `IDLE`, `OFF`, `SPENT`, `BLOCKED`, `RUNNING`, or
+`ASKING` before the first reading, and `↓ 18%` while something downloads —
+then what it is about (`opens 03:00`, or the download's name), then the
+countdown or the time left. Every time on the screens is the phone's own
+clock, never UTC. What a change did is said on the line just above the tabs.
+
+### The Queue tab
+
+```
+╭──────────────────────────────────────╮
+│ waiting · 03:00 (19m)  ╭───────────╮ │
+│ ██████████████░░░░░░░░ │ n Run now │ │
+│ 480/763 MiB to spend   ╰───────────╯ │
+╰──────────────────────────────────────╯
+[  Queued 3  ][  Failed 1  ][  Done 3  ]
+
+   ubuntu-24.04-desktop-amd64.iso
+   ↓ 18%  1.02 of 5.61 GiB
+   Some Talk About Rust
+   0 of ≤505 MiB · 46 MiB at 03:00
+  ── the window ends here · 480 MiB ───
+   big.iso
+   0 of ≤8 GiB
+```
+
+The **window card** leads: the verdict, when the window opens and how long
+until then, a bar of what the next window may spend against what expires, and
+the two figures — the same facts `dlq status` opens with, kept in view while
+you work the queue instead of a screen away. **Run now** sits beside it. With
+the keyboard up the card folds into a one-line strip beside Run now.
+
+**Queued · Failed · Done** choose which group the list shows (←→ step
+between them); Done is newest first. Each download is two lines: its name,
+then `↓ 18%` on the one downloading, `0 of ≤505 MiB` on one waiting (`≤` as in
+`dlq list`), the last error on a failed one (`×`), and the size and the file
+it delivered on a done one (`✓`).
+
+**The cut line is computed, never an item.** Taps and the cursor skip straight
+over it, and it is worked out fresh from wherever the items are, including live
+while one is being moved: hold `big.iso` and move it above `Some Talk About
+Rust`, and the line follows it down one step at a time, because the line is a
+projection of the runner's own admission rule (`expire_runner.admit`, the same
+function `fire()` calls in the window) taken over the runner's own budget, run
+against the queue in whatever order it is currently in. **Moving an item
+across the line moves the line, never the budget** — reordering only changes
+which items the budget reaches first, so a window that would spend 480 MiB
+spends 480 MiB whichever way the queue is arranged; move `Some Talk About
+Rust` above the ISO and the line still falls wherever 480 MiB runs out, just
+between a different pair of names.
+
+When nothing would get anything — the window closed, no reading to spend
+against, every queued item too big for what is left — the line moves to the
+top of the queued group and names why instead of a byte figure:
+`── nothing in the window · done ──` once the window has closed,
+`── nothing in the window · no portal reading ──` on a phone away from the
+vessel's wifi, and the item's own reason — `── nothing in the window · needs
+200 MiB, 50 MiB spendable ──` — only where there is a budget and the queue
+still does not fit inside it. On a 32-column phone the lead-in shortens
+(`── window · 480 MiB`, `── nothing · no portal reading`) before the figure or
+the reason gives way. There is no line at all before the first reading has
+come back — the card reads `asking zwana…` until it does.
+
+A download the window only gets part-way through says so on its own row:
+`0 of ≤210 MiB · 46 MiB at 03:00` sits above the line, because it does get
+bytes, and the figure is how many of them. Items that finish in the window and
+items below the line carry nothing extra.
+
+**Run now is `dlq run-now`, and it means now.** The window is a schedule, not
+a permission: it ignores the window exactly as Download now does, and so does
+`auto` being off — everything else stays, the reserve floor, the per-item caps,
+and the portal reading the whole budget is derived from. It asks once, on a
+sheet with the figure on its button: `n Run now · 480 MiB`, `out of the 03:00
+window's allowance`. With the portal unreachable it is [a blind
+run](#when-the-portal-cannot-be-reached) instead, in a warning border: *Zwana
+is not answering, so we do not know how much data we can spend. Proceed
+anyway?*, `at most what the queue declared`, then `y Run anyway · ≤1.2 GiB`
+and `esc Not now`. The figure is the runner's own — the same one the cut line already
+projected, never a second sum worked out here. A run that would do nothing —
+nothing queued, something already downloading, the queue busy — is not
+offered: the line above the tabs says why. It runs detached, so the tab stays
+usable and keeps drawing; the running download's sheet pauses it, and what is
+downloaded is kept for the next window.
+
+The card's figures come from a background reading — the portal is a network
+call, and asking it on every redraw would be hammering, not watching — taken
+when the app starts, again on opening the Queue tab once the one on screen is
+a minute old, and at once after anything that changes the queue or a
+setting. A failed one keeps the previous reading rather than blanking it. What *is* live regardless is a download in
+flight, read off its own progress file every second, and the list itself,
+re-read off the disk every fifteen seconds so a firing that starts shows up.
+
+### A download's sheet
+
+Reorder, rename, remove, put a failed download back, give it its nights back,
+download one now, open a finished one, read its log: there are no commands for
+any of those — each is easier to do to a download you are looking at than to a
+name you have to type correctly first. A tap on a row (or ⏎) opens its sheet:
+
+```
+ Some Talk About Rust ╱╱╱╱╱╱╱  esc ×
+ queued · 2nd of 3 · try 1/3
+ 0 of ≤505 MiB · 46 MiB at 03:00
+ 1080p mp4 → Download/
+ [  n Download now  ][   m Move   ]
+ [    r Rename      ][ l Its log  ]
+ [  t Clear tries   ][  d Remove  ]
+```
+
+The buttons are only the ones that mean something for that download, and the
+download being changed is the one named at the top of the sheet:
+
+| Button | |
 |---|---|
-| `n` | download it now — asks once, and says what it will cost |
-| `m` | move it in the queue |
-| `u` | put a failed download back, with its three nights again |
-| `t` | clear the failed nights counted against it |
-| `r` | rename it |
-| `o` | open the finished file — or, while a download started here with `n` runs, open it when it is done (again to stop asking; only while `dlq` stays open, and never for a run that stops short) |
-| `l` | that item's own log, from its last night |
-| `d` | remove it from the list |
+| `n` Download now | download it now — asks once, and says what it will cost |
+| `m` Move | move it in the queue — [below](#moving-a-download) |
+| `u` Queue again | put a failed download back, with its three nights again |
+| `t` Clear tries | clear the failed nights counted against it |
+| `r` Rename | rename it; the number in front stays |
+| `o` Open it | open the finished file |
+| `l` Its log | that item's own log, from its last night |
+| `d` Remove | remove it from the list |
 
-**Order is a place in a list, not a number.** `m` picks a download up, `↑↓`
-move it, `⏎` drops it — nothing is renamed until then, so a move thought better
-of costs nothing. The screen shows slugs and positions ("3rd of 7"); the `NN-`
-prefix that actually carries the order is bookkeeping, and nothing asks you to
-type it any more. Underneath, dropping one usually renames a single file, and
-when two neighbours have no room between them the whole queue is quietly dealt
-fresh numbers instead.
-
-**ytq asks for a place on this same screen.** Queueing a video offers a key
-that opens this listing with the video held on it — the two tonight lines, the
-groups, the cut line, and the new video as a row of its own that can be moved
-with `↑↓` like any other. Nothing has been written at that point, so the row is
-a phantom: it exists while the screen is open and goes when it closes. What it
-is there for is the line — the night is projected with the new video counted in
-whatever place it is being dragged to, so you can see it take tonight's last
-place off something else, or fall below the line itself. `⏎` takes the place
-and `esc` leaves the video where it was going anyway, which is last. The place
-is taken afterwards, once ytq has written the item, by the same move `m` makes
-here — so a video put third is third for the same reason and with the same
-renumbering, and it refuses in the same words while the queue is busy.
-
-**Removing keeps what was paid for.** `d` takes the download off the list and
-leaves every byte where it is — the partial in `work/`, anything finished in
-`out/`. The confirm screen offers a second key that also deletes the partial,
-with its size on it, and it is never the default. A file already delivered to
-Downloads is not touched either way: it is yours, not the queue's. Both keys are
-always live — a download that has fetched nothing has nothing to keep, so there
-they do the same thing and the screen says so rather than dropping one of them.
+**Removing keeps what was paid for.** Remove takes the download off the list
+and leaves every byte where it is — the partial in `work/`, anything finished
+in `out/`. Its sheet offers a second answer that also deletes the partial,
+with its size on it, in red and never the default, and `No` last. A file
+already delivered to Downloads is not touched either way: it is yours, not the
+queue's. A download that has fetched nothing has nothing to keep, so there the
+sheet has one answer, `y Remove it`.
 
 **A rename takes the download with it**, and so does a move. An item is four
 things: the file in `queue/`, the part-downloaded file in `work/<item>/`,
@@ -396,136 +506,58 @@ reasoning — that file is where to look when a download is not where you left
 it. Per-item logs are the exception: `logs/<date>-<item>.log` is the record of
 one particular night and keeps the name the item had then.
 
+### Moving a download
+
+**Order is a place in a list, not a number.** Move holds the download as a
+`◆` row; `↑` and `↓` (buttons or keys) move it, a swipe drags it, and
+`⏎ Put here` drops it — or a tap on another row puts it there at once.
+`esc Cancel` leaves it where it was. Nothing is renamed until it is dropped, so
+a move thought better of costs nothing. The window card and the cut line are
+re-planned at every step with the held download counted in the place it is
+being moved to, so you can see it take the window's last place off something
+else, or fall below the line itself.
+
+The screens show names and positions ("2nd of 3"); the `NN-` prefix that
+actually carries the order is bookkeeping, and nothing asks you to type it.
+Underneath, dropping one usually renames a single file, and when two
+neighbours have no room between them the whole queue is quietly dealt fresh
+numbers instead. This is the only place an order is chosen: `ytq` queues last
+and has no place picker.
+
 ### Downloading one now
 
-`n` on the item screen. It asks once, and what it says depends on where the
-phone is — the portal at `ic.zwana.io` is on the vessel's own network, so
-whether it answers is the difference between data that is counted and data that
-is not:
+Download now on a download's sheet (`n`). It asks once, on a sheet, and what
+it says depends on where the phone is — the portal at `ic.zwana.io` is on the
+vessel's own network, so whether it answers a quick connect, made as the sheet
+opens, is the difference between data that is counted and data that is not
+(the yes does nothing for the second or so that takes). Counted, it is
+*Download Some Talk About Rust now, outside the window?*, `today's allowance,
+no reserve kept` and `y Download now · 505 MiB`. With zwana not answering, the border turns to a warning, the question becomes
+*Zwana is not answering, so we do not know how much data we can spend. Proceed
+anyway?*, the grey line says `on mobile data, charged`, and the yes is
+`y Download anyway · 505 MiB` in red. One yes or no either way, and the figure
+is on both: what is left to fetch, not the whole declaration.
 
-```
- download now
-   download some-talk now?
-   spends 505 MiB of the vessel's allowance
-   the free half is the nightly window; this is outside it
-   it runs in the background — x stops it
-   y do it   any other key: no
-```
-
-```
- download now — NOT COUNTED
-   download some-talk now?
-   zwana does not answer, so nothing is counting this
-   505 MiB on whatever the phone is actually using
-   on mobile data that is metered and charged to you
-   on vessel wifi it means the portal is down — worth checking first
-   it runs in the background — x stops it
-   y do it   any other key: no
-```
-
-One yes or no either way, and the number is on both. The check is a two-second
-connection to the portal, costs nothing, and errs towards the loud version: if
-it does not answer in two seconds it has not answered.
-
-The download itself runs detached, so the screen stays where it is and the
-progress shows along the bottom; `x` stops it. Everything else is as it always
-was — it downloads into the same place the nightly job would, so stopping it is
-safe, what is downloaded stays, and the nightly window carries on from there. A
+The download itself runs detached, so the sheet closes and the status bar shows
+its progress; its own sheet pauses it. Everything else is as it always was — it
+downloads into the same place the nightly job would, so pausing it is safe,
+what is downloaded stays, and the nightly window carries on from there. A
 download started this way never counts as one of an item's three nightly
 attempts, and it takes the runner's lock, so it cannot collide with a firing.
-`ytq --now URL` is the same thing with the queueing folded in.
+Now on a video's sheet is the same thing with the queueing folded in.
 
 ### Downloads that are no longer there
 
 A finished download whose file you have since deleted is dropped from the list
-by itself, the next time the screen reads the queue, and says so. The record it
+by itself, the next time the app reads the queue, and says so. The record it
 keeps — where the file went — answers a question nobody can ask once the file
 is gone, and the row would otherwise sit there looking like work outstanding.
 
 That only happens on the evidence of having looked: the folder has to be
 readable. A card that is out or a storage permission that was never granted
-reads as **folder away**, changes nothing, and waits. It is the difference
-between a file that was deleted and a file that cannot be seen, and only the
-first one is a fact.
-
-### The queue itself
-
-The listing leads with two lines under the title bar — the verdict, then the
-figures — the same two facts `dlq status` opens with, kept in view while you
-work the queue instead of a screen away. Inside the queued group, a line
-marks where tonight's spending stops, moving as the items around it move:
-
-```
- queue                            22:41Z
- tonight: waiting, opens 23:00Z (19m)
- 480 MiB to spend · 763 MiB expires
-
-queued (3)
-  ubuntu-24-04      18%  1.02 GiB/5.61 GiB
-  some-talk          -   0 B/≤505 MiB
-  ── tonight ends here: 480 MiB ──────────
-  big-iso            -   0 B/≤8 GiB
-failed (1)
-  ...
- n run now  s settings  l log
- ↑↓ pick  ⏎ open  m move  q
-```
-
-**The cut line is computed, never an item.** It has no cursor position —
-`↑↓` and `m` skip straight over it — and it is worked out fresh from
-wherever the items are, including live while one is being moved: pick up
-`big-iso` and drag it above `some-talk`, and the line follows it down one
-step at a time, because the line is a projection of the runner's own
-admission rule (`expire_runner.admit`, the same function `fire()` calls at
-midnight) taken over the runner's own budget, run against the queue in
-whatever order it is currently in. **Moving an item across the line moves
-the line, never the budget** — reordering only changes which items the
-budget reaches first, so a night that would spend 480 MiB spends 480 MiB
-whichever way the queue is arranged; push `some-talk` above `ubuntu-24-04`
-and the line still falls wherever 480 MiB runs out, just between a different
-pair of names.
-
-When nothing would get anything tonight — the window closed, no reading to
-spend against, every queued item too big for what is left — the line moves to
-the top of the queued group and names why instead of a byte figure:
-`── nothing tonight: done ──` once the window has closed,
-`── nothing tonight: no portal reading ──` on a phone away from the vessel's
-wifi, and the item's own reason — `── nothing tonight: needs 200 MiB, 50 MiB
-spendable ──` — only where there is a budget and the queue still does not fit
-inside it. The reason is the half that survives a narrow phone: the
-`nothing tonight:` in front of it is what gives way first, so 32 columns get
-`── no portal reading ──`. The figure line shortens to
-`── tonight: 446 MiB ──` on the narrowest phones, and there is no line at all
-before the first reading has come back — the verdict line reads `tonight:
-asking zwana…` until it does.
-
-A download the night only gets part-way through says so on its own row:
-`three  -  0 B/≤210 MiB · 46 MiB tonight` sits above the line, because it
-does get bytes tonight, and the figure is how many of them. Items that
-finish tonight and items below the line carry nothing extra.
-
-**`n` here is `dlq run-now`, and it means now.** The nightly window is a
-schedule, not a permission: pressing it ignores the window exactly as the
-item screen's `n` does, and so does `auto` being off — everything else
-stays, the reserve floor, the per-item caps, and the portal reading the
-whole budget is derived from. With the portal unreachable it is [a blind
-run](#when-the-portal-cannot-be-reached) instead, asked in the same single
-question. The figure it names is the runner's own — the same one the cut
-line already projected, never a second sum worked out here. It runs
-detached, so the listing stays usable and keeps drawing, and `x` stops it —
-what is downloaded is kept and the nightly window carries on from there.
-
-**`s` opens [Settings](#settings)** — the window, the reserve, whether
-automatic downloads run at all, the destinations and the nightly job's own
-arm/cancel all live there now. **`l` opens the runner's own log.**
-
-The header figures come from a background reading — the portal is a network
-call, and asking it on every redraw would be hammering, not watching — taken
-when the screen opens and refreshed roughly once a minute and after anything
-that changes the queue: a drop, a removal, a requeue, an `n` of your own, a
-run of yours ending. A failed refresh keeps the previous reading rather than
-blanking it, and says so on the verdict line. What *is* live regardless is a
-download in flight, read off its own local progress file.
+changes nothing and waits (`dlq list` calls it **folder away**). It is the
+difference between a file that was deleted and a file that cannot be seen, and
+only the first one is a fact.
 
 ## Where downloads go
 
@@ -537,14 +569,14 @@ dlq dest file  ~/storage/downloads
 dlq dest video default          # put the built-in default back
 ```
 
-Or `d` on [the settings page](#settings), which opens the destinations
-screen: shows all three, says which of them is a default and whether it can
-be written to, and takes a new one in a field — `default` typed into that
-field puts the built-in one back. `v`, `a` and `f` pick which.
+Or **destinations** on [the More tab](#settings) (`d`), a sheet showing all
+three, which of them is a default, and a red line under any that cannot be
+written to. A tap on one opens its folder in a field; the `default` preset (or
+`default` typed in) puts the built-in one back.
 
 Three destinations, because a film, a song and an installer do not belong in
 the same folder on a phone. **Which one an item uses is decided by the row you
-picked**, not by the file extension: an audio-only row on `ytq`'s format list
+picked**, not by the file extension: an audio pick on `ytq`'s video sheet
 goes to `audio`, and everything else `ytq` queues goes to `video`. On a phone
 that matters more than it sounds — the music player and the video player look
 in different folders, and a song delivered among the films is one nothing
@@ -588,25 +620,28 @@ dlq settings notify-blocked off     # a blocked firing goes to the log only
 dlq settings window default         # put the built-in default back
 ```
 
-Or `s` on the main screen, which shows the same six and takes the same
-changes: the switches toggle where they sit, and the numbers open a field,
-prefilled with what they are now — type `default` to put the built-in one
-back, same as on the command line. Two more rows sit under those six, in the
-same layout: `d` for the destinations — the folder they all share, written
-with `~` where it is under home and shortened to just the folder's own name
-(`Download`) where the whole path will not fit beside the label (see [Where
-downloads go](#where-downloads-go)) — and `j` for the nightly job — armed,
-not armed, or the error stopping it from arming — which arms it when it is
-not armed and cancels it, with a confirm, when it is. Each row's key is
-beside its name (`w r p m a n d j`).
+Or the **More tab** (`s` from the Queue tab), which shows the same settings
+as one scrolling list of two-line rows — the key, the name and the value, then
+a grey line saying what it means — and takes the same changes. **A switch
+toggles where it sits**: a tap on `auto` turns it off. **A number opens a
+sheet** with the field prefilled, its rule in grey, and preset buttons
+(`30m 45m 1h 2h` for the window) so most changes need no typing; `⏎ Set` saves
+it and `esc Cancel` does not. The field takes digits — minutes for the window,
+MB for the others — and an empty one puts the built-in default back. A refused
+value is said inside the sheet in red, and nothing is written. `paid-min` is a
+row only while `reserve-when-paid` is `no`, since it does nothing otherwise.
 
-**A change stays on the page.** The row redraws with the new value and the
-page says what it did, in the setting's own sentence, wrapped under the rows
-— `d`'s destinations page does the same one level down — and `q` is what
-leaves, printing everything the session changed on the way out. On a short
-phone the screen keeps every name, value and complaint, and gives up the
-blank lines first, then the grey line saying what each setting means, and
-only then that sentence.
+Below the settings, in the same layout: **skip codecs** and **quality chips**,
+which are ytq's (see [ytq.md](ytq.md#the-video-sheet-and-the-formats-sheet));
+**destinations** — the folder they all share, by its own name (`Download`),
+or how many there are (see [Where downloads go](#where-downloads-go));
+the **nightly job**, armed or not armed, which a tap arms and, after asking,
+stops; the **runner log**; and **quit**. Each row's key is beside its name
+(`w r p m a n c h d j l q`).
+
+**A change stays on the tab.** The row redraws with the new value, the line
+above the tabs says what it did in the setting's own sentence, and everything
+the session changed is printed on the way out.
 
 | setting              | default | what it does                                     |
 |----------------------|---------|---------------------------------------------------|
@@ -616,7 +651,7 @@ only then that sentence.
 | `paid-min`           | 0 MB    | how much paid data `reserve-when-paid no` wants before it waives; 0 is any paid data at all |
 | `auto`               | on      | let the nightly job actually download              |
 | `notify-blocked`     | on      | a firing stopped by a fault says so on the phone   |
-| `destinations` (`d`) | Downloads | where finished files land, by kind — opens the destinations screen |
+| `destinations` (`d`) | Downloads | where finished files land, by kind — opens the destinations sheet |
 | `nightly job` (`j`)  | as registered | arm the scheduled firing, or cancel it with a confirm |
 
 A value typed as `45`, `45m` or `2h` sets the window; `150` or `150MB` sets
@@ -632,7 +667,7 @@ A `config.json` that will not parse **at all** — a trailing comma, a missing
 brace — is the same for the runner: every setting reads as its default and the
 night goes ahead. It is not the same for changing one. `dlq settings NAME
 VALUE` and `dlq dest KIND PATH` refuse and write nothing, saying which file
-will not parse, and the two screens say the same line in red, because saving
+will not parse, and the More tab says the same line in red, because saving
 on top of a file nothing can read means saving the one new key and losing the
 destinations and the other settings with it.
 
@@ -667,8 +702,8 @@ brings the reserve back for whatever is left to download.
 **`auto off` stops the nightly job from downloading; it does not stop the job
 from running.** The job stays armed and keeps firing every ~15 minutes; each
 firing does nothing, and `dlq status` leads with **automatic downloads are
-off** instead of one of the usual verdicts. `dlq run-now` and the screen's `n`
-still download with the switch off, the same way `--force` still overrides
+off** instead of one of the usual verdicts. `dlq run-now` and Run now on the
+Queue tab still download with the switch off, the same way `--force` still overrides
 the clock: a person asking for a download now is not the schedule, and the
 switch is only ever a schedule. Nothing about money moves with it — the
 reserve, the per-item caps and the portal reading go on deciding exactly what
@@ -690,11 +725,11 @@ and nothing else is ever going to mention them.
 The whole point of the queue is to spend data that is about to be wiped, so
 everything above waits for the window before the reset (an hour by default —
 `dlq settings window` changes it). When you need a file before then, that is
-`n` on the item screen — see [Downloading one
-now](#downloading-one-now). `ytq --now URL` is the same thing for something
-not queued yet: pick the format as usual, press `n`, and instead of waiting
-it writes the item and starts it detached, so the screen stays where it was
-and the download reports itself along the bottom. `x` stops it in either.
+Download now on its sheet in the Queue tab — see [Downloading one
+now](#downloading-one-now). Now on a video's sheet (or `ytq --now URL`) is the
+same thing for something not queued yet: it writes the item and starts it
+detached, so the app stays where it was and the status bar reports the
+download. Pause on the running download's sheet stops either.
 
 Whatever starts it, the download is outside the expiring window by
 definition, so none of the runner's three guarantees are in play: no reserve
@@ -703,7 +738,7 @@ screen before it starts is the number it may spend, and whether anything is
 counting it.
 
 Everything else is kept. It downloads into the same place the nightly job
-would, so stopping it is safe: what is downloaded stays, the item stays queued,
+would, so pausing it is safe: what is downloaded stays, the item stays queued,
 and the nightly window carries on from there. It takes the runner's lock, so it
 cannot collide with a firing that is already going; and if it finishes, the
 item is archived to `done/` exactly as a nightly one would be. A manual run
@@ -725,10 +760,10 @@ data
   dlq run-now --blind spends mobile data instead
 ```
 
-That last line is the way through, and it is the same bargain the item
-screen's `n` strikes, taken for the queue rather than one item. It is also
-`n` on [the main screen](#the-queue-itself), which asks the same single
-question with the same figure in it; on the command line:
+That last line is the way through, and it is the same bargain Download now
+strikes, taken for the queue rather than one item. It is also Run now on [the
+Queue tab](#the-queue-tab), which asks the same single question with the same
+figure on its button; on the command line:
 
 ```
 dlq run-now --blind        # run the queue with no portal reading
@@ -779,8 +814,8 @@ instead of one.
   `no` and paid data is there — see [Settings](#settings)), nothing runs past
   00:00 UTC, and the paid reserve is never spent. All three are measured
   against the portal, so all three are off for the two things that
-  deliberately spend paid data and say so first — `dlq ui`'s `n` and
-  `dlq run-now --blind`.
+  deliberately spend paid data and say so first — Download now (and Now on a
+  video) and `dlq run-now --blind`.
 - `dlq settings auto off` leaves all of the above scheduled but idle: the job
   still fires, it just downloads nothing until a person asks for it by name.
 
@@ -795,7 +830,8 @@ instead of one.
 - `logs/runner.log` is the runner's reasoning; `logs/<date>-<item>.log` is one
   item's own output for that night.
 - An item in `failed/` kept its logs and its attempt history in `state.json` —
-  diagnose before re-queueing. `dlq ui` reads that item's log with `l` and puts
-  it back with `u`, which also clears the three spent nights; by hand it is a
+  diagnose before re-queueing. Its sheet on the Queue tab reads its log
+  (`l Its log`) and puts it back (`u Queue again`), which also clears the
+  three spent nights; by hand it is a
   move back into `queue/`, and the attempts have to be cleared too or the first
   firing to touch it gives up on it again.

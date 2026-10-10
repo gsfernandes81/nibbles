@@ -142,3 +142,20 @@ for the same approval.
   and `l` pick Smallest and Largest, `←`/`→` step the tier, and `c` copies the
   page's URL (ytq's old `c`). `/` focuses the search field from Search, Feed
   and Later.
+
+## Pause only on a download this session can stop — 2026-10-10
+
+- Spec: `k-download` draws `x Pause` and `esc Back` under the running
+  download.
+- Built: Pause is there for a download this session started (Download now,
+  Start now, or Run now). A nightly firing's download, or a `dlq now` in
+  another terminal, gets `esc Back` alone, full width: this app holds no
+  handle on it, and a Pause that says "paused" over a download that carries
+  on is worse than none (dlq's old rule for `x`).
+
+## Skip codecs starts empty — 2026-10-10
+
+- Spec: `k-more` shows `skip codecs  av01 vp9`.
+- Built: nothing is skipped until it is set (presets `av01 vp9`, `av01`,
+  `vp9`, `none`); the mockup's value is read as the owner's own setting, not
+  as a default for everyone.

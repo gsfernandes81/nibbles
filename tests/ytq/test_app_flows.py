@@ -193,3 +193,28 @@ def test_q_types_into_a_focused_field_rather_than_quitting():
     for ch in "quiz":
         app.handle(tui.Key(ch))
     assert not app.done and app.tabs[0].value == "quiz"
+
+
+def test_the_formats_sheet_picks_with_the_arrows_too():
+    app = headless()
+    with_listing(app, info=video_info())
+    tap(app, "row")
+    video = app.sheets[-1]
+    app.handle(tui.Key("f"))
+    before, _ = video.chosen()
+    app.handle(tui.Key("down"))
+    after, _ = video.chosen()
+    assert after is not before
+    app.handle(tui.Key("enter"))
+    assert app.sheets[-1] is video and video.explicit is after
+
+
+def test_a_video_too_big_for_one_night_says_so_in_words():
+    big = video_info(formats=[
+        fmt("137", vcodec="avc1.640028", ext="mp4", height=480, filesize=4 * 1024 * MiB),
+        fmt("140", acodec="mp4a.40.2", ext="m4a", abr=129, filesize=10 * MiB),
+    ])
+    app = headless()
+    with_listing(app, info=big)
+    tap(app, "row")
+    assert "nights" in app.compose().plain()

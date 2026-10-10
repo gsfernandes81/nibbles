@@ -682,6 +682,7 @@ class VideoSheet(Sheet):
         self.when = 1 if app.yt.now else 0
         self.clash: ytq.Duplicate | None = None
         self.checked = False
+        self.said = ""
         self._app = app
         app.yt.probe(url, self)
 
@@ -808,7 +809,10 @@ class VideoSheet(Sheet):
                 codecs = " ".join(ytq.codec_families(choice)) + f" {ytq.bitrate_of(choice)}k"
             else:
                 codecs = "+".join(ytq.codec_families(choice))
+            # The nights it will take, in words as well as colour.
+            nights = ytq.nights_note(choice.size).strip()
             parts.append(w.spans([(size_of(choice), size_fg(choice), True),
+                                  (f" {nights}" if nights else "", size_fg(choice)),
                                   (f" · {choice.ext} · {codecs}", T.fg_more_subtle)], width))
             parts.append(w.text(f"skipped {' '.join(passed)}", width, T.fg_most_subtle)
                          if passed else w.gap(width))
@@ -819,6 +823,8 @@ class VideoSheet(Sheet):
                     "today's allowance, no reserve kept" if counted else
                     "on mobile data, charged")
             parts.append(w.text(line, width, T.fg_most_subtle))
+        if self.said:
+            parts.append(w.text(self.said, width, T.info))
         return w.vstack(*parts, width=width)
 
     def tier_row(self, app, width: int) -> Piece:
@@ -903,7 +909,7 @@ class VideoSheet(Sheet):
     def set_when(self, app, when: int) -> None:
         self.when = when
         if when == 1:
-            app.queue.refresh()
+            app.queue.check_reach()
 
     def to_mode(self, mode: str) -> None:
         tiers = self.tiers(mode)
@@ -937,7 +943,8 @@ class VideoSheet(Sheet):
             app.open(FormatsSheet(self))
             return True
         if key == "c":
-            app.say(ytq.to_clipboard(self.url))
+            # Said inside the sheet: the line above the tabs is under it.
+            self.said = ytq.to_clipboard(self.url)
             return True
         if key == "n":
             self.set_when(app, 1 - self.when)
@@ -1022,7 +1029,13 @@ class FormatsSheet(Sheet):
     def body(self, app, width: int, height: int) -> Piece:
         chosen, _ = self.video.chosen()
         skip = ytq.skip_codecs(self.video.prefs)
-        parts: list = [w.text("smallest first · ~ an estimate", width, T.fg_most_subtle)]
+        got = self.video._app.yt.probed.get(self.video.url)
+        unsized = got[2] if got else 0
+        head = "smallest first · ~ an estimate"
+        if unsized:
+            # Formats yt-dlp states no size for are never offered: counted.
+            head += f" · {unsized} unsized"
+        parts: list = [w.text(head, width, T.fg_most_subtle)]
         anchor = 0
         for tier, options in self.groups():
             if tier == self.video.tier:
@@ -1055,9 +1068,26 @@ class FormatsSheet(Sheet):
             self.video.mode = self.video.tier[0]
             app.close(self)
 
+    def flat(self) -> list[ytq.Choice]:
+        return [o for _, options in self.groups() for o in options]
+
     def key(self, app, key: str) -> bool:
-        if key in ("up", "down", "pgup", "pgdn"):
-            step = {"up": -1, "down": 1, "pgup": -5, "pgdn": 5}[key]
-            self.offset = max(0, self.offset + step)
+        """↑ and ↓ move the pick through every format in the order drawn, and
+        ⏎ takes it back to the video sheet; pgup/pgdn scroll."""
+        if key in ("up", "down"):
+            flat = self.flat()
+            chosen, _ = self.video.chosen()
+            at = flat.index(chosen) if chosen in flat else 0
+            pick = flat[max(0, min(len(flat) - 1, at + (1 if key == "down" else -1)))]
+            self.video.explicit = pick
+            self.video.tier = ytq.tier_of(pick)
+            self.video.mode = self.video.tier[0]
+            self.offset = max(0, self.offset + (1 if key == "down" else -1) * 2)
+            return True
+        if key in ("pgup", "pgdn"):
+            self.offset = max(0, self.offset + (5 if key == "pgdn" else -5))
+            return True
+        if key == "enter":
+            app.close(self)
             return True
         return super().key(app, key)

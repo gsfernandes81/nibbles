@@ -15,6 +15,8 @@ Downloads among the phone's other files and belongs to whoever asked for it.
 
 from __future__ import annotations
 
+import time
+
 import fcntl
 import json
 
@@ -647,6 +649,8 @@ def test_the_number_is_the_whole_point_of_asking(dlq):
     item = dlq.qs.ItemSheet(row)
     shell = dlq.qs.shell
 
+    # Counted: zwana answered the fresh connect the sheet asks as it opens.
+    app.queue.reached, app.queue.reached_at = True, time.monotonic()
     now = dlq.qs.now_sheet(app, row, item)
     run = dlq.qs.run_sheet(app, facts)
     assert shell.size(200 * MiB) in now.answers[0].note
@@ -660,6 +664,7 @@ def test_the_number_is_the_whole_point_of_asking(dlq):
     # identical from here. The border turns warning-coloured.
     blind = dlq.facts(blind=True, force=True)
     app.queue.facts = blind
+    app.queue.reached, app.queue.reached_at = False, time.monotonic()
     for sheet in (dlq.qs.now_sheet(app, row, item), dlq.qs.run_sheet(app, blind)):
         assert "not answering" in sheet.question
         assert sheet.border is not None

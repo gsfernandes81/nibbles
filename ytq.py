@@ -2651,7 +2651,7 @@ def main(argv: list[str] | None = None) -> int:
         "--now",
         action="store_true",
         help="start it in the background instead of waiting for the nightly "
-        "window; the same as pressing n on the format list",
+        "window; the same as Now on the video sheet",
     )
     parser.add_argument(
         "--dest",

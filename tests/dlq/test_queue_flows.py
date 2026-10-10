@@ -137,3 +137,49 @@ def test_a_broken_config_is_never_written_over(dlq):
     key(app, "a")
     assert (dlq.root / "config.json").read_text() == "{not json"
     assert "config.json" in app.said or "parse" in app.said
+
+
+def test_b_removes_too_when_there_are_no_bytes_to_choose_about(dlq):
+    """One answer wearing two keys: the keys never vary with the item."""
+    dlq.item("10-empty.py")
+    app = headless(dlq)
+    open_row(app, "10-empty.py")
+    key(app, "d")
+    assert len(app.sheets[-1].answers) == 2  # the one answer, then No
+    key(app, "b")
+    assert not (dlq.root / "queue" / "10-empty.py").exists()
+
+
+def test_download_now_waits_for_whether_zwana_answers(dlq):
+    """Its words depend on where the phone is, asked fresh as it opens; until
+    the answer lands its yes does nothing."""
+    import time
+
+    dlq.item("10-thing.py", cap=200 * MiB)
+    app = headless(dlq)
+    app.queue.reach_job = object.__new__(type("Pending", (), {"finished": False}))
+    open_row(app, "10-thing.py")
+    key(app, "n")
+    sheet = app.sheets[-1]
+    app.compose()
+    assert sheet.answers[0].kind == "off"
+    key(app, "y")
+    assert app.sheets[-1] is sheet, "an unknown answer is not a yes"
+    app.queue.reach_job = None
+    app.queue.reached, app.queue.reached_at = False, time.monotonic()
+    app.compose()
+    assert sheet.answers[0].kind == "danger" and sheet.border is not None
+
+
+def test_a_manual_budget_is_always_counted(dlq):
+    app = headless(dlq)
+    app.queue.facts = dict(dlq.facts(), source="manual")
+    app.queue.reached = False
+    assert app.queue.counted() is True
+
+
+def test_a_reading_that_failed_says_so_on_the_card(dlq):
+    app = headless(dlq)
+    app.queue.facts, app.queue.note = None, "no route"
+    drawn = app.compose().plain()
+    assert drawn.count("no route") == 2  # on the card, and in the status bar

@@ -87,6 +87,11 @@ class QueueModel:
         self.job: tui.Job | None = None
         self.read_at = 0.0
         self.taken = 0.0
+        #: Whether zwana answered a fresh 1.5 s connect, and when (``reached``
+        #: is ``None`` until one has come back).
+        self.reached: bool | None = None
+        self.reached_at = 0.0
+        self.reach_job: tui.Job | None = None
         self.samples: dict[str, list[tuple[float, int]]] = {}
         self.read()
         self.refresh()
@@ -117,7 +122,27 @@ class QueueModel:
         self.job = tui.Job(lambda: ui.tonight_facts(), "asking zwana", key="facts")
         self.app.start(self.job, self)
 
+    def check_reach(self) -> None:
+        """Ask whether zwana answers, now: what Now and Download now say
+        depends on where the phone is (``expire_ui.reachable``)."""
+        if self.manual():
+            return
+        if self.reach_job is not None and not self.reach_job.finished:
+            return
+        self.reach_job = tui.Job(ui.reachable, "asking whether zwana answers", key="reach")
+        self.app.start(self.reach_job, self)
+
+    def manual(self) -> bool:
+        """A manual budget source counts every byte itself: nothing it
+        spends is uncounted, so the red "charged" case never applies."""
+        return bool(self.facts and self.facts.get("source") == "manual")
+
     def done(self, app, job) -> None:
+        if job is self.reach_job:
+            self.reach_job = None
+            self.reached = bool(job.result) if job.error is None else False
+            self.reached_at = time.monotonic()
+            return
         if job is self.job:
             self.job = None
             self.taken = time.monotonic()
@@ -125,7 +150,9 @@ class QueueModel:
                 self.facts = job.result
                 self.note = ""
             else:
-                self.note = f"could not read it: {job.error}"
+                # The reason, short: the card's verdict already says "no
+                # reading", and this is the line where its figures would be.
+                self.note = str(job.error) or type(job.error).__name__
 
     def changed(self) -> None:
         """Something was queued, moved or removed: read again, plan again."""
@@ -202,7 +229,16 @@ class QueueModel:
         return shell.clock(at) if at else "the window"
 
     def counted(self) -> bool | None:
-        """Whether zwana answered the last reading: ``None`` before one."""
+        """Whether what is spent now is counted: always under a manual
+        budget; else whether zwana answered a fresh connect (asked by
+        :meth:`check_reach`), and failing that the last reading. ``None``
+        while nothing is known."""
+        if self.manual():
+            return True
+        if self.reached is not None and time.monotonic() - self.reached_at < 120:
+            return self.reached
+        if self.reach_job is not None and not self.reach_job.finished:
+            return None
         if not self.facts:
             return None
         return self.facts.get("portal") is not None
@@ -228,6 +264,8 @@ class QueueModel:
             return ("RUNNING", "warn", "starting the queue", "")
         f = self.facts
         if not f:
+            if self.note:
+                return ("BLOCKED", "error", f"no reading: {self.note}", "")
             return ("ASKING", "info", "asking zwana…", "")
         verdict = f["verdict"]
         label, kind = STATUS.get(verdict, ("WAITING", "primary"))
@@ -273,6 +311,8 @@ def verdict_line(model: QueueModel, room: int) -> list[tuple]:
     """``waiting · 03:00 (19m)``, the clock giving way before the word."""
     f = model.facts
     if not f:
+        if model.note:
+            return [("no reading", T.fg_base, True)]
         return [("asking zwana…", T.fg_more_subtle)]
     word = ui.VERDICT_WORDS.get(f["verdict"], f["detail"])
     seconds = model.countdown()
@@ -292,7 +332,8 @@ def figures(model: QueueModel, room: int) -> tuple[float, str]:
     may spend against what expires."""
     f = model.facts
     if not f:
-        return 0.0, ""
+        # A reading that failed says so where its figures would be.
+        return 0.0, model.note
     spend = max(0, f["spendable"])
     doc = f.get("portal")
     if doc is None:
@@ -908,36 +949,64 @@ class ItemSheet(Sheet):
             app.open(now_sheet(app, row, self))
 
 
-def now_sheet(app, row: dict, item: ItemSheet) -> Sheet:
-    """Download now's one yes: the figure is what is left to fetch."""
-    model = app.queue
-    left_bytes = max(0, row["cap"] - row["have"])
-    figure = shell.size(left_bytes)
-    counted = model.counted()
+class NowSheet(Confirm):
+    """Download now's one yes, the figure on it being what is left to fetch.
 
-    def go() -> None:
+    Its words wait on the fresh "does zwana answer" (asked as it opens):
+    counted, it is today's allowance with no reserve kept; not, it is the
+    Run now sentence, mobile data, charged, in the danger style and the
+    warning border; not yet known, the yes is drawn but does nothing.
+    """
+
+    def __init__(self, app, row: dict, item: ItemSheet) -> None:
+        super().__init__("Download now", "", [])
+        self.row, self.item = row, item
+        app.queue.check_reach()
+        self.refresh(app)
+
+    def refresh(self, app) -> None:
+        row = self.row
+        figure = f"· {shell.size(max(0, row['cap'] - row['have']))}"
+        counted = app.queue.counted()
+        if counted is None:
+            self.question = "Asking whether zwana answers…"
+            self.grey, self.border = "", None
+            self.answers = [Choice("Download now", "y", "off", figure), Choice("Not now", "esc")]
+        elif counted:
+            self.question = f"Download {display(row['name'])} now, outside the window?"
+            self.grey, self.border = "today's allowance, no reserve kept", None
+            self.answers = [Choice("Download now", "y", "spend", figure, self.go),
+                            Choice("Not now", "esc")]
+        else:
+            self.question = ("Zwana is not answering, so we do not know how much data we "
+                             "can spend. Proceed anyway?")
+            self.grey, self.border = "on mobile data, charged", T.warning
+            self.answers = [Choice("Download anyway", "y", "danger", figure, self.go),
+                            Choice("Not now", "esc")]
+        self._app = app
+
+    def draw(self, app, s: Surface, height: int) -> None:
+        self.refresh(app)
+        super().draw(app, s, height)
+
+    def wake(self, app) -> float | None:
+        return 0.1 if app.queue.counted() is None else None
+
+    def go(self) -> None:
+        app, row = self._app, self.row
         problem = ui.busy_problem()
-        refused = [problem] if problem else model.start_now(row["name"])
+        refused = [problem] if problem else app.queue.start_now(row["name"])
         if refused:
             app.open(Notice("Not started", refused))
             return
-        app.close(item)
+        app.close(self.item)
         said = f"downloading {display(row['name'])}"
-        app.receipt(said if counted else f"{said} — not counted")
+        app.receipt(said if app.queue.counted() else f"{said} — not counted")
         app.say(said)
 
-    if counted is False:
-        return Confirm(
-            "Download now",
-            "Zwana is not answering, so we do not know how much data we can spend. "
-            "Proceed anyway?",
-            [Choice("Download anyway", "y", "danger", f"· {figure}", go),
-             Choice("Not now", "esc")],
-            grey="on mobile data, charged", border=T.warning)
-    return Confirm(
-        "Download now", f"Download {display(row['name'])} now, outside the window?",
-        [Choice("Download now", "y", "spend", f"· {figure}", go), Choice("Not now", "esc")],
-        grey="today's allowance, no reserve kept")
+
+def now_sheet(app, row: dict, item: ItemSheet) -> Sheet:
+    return NowSheet(app, row, item)
 
 
 def remove_sheet(app, row: dict, item: ItemSheet) -> Confirm:
@@ -959,7 +1028,8 @@ def remove_sheet(app, row: dict, item: ItemSheet) -> Confirm:
     for keys, words in ui.removal_answers(row):
         deletes = keys == "b"
         answers.append(Choice(words[:1].upper() + words[1:], keys[0],
-                              "danger" if deletes else "normal", act=answer(deletes)))
+                              "danger" if deletes else "normal", act=answer(deletes),
+                              also=keys[1:]))
     answers.append(Choice("No", "esc"))
     return Confirm("Remove", note[0][:1].upper() + note[0][1:], answers,
                    grey=" · ".join(note[1:]))
@@ -1425,7 +1495,9 @@ class SkipSheet(FieldSheet):
         if problem:
             self.problem = problem
             return
-        app.say(f"skip codecs: {' '.join(families) or 'none'}")
+        said = f"skip codecs: {' '.join(families) or 'none'}"
+        app.receipt(said)
+        app.say(said)
         app.close(self)
 
 
@@ -1457,6 +1529,7 @@ class ChipsSheet(FieldSheet):
         if problem:
             self.problem = problem
             return
+        app.receipt(said)
         app.say(said)
         app.close(self)
 
