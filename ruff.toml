@@ -3,6 +3,9 @@
 # nobody watches fail.
 line-length = 90
 target-version = "py311"          # the phone runs 3.14
+# The design mockups are drawing scripts (star imports from the kit, fixed
+# coordinates), kept to regenerate design/mockups/, not code that ships.
+extend-exclude = ["design/mock"]
 
 [lint]
 select = ["F", "E4", "E7", "E9", "B", "UP", "SIM"]

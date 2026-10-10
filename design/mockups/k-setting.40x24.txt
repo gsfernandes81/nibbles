@@ -1,0 +1,24 @@
+ dlq ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ settings 
+ w window                       60 min ┃
+   ahead of the reset, at 04:00 here   ┃
+ r reserve                      100 MB ┃
+   kept back, never spent              ┃
+ a auto                           ◉ on ┃
+   the nightly job downloads           ┃
+ c skip codecs                av01 vp9 ┃
+   the quality chips pass these over   ┃
+ h quality chips               240-720 ┃
+   learned from what you pick          ┃
+ d destinations               Download ┃
+╭──────────────────────────────────────╮
+│ window ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
+│ ╭──────────────────────────────────╮ │
+│ │ 45                               │ │
+│ ╰──────────────────────────────────╯ │
+│ a multiple of 15, 15 min to 24 h     │
+│ ╭────────╮╭────────╮╭──────╮╭──────╮ │
+│ │  30m   ││  45m   ││  1h  ││  2h  │ │
+│ ╰────────╯╰────────╯╰──────╯╰──────╯ │
+│ ╭───────────────────╮╭─────────────╮ │
+│ │    esc Cancel     ││    ⏎ Set    │ │
+│ ╰───────────────────╯╰─────────────╯ │

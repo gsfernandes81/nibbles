@@ -1,0 +1,14 @@
+ ytq ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ crust of rust • 20 
+╭──────────────────────────────────────╮
+│ Formats · 480p ╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
+│ smallest first · ~ an estimate      ┃│
+│ 480p ──────────────────────────── 3 ┃│
+│      71 MiB~  480p webm             ┃│
+│    vp9 + opus · skipped             ┃│
+│  ●    92 MiB  480p mp4              ┃│
+│    avc1.4d401e + mp4a.40.2          ┃│
+│      104 MiB  480p mp4              ┃│
+│    av01.0.04M.08 · skipped          ┃│
+│ 360p ──────────────────────────── 1 ┃│
+│       58 MiB  360p mp4              ││
+│    avc1 + mp4a · merged             ││

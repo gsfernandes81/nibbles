@@ -1,0 +1,14 @@
+ dlq ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ settings 
+ w window                       60 min ┃
+   ahead of the reset, at 04:00 here   ┃
+ r reserve                      100 MB ┃
+   kept back, never spent              ┃
+ a auto                           ◉ on │
+   the nightly job downloads           │
+ c skip codecs                av01 vp9 │
+   the quality chips pass these over   │
+reserve is 100 MB again (the default)   
+────────────────────────────────────────
+ Search   Feed   Later   Queue    More  
+                                        
+ WAITING  opens 03:00               19m 

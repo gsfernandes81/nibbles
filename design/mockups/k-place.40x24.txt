@@ -1,0 +1,24 @@
+ dlq ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ moving big.iso 
+╭──────────────────────────────────────╮
+│ waiting · 03:00 (19m)                │
+│ ███████████████████████░░░░░░░░░░░░░ │
+│ 480/763 MiB to spend                 │
+╰──────────────────────────────────────╯
+                                        
+   ubuntu-24.04-desktop-amd64.iso       
+   ↓ 18%  1.02 of 5.61 GiB              
+ ◆ big.iso                              
+   0 of ≤8 GiB · 434 MiB at 03:00       
+  ── the window ends here · 480 MiB ─── 
+   Some Talk About Rust                 
+   0 of ≤505 MiB                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+  tap a row to put it there             
+╭────╮╭────╮╭────────────╮╭────────────╮
+│ ↑  ││ ↓  ││ ⏎ Put here ││ esc Cancel │
+╰────╯╰────╯╰────────────╯╰────────────╯

@@ -1,0 +1,11 @@
+ dlq ╱╱╱╱╱╱╱╱ waiting · 480 MiB 
+╭──────────╮╭─────────╮╭───────╮
+│  Queued  ││ Failed  ││ Done  │
+╰──────────╯╰─────────╯╰───────╯
+   ubuntu-24.04-desktop-amd64…  
+   ↓ 18%  1.02 of 5.61 GiB      
+   Some Talk About Rust         
+────────────────────────────────
+Search Feed  Later  Queue  More 
+                                
+ ↓ 18%  ubuntu-24.04-deskt…  1h 

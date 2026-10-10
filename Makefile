@@ -35,4 +35,9 @@ lint:
 	@if command -v ruff >/dev/null 2>&1; then ruff check .; \
 	else uv run --group lint ruff check .; fi
 
-.PHONY: dev test check mutants lint
+# make mockups  redraw design/mockups/ from design/mock/ (needs the bewitch
+#               checkout beside this one, or $BEWITCH_HOME)
+mockups:
+	python3 design/mock/render.py
+
+.PHONY: dev test check mutants lint mockups
