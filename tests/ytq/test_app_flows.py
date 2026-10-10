@@ -53,7 +53,7 @@ def test_one_tap_on_a_row_opens_its_sheet_and_starts_its_probe(monkeypatch):
     tap(app, "row")
     assert isinstance(app.sheets[-1], ys.VideoSheet)
     assert app.yt.view("crust").cursor == 0
-    for job, owner in list(app.jobs):
+    for job, _ in list(app.jobs):
         end = time.monotonic() + 5
         while not job.finished and time.monotonic() < end:
             time.sleep(0.01)
