@@ -373,3 +373,63 @@ def test_what_it_reports_is_what_crossed_the_interface(dlq, monkeypatch, counted
     """
     run = supervised(dlq, monkeypatch, [counted])
     assert run.run(cap=100 * MiB) == counted
+
+
+# --------------------------------------------------------------------------- #
+# With the interface counters dark: every Android phone
+# --------------------------------------------------------------------------- #
+
+
+def dark(dlq, monkeypatch, moved, portal=None):
+    """A treadmill on a phone: ``/proc/net/dev`` reads nought, the meter moves.
+
+    The interface counter is pinned at its base, which is what a permission
+    denied looks like through :func:`expire_runner.iface_bytes`, and the child
+    carries a meter reading what the item reported — the treadmill's figures.
+    """
+    run = supervised(dlq, monkeypatch, moved, portal)
+    monkeypatch.setattr(dlq.runner, "iface_bytes", lambda: 0)
+    run.meter = type("Meter", (), {"moved": lambda self: run.counted})()
+    return run
+
+
+def test_with_the_counters_dark_a_runaway_is_still_stopped(dlq, monkeypatch):
+    """The byte cap acts on the item's own report when the interface says nought."""
+    run = dark(dlq, monkeypatch, moved=[n * 40 * MiB for n in range(1, 20)])
+    run.run(cap=100 * MiB)
+    assert run.stopped
+
+
+def test_with_the_counters_dark_the_floor_is_still_projected(dlq, monkeypatch):
+    """The portal's remainder, projected down by the meter between polls.
+
+    One tick that moves exactly the headroom stops the download that tick, and
+    one that moves a byte less does not — the same pair the counted version
+    above pins, read off the item's report instead.
+    """
+    doc = dlq.reading(free=700 * MiB)
+    room = headroom(dlq, doc)
+    crossed = dark(dlq, monkeypatch, [room], portal=doc)
+    crossed.run(cap=ROOMY, doc=doc)
+    assert crossed.stopped
+    short = dark(dlq, monkeypatch, [room - 1], portal=doc)
+    short.run(cap=ROOMY, doc=doc)
+    assert not short.stopped
+
+
+def test_with_the_counters_dark_a_manual_budget_stops_before_the_reserve(
+    dlq, monkeypatch
+):
+    dlq.config({"budget": "manual", "allowance_mb": 500})
+    reading = dlq.runner.manual_reading({})
+    run = dark(dlq, monkeypatch, moved=[n * 40 * MiB for n in range(1, 30)])
+    run.run(cap=ROOMY, doc=reading)
+    assert run.stopped and run.polled == 0
+
+
+def test_with_the_counters_dark_a_download_inside_its_slice_is_left_alone(
+    dlq, monkeypatch
+):
+    run = dark(dlq, monkeypatch, moved=[10 * MiB, 20 * MiB, 30 * MiB])
+    assert run.run(cap=100 * MiB) == 30 * MiB
+    assert not run.stopped

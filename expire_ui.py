@@ -773,6 +773,9 @@ def _nothing_to_spend(facts: dict) -> str:
     spendable in it is a night where the allowance is genuinely gone. Only the
     last of them is about the data.
     """
+    manual = facts.get("allowance")
+    if manual is not None:
+        return "no allowance set" if not manual["allowance_bytes"] else "allowance spent"
     if facts["portal"] is None:
         return "no portal reading"
     if not sched._runner().usable(facts["portal"]):

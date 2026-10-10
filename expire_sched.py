@@ -198,13 +198,28 @@ def root_problem() -> str | None:
         return (
             f"{ROOT} is not a queue root: no queue/README.md in it. Check EXPIRE_HOME."
         )
-    if not (_zwana_root() / "quota_widget.py").is_file():
+    if _zwana_wanted() and not (_zwana_root() / "quota_widget.py").is_file():
         return (
             f"no quota_widget.py in {_zwana_root()}, which the runner "
             f"imports; clone zwana-quota beside the queue checkout or set "
-            f"ZWANA_HOME"
+            f"ZWANA_HOME, or set {_me()} settings budget manual"
         )
     return None
+
+
+def _zwana_wanted() -> bool:
+    """Whether the budget source is zwana, so its checkout has to be there.
+
+    Asked of the runner, which no longer needs zwana-quota to be imported: a
+    manual source runs without it, and a missing checkout is only a broken
+    root for the source that reads through it. If the runner itself cannot be
+    imported that is a broken root too, and the zwana check is the one that
+    has always said so.
+    """
+    try:
+        return _runner().budget_source() == "zwana"
+    except Exception:  # noqa: BLE001 - the answer is "check the checkout"
+        return True
 
 
 def _zwana_root() -> Path:
@@ -785,7 +800,7 @@ def _paint():
     code, and they must not need a working checkout to come out.
     """
     try:
-        return _runner().qw.Paint(colour_ok())
+        return _runner().Paint(colour_ok())
     except Exception:  # noqa: BLE001 - colour is never worth an exception
         return lambda text, code: text
 
@@ -1028,6 +1043,7 @@ VERDICTS = {
     "late": ("done for tonight", "90"),
     "empty": ("nothing queued", "90"),
     "off": ("automatic downloads are off", "1;33"),
+    "unset": ("no daily allowance set", "1;33"),
     "spent": ("no data to spend tonight", "33"),
     "blind": ("PAID: no portal, downloading", "1;33"),
     "no-portal": ("BLOCKED: portal not answering", "1;31"),
@@ -1049,7 +1065,7 @@ def _clock(epoch: float) -> str:
 
 def _in(seconds: float) -> str:
     """``19h 37m`` / ``37m`` — quota_widget's countdown, on plain seconds."""
-    return _runner().qw.countdown(dt.timedelta(seconds=max(0.0, seconds)))
+    return _runner().countdown(seconds)
 
 
 def _short(path: Path) -> str:
@@ -1097,7 +1113,7 @@ def _last_firing() -> tuple[str, str]:
         # A heartbeat this code did not write. Say it verbatim rather than
         # nothing: it is the only record of what the last firing thought.
         return "", text
-    age = _runner().qw.since(time.time() - when.timestamp())
+    age = _runner().since(time.time() - when.timestamp())
     return f"{when.strftime('%H:%MZ')} ({age})", rest.strip()
 
 
@@ -1201,6 +1217,8 @@ def compose_status(
         wrapped("no reading: this spends mobile data", "1;33")
         wrapped(f"up to {human(facts['spendable'])}, from what it declared", "33")
         wrapped(facts["portal_problem"], "90")
+    elif facts.get("source") == "manual":
+        rows.extend(_manual_rows(facts, width, paint))
     elif doc is None:
         wrapped("no reading, so nothing can be spent", "31")
         wrapped(facts["portal_problem"], "90")
@@ -1213,7 +1231,7 @@ def compose_status(
         wrapped(f"{_me()} run-now --blind spends mobile data instead", "90")
     else:
         human = _runner().human
-        grade = _runner().qw.grade
+        grade = _runner().grade
         grant = max(1, doc["free"]["grant_bytes"])
         free = doc["free"]["left_bytes"]
         floor = facts["floor_bytes"]
@@ -1280,6 +1298,64 @@ def compose_status(
     for label, text, hue in [*(job or []), ("root", _short(facts["root"]), "90")]:
         rows.extend(_labelled(label, text, hue, width, paint))
     return rows
+
+
+def _manual_rows(facts: dict, width: int, paint) -> list[tuple[str, str]]:
+    """The data block for a manual budget: the same derivation, its own figures.
+
+    Read top to bottom it is :func:`expire_runner.manual_spendable`: what the
+    plan gives a day, what the queue has spent of it since the reset, what is
+    held back, and so what the queue may spend before the next reset. There is
+    no "expires" line, because a manual source cannot know what the rest of the
+    phone used — and the line under the figures says so, since that is the
+    thing the reserve is there for.
+    """
+    runner = _runner()
+    human = runner.human
+    reading = facts["allowance"]
+    out: list[tuple[str, str]] = []
+
+    def wrapped(text: str, tone: str) -> None:
+        for line in _wrap(text, width - 2):
+            out.append((f"  {line}", f"  {paint(line, tone)}"))
+
+    if not reading["allowance_bytes"]:
+        wrapped("no daily allowance set, so nothing can be spent", "31")
+        wrapped(f"{_me()} settings allowance sets one, in MB", "90")
+        return out
+    if reading["problem"]:
+        wrapped(reading["problem"], "31")
+    reset = time.strftime("%H:%M", time.localtime(reading["resets"]))
+    spendable = facts["spendable"]
+    entries = [
+        (human(reading["allowance_bytes"]), "the plan gives each day", "a day", ""),
+        (
+            human(reading["spent_bytes"]),
+            "spent by the queue since the reset",
+            "spent since reset",
+            "90",
+        ),
+        (
+            f"{facts['floor_bytes'] // 1_000_000} MB",
+            "is always kept back",
+            "always kept back",
+            "90",
+        ),
+        (
+            human(spendable),
+            f"the queue may spend by {reset}",
+            f"to spend by {reset}",
+            "32" if spendable > 0 else "31",
+        ),
+        (f"{human(facts['bps'])}/s", "measured download speed", "measured speed", "90"),
+    ]
+    value_w = max(len(value) for value, _, _, _ in entries)
+    for value, long, short, hue in entries:
+        cell = value.rjust(value_w)
+        note = long if 2 + value_w + 1 + len(long) <= width else short
+        out.append((f"  {cell} {note}", f"  {paint(cell, hue)} {paint(note, '90')}"))
+    wrapped("what the rest of the phone uses is not counted; the reserve is for it", "90")
+    return out
 
 
 def _timing(facts: dict) -> str:
@@ -1648,6 +1724,18 @@ SETTING_SAYS: dict[str, object] = {
         "a firing stopped by a fault says so on the phone",
         "a blocked firing is in the log only; a failed item still says so",
     ),
+    # Keyed by the word, because a choice is neither of a switch's two halves.
+    "budget": {
+        "zwana": "the zwana portal says how much may be spent",
+        "manual": "the daily allowance says how much may be spent, less what the "
+        "queue has spent since the reset",
+    },
+    "allowance": (
+        "what the plan gives each day; a manual budget spends it down to the "
+        "reserve",
+        "a manual budget spends nothing until it is set",
+    ),
+    "reset": "a manual budget's day starts again at {}, on this phone's clock",
 }
 
 
@@ -1665,8 +1753,17 @@ def _setting_names() -> str:
 
 def _setting_said(name: str, value: object) -> str:
     """The one line saying what *name* is now, spelled as both ends spell it."""
-    spelled = _runner().spell_setting(name, value)
+    runner = _runner()
+    spelled = runner.spell_setting(name, value)
     says = SETTING_SAYS[name]
+    if isinstance(says, dict):
+        said = f"{name}: {spelled} — {says[value]}"
+        # A manual budget with no allowance spends nothing, which is the one
+        # thing worth saying the moment it is chosen rather than the first
+        # night nothing happens.
+        if value == "manual" and not runner.settings()["allowance"]:
+            said += f"; none is set yet, {_me()} settings allowance sets it"
+        return said
     if isinstance(says, tuple):
         return f"{name}: {spelled} — {says[0] if value else says[1]}"
     return f"{name}: {says.format(spelled)}"
@@ -2026,6 +2123,13 @@ def run_blind(assume_yes: bool = False) -> int:
     has to be reachable from.
     """
     runner = _runner()
+    if runner.budget_source() == "manual":
+        # There is no portal to do without: a manual budget is counted by the
+        # runner itself wherever the phone is, so --blind would buy nothing and
+        # lose the allowance's guard. The ordinary run is what was meant.
+        print("the budget is manual, so there is no portal to do without")
+        print("running the queue against the daily allowance instead")
+        return subprocess.run(queue_run_argv(blind=False)).returncode
     items, rejected = runner.queued_items()
     if not items:
         print(f"nothing queued in {_short(QUEUE)}")
@@ -2114,12 +2218,27 @@ def _run_item(runner, row: dict, slice_bytes: int) -> int:
         # Deliberately no setsid: the item stays in this terminal's foreground
         # process group, so ctrl-c reaches it directly and it stops itself the
         # same cooperative way a deadline would, leaving a resumable file.
+        # The interface counter either side of the run, for the runner's ledger:
+        # a download started now comes out of the same daily allowance a manual
+        # budget spends against, and the night must know it has gone.
+        # On a phone the counters cannot be read at all, and the item's own
+        # report (or its files' growth) is the count instead — the runner's
+        # Meter, the same one a nightly firing charges by.
+        counted = runner.iface_readable()
+        meter = runner.Meter(work, out, run_id)
+        began = runner.iface_bytes()
         child = subprocess.Popen(
             launch, stdout=sink, stderr=subprocess.STDOUT, env=env, cwd=str(work)
         )
-        code = _follow(child, work / ".status.json", run_id, row)
+        try:
+            code = _follow(child, work / ".status.json", run_id, row)
+        finally:
+            moved = (
+                max(0, runner.iface_bytes() - began) if counted else meter.moved()
+            )
 
     state = runner.load_state()
+    runner.note_spent(state, moved)
     record = state.setdefault("items", {}).setdefault(row["name"], {"attempts": 0})
     report = _report(work / ".status.json", run_id)
     if report:
@@ -2382,6 +2501,48 @@ def dump(target: str | None = None) -> int:
             f"{runner.reserve_bytes():,} when it stands"
         )
 
+    def _source() -> None:
+        # Which source the next reading comes from, how that was decided, and
+        # what it answers with — as far as can be said without the network: the
+        # portal is not asked from here, but whether it *could* be is.
+        runner = _runner()
+        name = runner.budget_source()
+        _, problem, where = runner.setting_state("budget")
+        why = (
+            "set in config.json"
+            if where == "set"
+            else "default: zwana-quota imports"
+            if runner.ZWANA_IMPORTABLE
+            else "default: zwana-quota is not importable"
+        )
+        print(f"  {'source':<18}: {name} ({why})")
+        if problem:
+            print("    the stored value is ignored, see settings above")
+        if name == "zwana":
+            try:
+                runner._qw()
+                print(f"  {'quota_widget':<18}: imports; the portal is not asked here")
+            except ImportError as exc:
+                print(f"  {'quota_widget':<18}: does not import: {exc}")
+            return
+        reading = runner.manual_reading()
+        when = time.strftime
+        print(f"  {'allowance':<18}: {reading['allowance_bytes']:,} bytes a day")
+        print(
+            f"  {'last reset':<18}: "
+            f"{when('%Y-%m-%d %H:%M', time.localtime(reading['since']))} local, "
+            f"{when('%H:%MZ', time.gmtime(reading['since']))}"
+        )
+        print(
+            f"  {'next reset':<18}: "
+            f"{when('%Y-%m-%d %H:%M', time.localtime(reading['resets']))} local"
+        )
+        print(f"  {'spent since reset':<18}: {reading['spent_bytes']:,} bytes")
+        print(f"  {'left':<18}: {reading['left_bytes']:,} bytes")
+        print(f"  {'may spend':<18}: {runner.spendable_bytes(reading):,} bytes")
+        if reading["problem"]:
+            print(f"    {reading['problem']}")
+
     def _state() -> None:
         raw = (ROOT / "state.json")
         if not raw.is_file():
@@ -2389,6 +2550,11 @@ def dump(target: str | None = None) -> int:
             return
         state = json.loads(raw.read_text())
         for name, record in sorted(state.items()):
+            if name == "spent" and isinstance(record, list):
+                # The ledger: a summary, since it is a row per run.
+                total = sum(spent for _, spent in _runner()._ledger(state))
+                print(f"  spent: {len(record)} entries, {total:,} bytes kept")
+                continue
             if isinstance(record, dict):
                 brief = {
                     key: record[key]
@@ -2444,6 +2610,7 @@ def dump(target: str | None = None) -> int:
     guarded("environment", _environment)
     guarded("roots", _roots)
     guarded("settings", _settings)
+    guarded("budget source", _source)
     guarded("state.json", _state)
     guarded("items", _items)
     guarded("logs", _logs)

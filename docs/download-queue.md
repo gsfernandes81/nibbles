@@ -20,7 +20,9 @@ line in these docs also works as `python3 ~/nibbles/ytq.py …` — `dlq` as
 
 The runner reads the portal through the quota widget in a second checkout,
 `~/zwana-quota`, found beside this one or under `~`. `EXPIRE_HOME` and
-`ZWANA_HOME` override where either lives.
+`ZWANA_HOME` override where either lives. A phone with no zwana portal sets a
+daily allowance instead and needs no second checkout at all — see [Budget
+sources](#budget-sources).
 
 If you need something before the window rather than during it, see
 [Downloading something now](#downloading-something-now) — that spends data
@@ -617,19 +619,26 @@ dlq settings reserve-when-paid no   # waive the reserve when paid data is there
 dlq settings paid-min 150           # ...but only with 150 MB of it left
 dlq settings auto off               # the nightly job fires and does nothing
 dlq settings notify-blocked off     # a blocked firing goes to the log only
+dlq settings budget manual          # no portal: spend a daily allowance instead
+dlq settings allowance 2GB          # ...of 2 GB a day
+dlq settings reset 05:30            # ...that starts again at 05:30, phone time
 dlq settings window default         # put the built-in default back
 ```
 
-Or the **More tab** (`s` from the Queue tab), which shows the same settings
-as one scrolling list of two-line rows — the key, the name and the value, then
-a grey line saying what it means — and takes the same changes. **A switch
-toggles where it sits**: a tap on `auto` turns it off. **A number opens a
-sheet** with the field prefilled, its rule in grey, and preset buttons
-(`30m 45m 1h 2h` for the window) so most changes need no typing; `⏎ Set` saves
-it and `esc Cancel` does not. The field takes digits — minutes for the window,
-MB for the others — and an empty one puts the built-in default back. A refused
-value is said inside the sheet in red, and nothing is written. `paid-min` is a
-row only while `reserve-when-paid` is `no`, since it does nothing otherwise.
+Or the **More tab** (`s` from the Queue tab), which shows the ones that
+apply to the [budget source](#budget-sources) — `allowance` and `reset` only
+on a manual budget, `reserve-when-paid` and `paid-min` only on zwana — as one
+scrolling list of two-line rows: the key, the name and the value, then a grey
+line saying what it means. It takes the same changes. **A switch toggles where
+it sits**: a tap on `auto` turns it off, and a tap on `budget` steps to the
+other source. **A number opens a sheet** with the field prefilled, its rule in
+grey, and preset buttons (`30m 45m 1h 2h` for the window, `500 MB 1 GB 2 GB
+5 GB` for the allowance) so most changes need no typing; `⏎ Set` saves it and
+`esc Cancel` does not. The field takes digits — minutes for the window, MB for
+the others — and an empty one puts the built-in default back. `reset` is typed
+as `HH:MM` on the phone's clock. A refused value is said inside the sheet in
+red, and nothing is written. `paid-min` is a row only while
+`reserve-when-paid` is `no`, since it does nothing otherwise.
 
 Below the settings, in the same layout: **skip codecs** and **quality chips**,
 which are ytq's (see [ytq.md](ytq.md#the-video-sheet-and-the-formats-sheet));
@@ -637,7 +646,8 @@ which are ytq's (see [ytq.md](ytq.md#the-video-sheet-and-the-formats-sheet));
 or how many there are (see [Where downloads go](#where-downloads-go));
 the **nightly job**, armed or not armed, which a tap arms and, after asking,
 stops; the **runner log**; and **quit**. Each row's key is beside its name
-(`w r p m a n c h d j l q`).
+(`w r p m b a n c h d j l q` on zwana, `w r b g t a n c h d j l q` on a
+manual budget).
 
 **A change stays on the tab.** The row redraws with the new value, the line
 above the tabs says what it did in the setting's own sentence, and everything
@@ -651,6 +661,9 @@ the session changed is printed on the way out.
 | `paid-min`           | 0 MB    | how much paid data `reserve-when-paid no` wants before it waives; 0 is any paid data at all |
 | `auto`               | on      | let the nightly job actually download              |
 | `notify-blocked`     | on      | a firing stopped by a fault says so on the phone   |
+| `budget`             | zwana, if zwana-quota imports; else manual | where the figure to spend comes from — see [Budget sources](#budget-sources) |
+| `allowance`          | not set | the manual budget's daily allowance, in MB or GB   |
+| `reset`              | 00:00 UTC, shown on the phone's clock | when the manual budget's day starts again |
 | `destinations` (`d`) | Downloads | where finished files land, by kind — opens the destinations sheet |
 | `nightly job` (`j`)  | as registered | arm the scheduled firing, or cancel it with a confirm |
 
@@ -720,6 +733,84 @@ quiet. An item that has run out of nights, a malformed item and a download
 folder that cannot be reached go on notifying either way — each happens once,
 and nothing else is ever going to mention them.
 
+## Budget sources
+
+Every guard the runner keeps spends against one figure: how much it may spend
+before the reset. Where that figure comes from is the **budget source**,
+`dlq settings budget`, and there are two.
+
+- **`zwana`**, the crew portal, read through `~/zwana-quota`. Everything
+  else in this guide describes it: the portal knows what is left, how much of
+  it expires at the reset, and whether paid data is behind it, and the runner
+  re-reads it while a download runs. It is the default wherever the
+  zwana-quota checkout can be imported.
+- **`manual`**, for a plan with no portal — a daily-reset mobile plan, a
+  night bundle, a capped link. You say how much the plan gives a day
+  (`dlq settings allowance`, in MB or GB) and when its day starts again
+  (`dlq settings reset`, typed and shown on the phone's own clock, stored in
+  UTC so a timezone crossed between two resets does not move it). It is the
+  default on a phone with no zwana-quota checkout, and nothing about it needs
+  one: the runner, `dlq status`, `dlq settings` and `dlq dump` all work
+  without it.
+
+**What a manual budget may spend** is the allowance, less what the runner
+itself has moved since the last reset, less the reserve, less a margin of 32
+MiB for the bytes that move between two looks at a download. The runner keeps
+its own ledger of what it moved, in `state.json` — every nightly item and
+every `dlq now`. **On a phone that count comes from the download itself**:
+Android does not let an app read the interface counters (`/proc/net/dev` is
+permission denied), so the runner reads each download's own progress report
+— the figure `ytq`'s and `dlq`'s items keep, merges and renames included — and
+failing that, how much its files grew on disk, and charges either at 8% over
+for what the wire costs on top. Where the interface counters can be read, they
+are what is used, and they count every byte on the radio. `dlq status` lays it
+out:
+
+```
+data
+   1.40 GiB the plan gives each day
+        0 B spent since reset
+     100 MB is always kept back
+   1.27 GiB the queue may spend by 05:30
+  800 KiB/s measured download speed
+  what the rest of the phone uses is not
+  counted; the reserve is for it
+```
+
+That last line is the limit of a manual budget, and the reason the reserve
+matters more here than with the portal: **the runner counts only what it
+moved.** Whatever else the phone used today — a browser, a video call — is
+invisible to it, so set the reserve to cover what the rest of the day normally
+takes. For the same reason a manual budget **never waives the reserve**:
+`reserve-when-paid` and `paid-min` turn on a paid figure that only the portal
+can give, and do nothing here.
+
+While a download runs, the guard is the same projection the portal's floor
+gets between polls: what was left when the item started, less what the
+download has moved since by that same count, stopped before the reserve. There is
+no portal to poll and nothing to go dark. And no flag reaches past it:
+`--force` changes *when*, never how much, and `run-now --blind` has no portal
+to do without — on a manual budget it is an ordinary run against the
+allowance, and says so.
+
+Two verdicts are the manual budget's own. **no daily allowance set** is said
+all day, not only inside the window — it comes straight after an empty queue
+and ahead of the clock, because it is a setting nobody has made yet rather
+than a moment, and the place to learn that is while the phone is being set
+up. It is not a fault, so it is not notified every fifteen minutes. **Spent
+for the day** is the ordinary *no data to spend* verdict, in its ordinary
+place, said with the allowance's figures.
+
+A `state.json` that will not parse, or a ledger that is not a list of spends,
+is a day's spending forgotten — which would read as an allowance nobody had
+touched. A manual budget reads it as spent instead, spends nothing, and `dlq
+status` and `dlq dump` say why.
+
+`dlq dump` has a **budget source** section: which source the next reading
+comes from and how that was decided (set, or the default and why), whether
+zwana-quota imports, and for a manual budget the allowance, the last and next
+reset, what was spent since, and what is left to spend.
+
 ## Downloading something now
 
 The whole point of the queue is to spend data that is about to be wiped, so
@@ -735,7 +826,8 @@ Whatever starts it, the download is outside the expiring window by
 definition, so none of the runner's three guarantees are in play: no reserve
 floor, no midnight stop, no cap against the free allowance. What is on the
 screen before it starts is the number it may spend, and whether anything is
-counting it.
+counting it. On a [manual budget](#budget-sources) what it moved still goes
+into the runner's ledger, so the window that night spends only what is left.
 
 Everything else is kept. It downloads into the same place the nightly job
 would, so pausing it is safe: what is downloaded stays, the item stays queued,

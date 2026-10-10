@@ -9,6 +9,13 @@ scheduled job spends the leftover on downloads queued here, always leaving a
 floor for the morning (100 MB, by default) and never touching the paid
 reserve. Everything says what it costs before it spends anything.
 
+How much there is to spend comes from a **budget source**: the zwana crew
+portal (the default wherever the zwana-quota checkout is there), or a manual
+daily allowance and reset time for a plan with no portal, spent down from the
+runner's own count of what it moved. `budget` on the More tab chooses (or
+`dlq settings budget`);
+`docs/download-queue.md` has the section on both.
+
 ytq and dlq were two repos until 2026-10-10; this is both of them, with their
 histories, and **one app**: five tabs along the bottom — Search, Feed, Later,
 Queue, More — with buttons first and keys second, laid out for a phone in
@@ -44,9 +51,9 @@ screens follow; `design/divergences.md` lists where the build differs.
 - `queue/`: the queue, with the item contract in `queue/README.md`.
 - Two separate checkouts, each found as its variable, then a clone beside this
   one, then under `~`: **`~/zwana-quota`** (`$ZWANA_HOME`), the portal client
-  and quota widget the runner reads every guard figure through, and
-  **`~/bewitch`** (`$BEWITCH_HOME`), the styling library every screen is drawn
-  with.
+  and quota widget the zwana budget source reads every guard figure through
+  (not needed with a manual budget), and **`~/bewitch`** (`$BEWITCH_HOME`),
+  the styling library every screen is drawn with.
 - One installed dependency: **blessed**, which owns the terminal.
 
 The queue root is this checkout (`$EXPIRE_HOME` overrides), never an installed

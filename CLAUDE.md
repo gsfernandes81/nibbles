@@ -10,11 +10,12 @@ ytq (the YouTube front end) and dlq (the expiring-quota download queue and its
 runner) were split out of the `or3` monorepo's `termux/expire/` on 2026-08-28
 and **merged into this repo on 2026-10-10**, histories kept. The modules are
 flat at the root and import each other by bare name. Two sibling checkouts
-are left: **zwana-quota** (the portal client and quota widget the runner reads
-its guard figures through: `$ZWANA_HOME`, a clone beside this repo, then
-`~/zwana-quota`) and **bewitch** (the Lip Gloss port every screen is drawn
-with: `$BEWITCH_HOME`, beside, then `~/bewitch`; `tui._bewitch_root`). The one
-installed dependency is **blessed**, which owns the terminal. `expire_sched._zwana_root` predicts the runner's resolution so
+are left: **zwana-quota** (the portal client and quota widget the zwana budget
+source reads its guard figures through; a manual budget needs none:
+`$ZWANA_HOME`, a clone beside this repo, then `~/zwana-quota`) and **bewitch**
+(the Lip Gloss port every screen is drawn with: `$BEWITCH_HOME`, beside, then
+`~/bewitch`; `tui._bewitch_root`). The one installed dependency is
+**blessed**, which owns the terminal. `expire_sched._zwana_root` predicts the runner's resolution so
 `dlq status` can name a missing checkout instead of letting an import
 traceback. The phone's move from `~/dlq` + `~/ytq` to `~/nibbles` is in the
 README.
@@ -247,6 +248,78 @@ in what nothing draws.
   multiple of 15 minutes because that is JobScheduler's own floor for a
   periodic job — a window that is not a multiple of one would buy nothing
   beyond the nearest firing below it.
+- **Where the budget comes from is a setting** (2026-10-10): `budget = zwana |
+  manual` in `expire_runner.SETTINGS`, with `allowance` (decimal MB, 0 is "not
+  set") and `reset` (stored as UTC `HH:MM`, typed and spelled on the phone's
+  clock). **zwana is today's runner, unchanged**: a reading is still the
+  `quota_widget.derive` document and every function that took one still does;
+  the manual reading is a dict of its own shape (`source: "manual"`) and
+  `is_manual` is the one test that tells them apart, so the zwana path is the
+  code it was. zwana is the default wherever `quota_widget` can be *found*
+  (`ZWANA_IMPORTABLE`, a `find_spec`, decided at import — a firing is a
+  process of its own) and manual otherwise; **`quota_widget` is imported
+  lazily, by `_qw()`**, so the runner, `dlq status`, `dlq settings` and `dlq
+  dump` run on a phone with no zwana-quota at all, and the four presentation
+  helpers the front ends borrowed off `runner.qw` (`Paint`, `countdown`,
+  `since`, `grade`) are the runner's now, taken from `quota_widget` when it
+  is there. `root_problem` names a missing checkout only when zwana is the
+  source. **A manual budget spends the allowance, less what the runner itself
+  moved since the last reset, less the reserve, less `FLOOR_MARGIN`**
+  (`manual_spendable`) — the margin for its second reason, the bytes that move
+  between two looks at a running download. What it moved is a **ledger**,
+  `state["spent"]`, `[epoch, bytes]` entries written by `note_spent` after
+  every item `fire()` runs *and* every `dlq now`, kept for both sources so a
+  switch mid-day starts from what was spent, and entries rather than a total
+  so "since the reset" is right however the reset is moved. **On the phone
+  the interface counters cannot be read** (`/proc/net/dev` is permission
+  denied to an app, and the owner's rule is to assume it is for everyone), and
+  `iface_bytes` answers that with nought, so every guard built on it read
+  "nothing moved": a manual ledger that never grew, and on zwana a byte cap
+  and a floor projection that never fired, with only the minute's portal poll
+  left. So `iface_readable()` is asked per item, and where it is false the
+  child carries a **`Meter`**: the item's own `payload_bytes_this_slice` for
+  this run id, else how much its `work/` and `out/` grew, at `WIRE_FACTOR`.
+  The report wins over the growth because the growth over-counts a merge, and
+  a cap that stops a download at its last second has spent the bytes for
+  nothing. `watch()`, an interrupted run, `fire()`'s ledger and `dlq now` all
+  charge by it; where the counters can be read nothing changes. The interface
+  delta, where there is one, errs high — but neither count can see what the
+  rest of the phone used, which is why the reserve is **never waived** on a
+  manual reading (`reserve-when-paid` turns on a paid figure only the portal
+  has) and why the status screen says so under the figures. A ledger that
+  cannot be read — `state.json` that will not parse, `spent` not a list —
+  reads as the whole allowance spent, because forgetting a day's spending
+  reads as an allowance nobody touched. In flight, `watch()` projects the
+  manual remainder down by that same count exactly as it projects the
+  portal's between polls, with nothing to poll and no portal to go dark.
+  **`gate()` gains one verdict, `unset`, after `empty` and before `early`**:
+  a standing setting rather than a moment, like `off`, so it is the answer at
+  noon and not only inside the window — the person setting the phone up learns
+  it then rather than the first night nothing happens; after `empty` because
+  with nothing queued there is nothing to spend an allowance on either way;
+  not a fault, since a heartbeat is enough and a notification every fifteen
+  minutes for a setting not yet made is noise; and no flag reaches it.
+  "Spent for today" is **the existing `spent`** in its existing place, with
+  its own sentence: it is the same night (nothing above the reserve until the
+  reset), so the screens already say it. A manual reading is always `usable`,
+  so `--blind` never flies on one, and `dlq run-now --blind` on a manual
+  budget runs the ordinary run and says why. **`snapshot()` only gains keys**:
+  `source`, `allowance` (the manual reading, or `None`) and `expiring` (the
+  portal's free grant left, or `None` — a manual source cannot know what
+  expires, and inventing it would be the one figure on the window card that
+  is a guess); `portal` is `None` under manual, `deadline` is the manual
+  reset, `spendable` the manual figure. The window card's "what the next
+  window may spend against what expires" is therefore `spendable` against
+  `expiring` under zwana, and against `allowance["left_bytes"]` — "left of the
+  allowance", never "expires" — under manual.
+  **A screen shows only the settings that apply to the source**
+  (`settings_shown`, off each spec's `only`): a row that changes nothing is a
+  row nobody should have to read past. The More tab builds its rows from it
+  (`queue_screens.shown_settings`, which adds the order — the budget source
+  under the reserve — and `paid-min` only while the waiver is on), and
+  scrolls rather than giving one up. The command line and the dump still list
+  every setting. The owner approved the rebuild's More rows and window card
+  for a manual budget on 2026-10-10; `design/divergences.md` has them.
 - **The cut line in the queued list is computed, never an item** (2026-09-02).
   It is an entry the cursor cannot stop on and no tap can open — not
   selectable and with no name — between the rows `queue_entries` builds, and
@@ -463,7 +536,9 @@ One file per guarantee, and each says which:
 | file | what it pins |
 |---|---|
 | `test_tonight_budget.py` | the sum `plan()` promises is never more than the budget, for any ordering; every refusal `admit()` gives has a sentence on it |
-| `test_gate.py` | the order `gate()` answers in — two things wrong at once, and which is reported |
+| `test_gate.py` | the order `gate()` answers in — two things wrong at once, and which is reported — including where a manual budget's `unset` sits |
+| `test_manual_budget.py` | a manual budget never spends past the allowance or into the reserve: the arithmetic, the ledger since the reset, `plan()` by permutation, firings in a row, `watch()` in flight, `dlq now` charged |
+| `test_budget_source.py` | the source is a setting with the runner's spec; `snapshot()` only gains keys; the runner, `status`, `settings` and `dump` run with no zwana-quota and never import it |
 | `test_firing.py` | `fire()` admits through `admit()`; SIGINT and not SIGTERM; an item leads its own session |
 | `test_settings.py` | a bad stored value reads as the default; a broken `config.json` is never written over; what waives the reserve |
 | `test_clock.py` | the clock pinned and the timezone swept either side of the date line |
@@ -474,7 +549,7 @@ One file per guarantee, and each says which:
 | `test_layout.py` | every line fits, at 32, 40, 80 and swept between; every verdict has a word and a status label; every action and every setting has its row |
 | `test_cli.py` | what a bare `dlq` does, and where each word goes |
 | `test_item_contract.py` | every way an item can fail to declare itself is a reason and never an exception |
-| `test_in_flight.py` | the guards that act while the bytes are moving: the byte cap, the floor, the deadline, a portal gone dark |
+| `test_in_flight.py` | the guards that act while the bytes are moving: the byte cap, the floor, the deadline, a portal gone dark — and all of them again with the interface counters dark, as on a phone |
 | `test_dump.py` | `dlq dump` finishes on the broken trees it exists for |
 | `test_queue_flows.py` | the tabs' flows headless: Remove keeps the bytes unless told, Rename moves everything, a setting set from its presets, a refused value written nowhere, a broken config never written over |
 | `test_screens.py` | the Queue and More tabs, on a pty |
