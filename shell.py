@@ -80,6 +80,9 @@ def clock(epoch: float, now: float | None = None) -> str:
     if math.isinf(epoch) or epoch != epoch:
         return "no stop time"
     now = time.time() if now is None else now
+    # To the nearest minute: the portal's reset lands seconds either side of
+    # the hour, and a window opening at 02:59:58 opens at 03:00 to a person.
+    epoch = round(epoch / 60) * 60
     hm = time.strftime("%H:%M", time.localtime(epoch))
     if abs(epoch - now) < 12 * 3600:
         return hm

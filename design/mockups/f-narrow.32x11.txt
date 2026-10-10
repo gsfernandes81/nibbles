@@ -1,0 +1,11 @@
+ nibbles ╱╱╱╱ waiting · 636 MiB 
+╭──────────╮╭─────────╮╭───────╮
+│  Queued  ││ Failed  ││ Done  │
+╰──────────╯╰─────────╯╰───────╯
+   ubuntu-24.04-desktop-amd64… ┃
+   0 of ≤5.61 GiB · 632 MiB a… │
+  ── window · 632 MiB ──────── │
+────────────────────────────────
+Search Feed  Later  Queue  More 
+                                
+ WAITING  opens 03:00        8h 

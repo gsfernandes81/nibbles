@@ -199,7 +199,11 @@ def test_no_time_left_is_said_as_nothing_and_never_formatted():
 def test_a_clock_is_the_phones_own_and_never_utc():
     now = time.time()
     assert "Z" not in shell.clock(now + 3600, now)
-    assert shell.clock(now + 3600, now) == time.strftime("%H:%M", time.localtime(now + 3600))
+    at = round((now + 3600) / 60) * 60
+    assert shell.clock(now + 3600, now) == time.strftime("%H:%M", time.localtime(at))
+    # To the nearest minute: seconds before the hour are the hour.
+    hour = (int(now // 3600) + 2) * 3600
+    assert shell.clock(hour - 2, now) == time.strftime("%H:%M", time.localtime(hour))
 
 
 @pytest.mark.parametrize(("n", "said"), [(0, "0 B"), (92 * MiB, "92 MiB"),

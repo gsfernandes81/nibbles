@@ -1,0 +1,14 @@
+ nibbles ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ settings 
+ w window                       60 min ┃
+   ahead of the reset, at 04:00 here   ┃
+ r reserve                      100 MB ┃
+   kept back, never spent              ┃
+╭──────────────────────────────────────╮
+│ Runner log ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
+│ 2026-10-09 23:00:04Z firing: window  │
+│ open, 480 MiB to spend               │
+│ 2026-10-09 23:00:05Z 20-Some Talk    │
+│ About Rust.py: admitted, 46 MiB      │
+│ this slice                           │
+│ 2026-10-09 23:14:51Z 20-Some Talk    │
+│ About Rust.py: slice done, 46 MiB    │

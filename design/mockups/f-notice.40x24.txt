@@ -1,0 +1,24 @@
+ nibbles ╱╱╱╱╱╱╱╱╱╱╱╱ crust of rust • 7 
+╭────────────────────────────╮╭────────╮
+│ crust of rust              ││  ⏎ Go  │
+╰────────────────────────────╯╰────────╯
+7 results · ~ dates approx              
+   Crust of Rust: Subtyping and Varia… ┃
+   Jon Gjengset · ~3d · 90m34s · 41K   ┃
+   Making a Case for Rust in the Kern… ┃
+   Jon Gjengset · ~3d · 90m34s · 41K   ┃
+   lofi hip hop radio                  ┃
+   Jon Gjengset · ~3d · 90m34s · 41K   ┃
+   Rust Lifetimes Finally Explained    ┃
+   Jon Gjengset · ~3d · 90m34s · 41K   ┃
+   The Async Book                      ┃
+   Jon Gjengset · ~3d · 90m34s · 41K   ┃
+   Why my Termux setup is ridiculous   ┃
+╭──────────────────────────────────────╮
+│ Could not read it ╱╱╱╱╱╱╱╱╱╱  esc ×  │
+│ could not read that URL              │
+│ ERROR: [youtube] abc: Video          │
+│ unavailable. This video is private   │
+│ ╭──────────────────────────────────╮ │
+│ │              esc OK              │ │
+│ ╰──────────────────────────────────╯ │

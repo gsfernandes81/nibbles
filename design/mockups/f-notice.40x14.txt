@@ -1,0 +1,14 @@
+ nibbles ╱╱╱╱╱╱╱╱╱╱╱╱ crust of rust • 7 
+╭────────────────────────────╮╭────────╮
+│ crust of rust              ││  ⏎ Go  │
+╰────────────────────────────╯╰────────╯
+7 results · ~ dates approx              
+   Crust of Rust: Subtyping and Varia… ┃
+╭──────────────────────────────────────╮
+│ Could not read it ╱╱╱╱╱╱╱╱╱╱  esc ×  │
+│ could not read that URL              │
+│ ERROR: [youtube] abc: Video          │
+│ unavailable. This video is private   │
+│ ╭──────────────────────────────────╮ │
+│ │              esc OK              │ │
+│ ╰──────────────────────────────────╯ │
