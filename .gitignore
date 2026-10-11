@@ -25,3 +25,7 @@ config.json
 
 # uv build
 dist/
+
+# The runner launcher nibbles.home writes into the queue root, a checkout
+# included: it names the package's path, which is this machine's.
+/expire_runner.py

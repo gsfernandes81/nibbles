@@ -98,7 +98,7 @@ from pathlib import Path
 from nibbles import home
 
 #: The queue root (:func:`home.root`). The nightly job starts the runner through
-#: ``expire_runner.py`` at the root, which names its own directory as
+#: ``expire_runner.py`` at the root (:func:`home.launcher`), which names its own directory as
 #: ``EXPIRE_HOME`` first: the runner works out of the root it was armed at.
 HERE = home.root()
 # quota_widget lives in the zwana-quota checkout: $ZWANA_HOME, a clone beside

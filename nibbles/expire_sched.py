@@ -41,7 +41,7 @@ Usage::
 
     dlq [status|list|ui|path NAME|dest|settings|queue|logs|run-now|arm|cancel]
 
-``expire_sched.py`` with nothing after it is ``nibbles queue`` — see :func:`default_action`,
+:func:`main` with nothing after it is ``nibbles queue`` — see :func:`default_action`,
 which falls back to ``status`` when there is no terminal to draw on.
 
 ``ui`` is where the queue is *changed* — reordered, renamed, retried, removed,
@@ -60,8 +60,8 @@ is also the one run nothing interrupts for the clock, since the deadlines all
 belong to an allowance it is not spending, so it runs in the foreground and
 ctrl-c is what stops it.
 
-``dlq`` is this file installed on PATH (see ``pyproject.toml``); running
-``python3 expire_sched.py …`` from the checkout does exactly the same thing.
+Its verbs are ``nibbles``'s (``nibbles.app.main`` hands them here); with
+nothing installed, ``python3 -m nibbles …`` from the checkout does the same.
 
 ``NAME`` is name-ish: any unambiguous part of an item's file name, or its
 priority number. :func:`match` decides, and ``nibbles names`` prints the same list
@@ -2397,24 +2397,11 @@ ALIASES = {"--now": "now", "--list": "list"}
 
 
 def _me() -> str:
-    """This command as it was invoked.
-
-    ``nibbles`` on PATH and ``expire_sched.py`` in the checkout — printing
-    the other one sends people to the wrong place. (``dlq`` until 2026-10-10,
-    when ``nibbles`` became the one command; its verbs are this file's.)
-
-    The exceptions are the other front ends drawing this module's screens:
-    the runner's own ``--status``, and ``expire_ui`` composing the status onto
-    its queue screen. Every command spelled with this belongs to *this* file —
-    ``list``, ``run-now``, ``arm`` — and neither of those files has any of
-    them, so its name in front of one is an instruction that fails when it is
-    followed. Hence the test is "was this module invoked", not "was some other
-    module invoked": a front end that does not exist yet gets the right answer
-    without having to be listed here.
-    """
-    name = Path(sys.argv[0]).name
-    if name and name in (Path(__file__).name, "nibbles"):
-        return name
+    """The command these verbs belong to, for a line that tells somebody to
+    type one: ``nibbles``, the one command since 2026-10-10 (``dlq`` before),
+    however this module was reached — the door, the runner's own ``--status``,
+    or the app composing the status onto its queue screen. Kept as a function
+    so every such line asks the one place."""
     return "nibbles"
 
 

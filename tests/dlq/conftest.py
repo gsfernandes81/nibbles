@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # The Termux stand-in the pty tests share with the ytq suite.
 sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
 
-from _pty import BEWITCH, MODULES, ZWANA, make_root  # noqa: E402
+from _pty import BEWITCH, PACKAGE, ZWANA, make_root  # noqa: E402
 
 from hypothesis import HealthCheck, settings  # noqa: E402
 
@@ -464,7 +464,7 @@ def pytest_configure(config):
 
 def pytest_report_header(config):
     return (
-        f"dlq: {', '.join(MODULES)} run out of a temporary root; "
+        f"dlq: the {PACKAGE} package run out of a temporary root; "
         "HOME redirected, so no portal"
     )
 

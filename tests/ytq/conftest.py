@@ -55,10 +55,9 @@ hypothesis_settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default")
 
 REPO = Path(__file__).resolve().parents[2]
 
-#: What a queue root holds of this checkout: the package, and the doors at
-#: the checkout's root, so the copy is shaped like the checkout itself.
+#: What a queue root holds of this checkout: the package, so the copy is
+#: shaped like the checkout itself.
 _PACKAGE = "nibbles"
-_MODULES = ("expire_runner.py", "expire_sched.py", "ytdl_item.py", "expire_dl.py")
 
 
 def _zwana_checkout(dlq: Path) -> Path | None:
@@ -88,8 +87,6 @@ HOME = ROOT / "home"
 for folder in (QUEUE_ROOT, HOME, QUEUE_ROOT / "queue"):
     folder.mkdir(parents=True, exist_ok=True)
 (QUEUE_ROOT / "queue" / "README.md").write_text("a throwaway queue\n")
-for name in _MODULES:
-    shutil.copy2(REPO / name, QUEUE_ROOT / name)
 shutil.copytree(REPO / _PACKAGE, QUEUE_ROOT / _PACKAGE,
                 ignore=shutil.ignore_patterns("__pycache__"))
 

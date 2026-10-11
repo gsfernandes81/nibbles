@@ -27,6 +27,7 @@ import contextlib
 import fcntl
 import os
 import pty
+import runpy
 import select
 import shutil
 import struct
@@ -40,11 +41,9 @@ import pyte
 #: The checkout under test. Its modules are copied, never imported from here.
 REPO = Path(__file__).resolve().parents[2]
 
-#: What a queue root needs to run its own screen out of: the package, and the
-#: doors at the checkout's root (the runner the job is armed with above all),
-#: so the copy is shaped exactly like the checkout it was taken from.
+#: What a queue root needs to run its own screen out of: the package, so the
+#: copy is shaped exactly like the checkout it was taken from.
 PACKAGE = "nibbles"
-MODULES = ("expire_runner.py", "expire_sched.py", "ytdl_item.py", "expire_dl.py")
 
 #: The directories the runner makes for itself. Made up front so a test that
 #: only reads does not have to have written first.
@@ -78,21 +77,22 @@ def make_root(where: Path, items: dict[str, str] | None = None) -> Path:
     """A queue root of this checkout's modules, with *items* queued in it."""
     root = where / "expire"
     root.mkdir(parents=True, exist_ok=True)
-    for name in MODULES:
-        shutil.copy(REPO / name, root / name)
     shutil.copytree(REPO / PACKAGE, root / PACKAGE, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__"))
-    # The runner's shebang is Termux's absolute python, which is the right
-    # answer on the phone — ``#!/usr/bin/env python3`` is the portable form
-    # everywhere else and is the one thing Android cannot exec — and it is not
-    # on this machine. A checkout whose runner the scheduler could not start is
-    # a broken checkout, and this one is not being used to test that, so it is
-    # written the way a checkout here would be. ``shebang_problem`` is checked
-    # against a bad one on purpose, elsewhere.
-    runner = root / "expire_runner.py"
-    lines = runner.read_text().splitlines(keepends=True)
+    # The launcher the job is armed with, as the copy's own ``home`` writes it,
+    # with two changes. Its shebang is Termux's absolute python, which is the
+    # right answer on the phone — ``#!/usr/bin/env python3`` is the portable
+    # form everywhere else and is the one thing Android cannot exec — and it is
+    # not on this machine; a root whose runner the scheduler could not start is
+    # a broken root, and this one is not being used to test that
+    # (``shebang_problem`` is checked against a bad one on purpose, elsewhere).
+    # And it does not carry the generated mark, so ``home.ensure`` in a
+    # ``nibbles`` run under test leaves it as written, as it would anybody's.
+    home = runpy.run_path(str(root / PACKAGE / "home.py"))
+    lines = home["launcher"]().splitlines(keepends=True)
     lines[0] = f"#!{sys.executable}\n"
-    runner.write_text("".join(lines))
+    runner = root / home["LAUNCHER"]
+    runner.write_text("".join(line for line in lines if line.strip() != home["GENERATED"]))
     runner.chmod(0o755)
     for sub in SUBDIRS:
         (root / sub).mkdir(exist_ok=True)
@@ -178,7 +178,7 @@ def drive(
         os.chdir(root)
         os.execve(
             sys.executable,
-            [sys.executable, str(root / "expire_sched.py"), "ui"],
+            [sys.executable, "-m", "nibbles", "queue"],
             env(root, home, cols, rows),
         )
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))

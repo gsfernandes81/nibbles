@@ -334,18 +334,12 @@ def test_the_log_says_so_when_there_is_none_yet(dlq, capsys):
     assert "not written yet" in capsys.readouterr().out
 
 
-def test_the_command_names_itself_the_way_it_was_invoked(dlq, monkeypatch):
-    """``nibbles`` on PATH and ``expire_sched.py`` in the checkout — printing
-    the other one sends people to the wrong place. (``dlq`` until nibbles
-    became the one command.)"""
-    monkeypatch.setattr(dlq.sched.sys, "argv", ["nibbles", "status"])
-    assert dlq.sched._me() == "nibbles"
-    monkeypatch.setattr(dlq.sched.sys, "argv", ["expire_sched.py"])
-    assert dlq.sched._me() == "expire_sched.py"
-    # A front end drawing this module's screens still names this module's
-    # commands, because that is whose commands they are.
-    monkeypatch.setattr(dlq.sched.sys, "argv", ["expire_runner.py", "--status"])
-    assert dlq.sched._me() in ("nibbles", "expire_sched.py")
+def test_the_command_is_named_nibbles_however_it_was_reached(dlq, monkeypatch):
+    """Every line telling somebody what to type names the one command —
+    from the door, or from a front end drawing this module's screens."""
+    for argv0 in ("nibbles", "/somewhere/nibbles/__main__.py", "expire_runner.py"):
+        monkeypatch.setattr(dlq.sched.sys, "argv", [argv0, "status"])
+        assert dlq.sched._me() == "nibbles"
 
 
 # --------------------------------------------------------------------------- #

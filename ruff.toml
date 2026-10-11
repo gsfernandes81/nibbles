@@ -22,8 +22,3 @@ ignore = [
 [lint.per-file-ignores]
 # Imports that must follow a sys.path insert at module level.
 "nibbles/expire_runner.py" = ["E402"]
-# The doors at the checkout's root put it on sys.path before importing the package.
-"/expire_runner.py" = ["E402"]
-"/expire_sched.py" = ["E402"]
-"/ytdl_item.py" = ["E402"]
-"/expire_dl.py" = ["E402"]

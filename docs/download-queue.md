@@ -95,14 +95,14 @@ in site-packages would queue into its own directory, where the runner never
 looks, and the symptom would be a job firing faithfully every night onto an
 empty queue.
 
-An installed copy makes that root the first time `nibbles` runs: the item
-contract in `queue/README.md` (which is what marks a root) and
-`expire_runner.py`, the launcher `nibbles arm` registers with the job
-scheduler. The launcher names the package's path, so every `nibbles` rewrites
+An installed copy makes that root the first time `nibbles` runs, with the item
+contract in `queue/README.md` (which is what marks a root) — never a root
+`EXPIRE_HOME` names, nor a `~/nibbles` that already holds something that is
+not a queue. Every root, a checkout included, gets `expire_runner.py`, the
+launcher `nibbles arm` registers with the job scheduler (gitignored in a
+checkout). The launcher names the package's path, so every `nibbles` rewrites
 it if an upgrade moved the package — run `nibbles` once after upgrading, before
-the window. Nothing is written into a checkout (its own `expire_runner.py` is
-tracked), into a root `EXPIRE_HOME` names, or into a `~/nibbles` that already
-holds something that is not a queue.
+the window. A launcher you wrote yourself is never written over.
 
 Set `EXPIRE_HOME` if the queue is somewhere other than `~/nibbles`:
 

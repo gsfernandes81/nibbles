@@ -51,7 +51,7 @@ def opened(pty_root):
         root = make_root(pty_root.root.parent, items)
         if config:
             (root / "config.json").write_text(config, encoding="utf-8")
-        app = Termux([sys.executable, str(root / "expire_sched.py"), "ui"], cols, rows,
+        app = Termux([sys.executable, "-m", "nibbles", "queue"], cols, rows,
                      env(root, pty_root.home, cols, rows), cwd=str(root))
         started.append(app)
         app.wait_for(lambda lines: "queue" in lines[0] and "alpha" in "\n".join(lines))

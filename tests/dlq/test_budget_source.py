@@ -224,20 +224,20 @@ def _clean(said: subprocess.CompletedProcess) -> str:
 
 def test_the_runner_and_its_commands_run_with_no_zwana_quota(bare):
     """Manual by default there, and every command a person needs still answers."""
-    status = bare("expire_sched.py", "status")
+    status = bare("-m", "nibbles", "status")
     assert "allowance" in _clean(status)
     assert status.returncode == 0
 
-    shown = bare("expire_sched.py", "settings")
+    shown = bare("-m", "nibbles", "settings")
     assert "manual" in _clean(shown) and shown.returncode == 0
 
-    set_to = bare("expire_sched.py", "settings", "allowance", "2 GB")
+    set_to = bare("-m", "nibbles", "settings", "allowance", "2 GB")
     _clean(set_to)
     assert set_to.returncode == 0
     config = json.loads((bare.root / "config.json").read_text())
     assert config["allowance_mb"] == 2000
 
-    dumped = bare("expire_sched.py", "dump")
+    dumped = bare("-m", "nibbles", "dump")
     out = _clean(dumped)
     assert "manual" in out and "(unreadable" not in out
 
@@ -250,7 +250,7 @@ def test_a_manual_firing_never_imports_quota_widget(bare):
     )
     fired = bare(
         "-c",
-        "import sys, expire_runner as r\n"
+        "import sys\nfrom nibbles import expire_runner as r\n"
         "code = r.fire(force=True)\n"
         "print('imported' if 'quota_widget' in sys.modules else 'not imported', code)\n",
     )
@@ -263,7 +263,7 @@ def test_a_manual_firing_never_imports_quota_widget(bare):
 def test_zwana_chosen_with_no_checkout_is_a_broken_root_not_a_traceback(bare):
     """Asked for by name, a missing checkout is said, and nothing is spent."""
     (bare.root / "config.json").write_text(json.dumps({"budget": "zwana"}))
-    status = bare("expire_sched.py", "status")
+    status = bare("-m", "nibbles", "status")
     assert "zwana-quota" in _clean(status)
     assert status.returncode == 1
 

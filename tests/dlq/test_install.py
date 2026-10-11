@@ -4,9 +4,10 @@ Installed from PyPI, nibbles is a package in site-packages, and the queue it
 manages is ``~/nibbles`` (:func:`home.root`). The first run makes that root —
 the item contract that marks it, and the launcher the nightly job is armed with
 — and every run after keeps the launcher pointing at wherever an upgrade put
-the package. What is pinned here is the other half as much as that one: a
-checkout's tracked files, a root ``EXPIRE_HOME`` names and a folder of
-somebody's own are never written.
+the package; a checkout gets the launcher too, gitignored. What is pinned here
+is the other half as much as that one: a checkout's tracked files, a root
+``EXPIRE_HOME`` names and a folder of somebody's own are never made into
+anything, and a launcher nibbles did not write is never written over.
 """
 
 from __future__ import annotations
@@ -60,12 +61,22 @@ def test_a_folder_of_somebody_s_own_is_never_filled(home, tmp_path):
     assert sorted(path.name for path in root.iterdir()) == ["notes.txt"]
 
 
-def test_a_checkout_is_never_written(home, dlq):
+def test_a_checkout_gets_the_launcher_and_nothing_else(home, dlq):
     # The test root is shaped like a checkout: the package and the contract.
-    tracked = {path: path.read_bytes() for path in dlq.root.glob("*.py")}
     assert home.is_checkout(dlq.root)
+    (dlq.root / home.LAUNCHER).unlink()
+    tracked = {path: path.read_bytes() for path in dlq.root.rglob("*") if path.is_file()}
     assert home.ensure(dlq.root) == []
-    assert {path: path.read_bytes() for path in tracked} == tracked
+    launcher = dlq.root / home.LAUNCHER
+    assert launcher.read_text(encoding="utf-8") == home.launcher()
+    after = {path: path.read_bytes() for path in dlq.root.rglob("*") if path.is_file()}
+    assert after.pop(launcher)
+    assert after == tracked
+
+
+def test_the_launcher_is_gitignored_in_a_checkout(home):
+    ignored = (REPO / ".gitignore").read_text().splitlines()
+    assert f"/{home.LAUNCHER}" in ignored
 
 
 def test_a_root_expire_home_names_is_never_made(dlq, tmp_path, monkeypatch):

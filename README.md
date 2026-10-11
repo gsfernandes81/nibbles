@@ -52,9 +52,6 @@ screens follow; `design/divergences.md` lists where the build differs.
 - `nibbles/expire_runner.py`: the scheduled runner. `expire_dl.py`: the shared
   downloader. `expire_sched.py`, `expire_ui.py`, `dlq.py`: the queue's command
   line and its actions. `home.py`: where the queue lives.
-- `expire_runner.py`, `expire_sched.py`, `ytdl_item.py` and `expire_dl.py` at
-  the root are doors to the package's modules, kept for a phone armed, and
-  holding items queued, before nibbles was a package. They are not shipped.
 - `queue/`: the queue, with the item contract in `queue/README.md`.
 - **`~/zwana-quota`** (`$ZWANA_HOME`, a clone beside this one, or under `~`):
   the portal client and quota widget the zwana budget source reads every
@@ -66,10 +63,11 @@ screens follow; `design/divergences.md` lists where the build differs.
 
 The queue root is `$EXPIRE_HOME`, else this checkout, else `~/nibbles` — never
 an installed copy's own directory, so an installed `nibbles` still works the
-real queue. An installed copy makes `~/nibbles` the first time it runs: the
-item contract, and the `expire_runner.py` launcher `nibbles arm` registers
-with the job scheduler. It writes into no checkout and into no folder that
-already holds something else.
+real queue. An installed copy makes `~/nibbles` the first time it runs, with
+the item contract; into no folder that already holds something else. Every
+root, a checkout included, gets `expire_runner.py`, the launcher `nibbles arm`
+registers with the job scheduler, from the first `nibbles` run — gitignored
+in a checkout, because it names this machine's path to the package.
 
 ## Install
 
@@ -96,11 +94,16 @@ ln -s ~/nibbles/completions/nibbles.fish ~/.config/fish/completions/
 or, with nothing installed but `pip install blessed`, `python3 -m nibbles`
 from `~/nibbles`, which takes the same words.
 
-On a phone that already runs a checkout, pulling the change that made nibbles
-a package needs nothing else: the job is still armed at
-`~/nibbles/expire_runner.py`, items queued before it still import
-`ytdl_item`/`expire_dl` off `~/nibbles`, and the editable install's `nibbles`
-still finds `nibbles.main` — the doors at the root answer all three.
+On a phone whose checkout predates the package (0.4.0), after pulling and
+**before the next window**, run `nibbles` once — the pull deletes the tracked
+`expire_runner.py` the job is armed at, and that run writes the launcher back
+in its place — and update the items queued before it, which import the old
+module names:
+
+```
+nibbles status                       # writes ~/nibbles/expire_runner.py
+sed -i 's/^import ytdl_item/from nibbles import ytdl_item/; s/^import expire_dl/from nibbles import expire_dl/' ~/nibbles/queue/*.py
+```
 
 ## Releasing
 

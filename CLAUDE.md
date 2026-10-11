@@ -11,7 +11,7 @@ runner) were split out of the `or3` monorepo's `termux/expire/` on 2026-08-28
 and **merged into this repo on 2026-10-10**, histories kept. Since the same
 day they are **one package, `nibbles/`**, importing each other as
 `from nibbles import ytq` (see *Published to PyPI* below for why and for the
-doors left at the root). Two sibling checkouts
+launcher every root gets). Two sibling checkouts
 are left: **zwana-quota** (the portal client and quota widget the zwana budget
 source reads its guard figures through; a manual budget needs none:
 `$ZWANA_HOME`, a clone beside this repo, then `~/zwana-quota`) and **bewitch**
@@ -66,8 +66,7 @@ in what nothing draws.
   spend data. There is no word for Feed or Later (a tap away), and none for
   a file (`nibbles <url>` is both); dlq's raw `queue` listing is gone.
   `test_cli.py` (dlq) pins every route. The modules keep their own `main`s
-  for that door and for running a file directly; `expire_sched._me()` names
-  `nibbles`.
+  for that door; `expire_sched._me()` names `nibbles`, however it was reached.
 - **The layers.** `tui.py` is the one blessed `Terminal` (fullscreen, cbreak,
   hidden cursor, clicks and the wheel in SGR, restored on Ctrl-Z and on any
   exception) and turns what arrives into `Key`, `Tap`, `Scroll` (with the
@@ -125,9 +124,9 @@ in what nothing draws.
 
 ## Decisions that travel with the queue (dlq)
 
-- **`expire_sched.py` run on its own opens the screen** — `default_action`,
-  whose other half is still pinned for that file: with no terminal it is
-  `status`. (A bare `nibbles` no longer does this; see the one command.)
+- **`expire_sched.main` with no words opens the screen** — `default_action`,
+  whose other half is still pinned: with no terminal it is `status`. (A bare
+  `nibbles` no longer does this; see the one command.)
 - **`nibbles <url>` queues a direct file download** when the server says it
   is a file (2026-10-10; before that `dlq <url>`, and once a separate
   command). `dlq.py` keeps its own module and flags.
@@ -205,22 +204,23 @@ in what nothing draws.
   `widgets`… The wheel is `nibbles/` and the item contract
   (`queue/README.md`, force-included as `nibbles/queue-README.md`).
   **An installed copy makes its own root** — `home.ensure`, called by the
-  door on every run: the contract and the launcher `~/nibbles/expire_runner.py`
-  (Termux shebang, sets `EXPIRE_HOME` to its own directory, puts
-  `home.SOURCE` on sys.path, runs `nibbles.expire_runner.main`), rewritten
-  only while it is one of ours (`home.GENERATED`) and only when the package
-  moved; never into a checkout, a root `EXPIRE_HOME` names, or a non-empty
-  folder that is not a queue. Queue items put `home.SOURCE` (the checkout or
+  door on every run: the contract, only for `~/nibbles` and only when it is
+  missing or empty (never a root `EXPIRE_HOME` names, never a folder of
+  somebody's). **Every root gets the launcher** `expire_runner.py` (Termux
+  shebang, sets `EXPIRE_HOME` to its own directory, puts `home.SOURCE` on
+  sys.path, runs `nibbles.expire_runner.main`) — a checkout too, where it is
+  gitignored because it names this machine's path — written when missing and
+  rewritten only while it is one of ours (`home.GENERATED`) and the package
+  moved; a launcher somebody wrote is never written over. Queue items put `home.SOURCE` (the checkout or
   site-packages) on sys.path and import `nibbles.ytdl_item` /
   `nibbles.expire_dl`, because the job starts them with Termux's own
   interpreter, which knows no venv. `nibbles now` is `python -m nibbles now`
   under `sys.executable` with the package first on `PYTHONPATH`
-  (`home.child_env`). **The doors at the root** — `expire_runner.py`,
-  `expire_sched.py`, `ytdl_item.py`, `expire_dl.py` — are for the phone's
-  checkout, which predates the package: the armed job's path, items already
-  queued, and `python3 expire_sched.py`. Imported, each *is* its module
-  (`sys.modules[__name__]`); run, it runs `main`. They are not shipped, and
-  can go once no phone has a job or an item that names them. **A release is a
+  (`home.child_env`). (Four doors at the checkout's root — the old flat
+  `expire_runner.py`, `expire_sched.py`, `ytdl_item.py`, `expire_dl.py` — kept
+  a phone that predated the package working for a day; the owner had them
+  removed on 2026-10-11, and the README says what a pull past it needs.)
+  **A release is a
   version bump landing on `main`**: `.github/workflows/release.yml` runs both
   suites (cloning bewitch and zwana-quota beside), builds, smoke-tests the
   wheel in a clean venv, publishes by trusted publishing (environment
@@ -484,9 +484,9 @@ in what nothing draws.
   last; Move on the Queue tab is the only place an order is chosen.
 - **`next_number` caps at `MAX_PRIORITY`** — the runner sorts file names, so
   a third digit puts an item at the front, not the back.
-- **Downloading now spawns a detached `nibbles now`** (by path under the queue
-  root: `HERE / "expire_sched.py"`), so ytq stays open and the download
-  outlives the screen.
+- **Downloading now spawns a detached `nibbles now`** (`ytq.now_argv`:
+  `python -m nibbles now` under this interpreter), so ytq stays open and the
+  download outlives the screen.
 - **`Choice.kind` decides an item's destination** — never the file extension
   (at queue time there is no file); `ytq.dest_for` is the one place, `--dest`
   wins over both.
@@ -531,7 +531,7 @@ with the cell it began on. pyte is taught `CSI S` and `CSI T` there too.
 **Both suites run the package out of a copy.** A checkout is its own queue
 root, which here is the real queue, so neither suite may import a module from
 here (an editable install puts this checkout on sys.path, which is why the
-copy is asserted): each conftest copies the package and the root's doors into
+copy is asserted): each conftest copies the package into
 a temporary queue root shaped like a checkout, points `EXPIRE_HOME` and `HOME` at
 temporary directories and imports (or, under a pty, executes) the copy. The ytq
 conftest asserts the `ytq` it imported is the copy; the dlq conftest asserts
