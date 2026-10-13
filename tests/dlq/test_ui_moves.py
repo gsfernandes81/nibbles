@@ -707,6 +707,7 @@ def test_o_asks_for_the_file_only_on_a_download_this_screen_started(dlq):
 
     class Run:
         askable, alive, name, open_when_done = True, True, "10-queued.py", False
+        stopped, opened, settled = False, "", False
 
         def toggle_open(self):
             self.open_when_done = not self.open_when_done
