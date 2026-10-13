@@ -236,3 +236,102 @@ def test_a_link_only_yt_dlp_knows_opens_its_sheet_and_probes_it(monkeypatch):
             time.sleep(0.01)
         app.handle(tui.Done(job))
     assert asked == ["dQw4w9WgXcQ"]
+
+
+class Loop:
+    """A stand-in session for :meth:`App.run`: the real loop, no terminal.
+
+    ``read`` keeps the real one's first promise — a finished job it was
+    handed comes back as its ``Done`` — and otherwise reports nothing, a few
+    times over, before quitting. ``on_show`` runs while a frame is drawn.
+    """
+
+    def __init__(self, app, on_show=lambda: None):
+        self.app, self.on_show, self.idle = app, on_show, 0
+
+    def start(self, job):
+        job.run(lambda: None)
+        return job
+
+    def show(self, block):
+        self.on_show()
+        return 0
+
+    def read(self, timeout, jobs):
+        for job in jobs:
+            if job.finished:
+                return tui.Done(job)
+        self.idle += 1
+        if self.idle > 3:
+            self.app.quit()
+        return None
+
+
+def test_a_probe_that_lands_while_a_frame_is_drawn_still_fills_its_sheet(monkeypatch):
+    """The frozen spinner: a probe finishing between one wait and the next
+    was left out of the next, its answer never heard, and the sheet waited
+    on it for good."""
+    import threading
+
+    release = threading.Event()
+
+    def probe(url):
+        release.wait(5)
+        return video_info()
+
+    monkeypatch.setattr(ytq, "probe", probe)
+    app = headless()
+    with_listing(app)
+    tap(app, "row")
+    job = next(job for job, _ in app.jobs)
+
+    def land_now():
+        # The job finishes during the frame, after the last wait looked.
+        release.set()
+        end = time.monotonic() + 5
+        while not job.finished and time.monotonic() < end:
+            time.sleep(0.01)
+
+    app.session = Loop(app, land_now)
+    app.run()
+    sheet = app.sheets[-1]
+    assert isinstance(sheet, ys.VideoSheet)
+    assert sheet.url in app.yt.probed
+    assert sheet.tier is not None
+    assert not app.jobs
+
+
+def test_copying_the_link_never_holds_the_app(monkeypatch):
+    """``c`` on a video sheet: the clipboard tool can wait out its whole
+    timeout (no Termux:API app), and the app answers meanwhile."""
+    import threading
+
+    release = threading.Event()
+
+    def slow(text):
+        release.wait(5)
+        return "copied"
+
+    monkeypatch.setattr(ytq, "to_clipboard", slow)
+    app = headless()
+    with_listing(app, info=video_info())
+    tap(app, "row")
+    sheet = app.sheets[-1]
+    began = time.monotonic()
+    app.handle(tui.Key("c"))
+    assert time.monotonic() - began < 1
+    # A second press while it runs starts nothing more, and ``x`` is for a
+    # fetch: a copy is neither stopped by it nor a reason to keep drawing.
+    app.handle(tui.Key("c"))
+    copies = [job for job, _ in app.jobs if job.key == "clipboard"]
+    assert len(copies) == 1
+    app.stop_newest()
+    assert not copies[0].cancelled
+    assert copies[0] not in app.running()
+    release.set()
+    for job, _ in list(app.jobs):
+        end = time.monotonic() + 5
+        while not job.finished and time.monotonic() < end:
+            time.sleep(0.01)
+        app.handle(tui.Done(job))
+    assert sheet.said == "copied"

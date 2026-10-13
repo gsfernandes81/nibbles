@@ -877,6 +877,7 @@ class ItemSheet(Sheet):
         super().__init__()
         self.name = row["name"]
         self.title = display(row["name"])
+        self.opening: tui.Job | None = None
 
     def row(self, app) -> dict | None:
         return next((r for r in app.queue.rows if r["name"] == self.name), None)
@@ -934,6 +935,12 @@ class ItemSheet(Sheet):
         if hit.id.startswith("act:"):
             self.act(app, hit.data)
 
+    def done(self, app, job) -> None:
+        """Open it has come back from Android."""
+        self.opening = None
+        code = job.result if job.error is None else 1
+        app.say("nothing here would open it" if code else f"opened {job.key.name}")
+
     def key(self, app, key: str) -> bool:
         row = self.row(app)
         if row is not None and key in dict(ui.actions_for(row)):
@@ -963,8 +970,13 @@ class ItemSheet(Sheet):
             if not row["files"]:
                 app.say("there is no file yet")
             else:
-                code = sched._open(row["files"][0], quiet=True)
-                app.say("nothing here would open it" if code else f"opened {row['files'][0].name}")
+                # In the background: an opener that does not answer would
+                # otherwise hold the whole app for its minute.
+                target = row["files"][0]
+                if self.opening is None or self.opening.finished:
+                    self.opening = app.start(
+                        tui.Job(lambda t=target: sched._open(t, quiet=True), "opening it",
+                                key=target, quiet=True), self)
         elif key in ("t", "u"):
             said = ui.do_clear_tries(row) if key == "t" else ui.do_requeue(row)
             worked = said.endswith("cleared") or said.endswith("is queued again")

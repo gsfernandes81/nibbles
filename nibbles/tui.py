@@ -202,6 +202,10 @@ class Job:
     work: Callable[[], object]
     what: str
     key: object = None
+    #: Not a fetch: a hand-off to Android (the clipboard, an opener) that
+    #: draws no spinner, so it neither wakes the loop to animate one nor
+    #: answers ``x``, which is for stopping what spends data.
+    quiet: bool = False
     result: object = None
     error: BaseException | None = None
     cancelled: bool = False
@@ -261,8 +265,10 @@ def run_child(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
     try:
         out, err = child.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        # SIGKILL, and the whole group: anything left holding the pipes would
+        # keep the wait below, and the job, from ever coming back.
         with contextlib.suppress(OSError):
-            os.killpg(os.getpgid(child.pid), signal.SIGTERM)
+            os.killpg(child.pid, signal.SIGKILL)
         child.communicate()
         raise
     if job is not None and job.cancelled:
@@ -394,6 +400,9 @@ class Session:
 
         ``None`` for *timeout* blocks until something happens: a key, a tap,
         a resize, a job finishing. That is what keeps an idle screen silent.
+        *jobs* is every job whose :class:`Done` is still owed, finished ones
+        included: one that finished before this was called is answered at
+        once rather than waited for.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         # nomut: start — checked on a pty, where a terminal answers it.
