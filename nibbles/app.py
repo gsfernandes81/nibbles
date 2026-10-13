@@ -88,11 +88,23 @@ class App:
         return job
 
     def running(self) -> list[tui.Job]:
-        return [job for job, _ in self.jobs if not job.finished]
+        """The fetches still going: what the spinner turns for."""
+        return [job for job, _ in self.jobs if not job.finished and not job.quiet]
+
+    def unheard(self) -> list[tui.Job]:
+        """Every job whose owner has not yet heard it is done: running, or
+        finished with its :class:`tui.Done` still to be delivered.
+
+        What the loop waits on. Not :meth:`running`: a job that finishes
+        while a frame is being drawn would be left out of the next wait,
+        its answer never delivered, and the sheet waiting on it would spin
+        no more and never fill.
+        """
+        return [job for job, _ in self.jobs]
 
     def stop_newest(self) -> bool:
         """Stop (``x``): cancel the newest fetch still running."""
-        live = [job for job, _ in self.jobs if not job.finished and not job.cancelled]
+        live = [job for job in self.running() if not job.cancelled]
         if not live:
             return False
         live[-1].cancel()
@@ -263,7 +275,7 @@ class App:
         while not self.done:
             self.queue.tick()
             self.session.show(self.compose())
-            event = self.session.read(self.next_wake(), self.running())
+            event = self.session.read(self.next_wake(), self.unheard())
             if event is not None:
                 self.handle(event)
         # nomut: end

@@ -1,6 +1,6 @@
 [project]
 name = "nibbles"
-version = "0.4.0"
+version = "0.4.1"
 description = "Queue YouTube videos and file downloads on your phone, and fetch them with data that would otherwise expire"
 readme = "README.md"
 license = "AGPL-3.0-or-later"

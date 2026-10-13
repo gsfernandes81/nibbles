@@ -233,8 +233,10 @@ def ask(argv: list[str], timeout: int) -> dict:
     # Inside one of the screen's fetches, the child goes to the fetch so Stop
     # can kill it; anywhere else (the printing paths, the tests) it is the
     # plain run it always was. Looked up rather than imported: nothing that
-    # prints a listing needs the terminal module loaded.
-    tui = sys.modules.get("tui")
+    # prints a listing needs the terminal module loaded. By its package name:
+    # under the bare ``tui`` it was never found, so Stop killed nothing and
+    # yt-dlp went on spending until it answered.
+    tui = sys.modules.get("nibbles.tui")
     try:
         if tui is not None and tui.current_job() is not None:
             done = tui.run_child(argv, timeout)

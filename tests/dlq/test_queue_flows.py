@@ -214,3 +214,42 @@ def test_no_allowance_set_says_where_to_set_it_and_runs_nothing(dlq):
     tap(app, "run")
     assert not app.sheets and "allowance" in app.said
     del run
+
+
+def test_open_it_never_holds_the_app(dlq, monkeypatch):
+    """Open it hands the file to Android in the background: an opener that
+    does not answer must not freeze every screen for its timeout."""
+    import threading
+    import time
+
+    from nibbles import tui
+
+    release = threading.Event()
+    opened = []
+
+    def slow(target, quiet=False):
+        release.wait(5)
+        opened.append(target)
+        return 0
+
+    monkeypatch.setattr(dlq.sched, "_open", slow)
+    dlq.item("10-film.py")
+    app = headless(dlq)
+    row = dict(next(r for r in app.queue.rows if r["name"] == "10-film.py"))
+    film = dlq.root / "film.mp4"
+    film.write_bytes(b"x")
+    row["files"] = [film]
+    app.queue.rows = [row]
+    sheet = dlq.qs.ItemSheet(row)
+    app.open(sheet)
+    began = time.monotonic()
+    sheet.act(app, "o")
+    assert time.monotonic() - began < 1
+    release.set()
+    for job, _ in list(app.jobs):
+        end = time.monotonic() + 5
+        while not job.finished and time.monotonic() < end:
+            time.sleep(0.01)
+        app.handle(tui.Done(job))
+    assert opened == [film]
+    assert film.name in app.said

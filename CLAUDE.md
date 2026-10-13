@@ -101,7 +101,14 @@ in what nothing draws.
   opening its tab, Re-read, and the deeper look are `tui.Job`s; inside one,
   `ytq.ask` runs yt-dlp through `tui.run_child`, which hands the child to the
   job so `x` (Stop) can kill it, and outside one (the printing paths, the
-  tests) it is the plain `subprocess.run` it always was. **A fling's momentum
+  tests) it is the plain `subprocess.run` it always was (it finds the job
+  through `sys.modules["nibbles.tui"]`; under the bare `tui` it never did,
+  and Stop killed nothing). **The loop waits on every job whose `Done` is
+  still owed** (`App.unheard`), never only the running ones: a job that
+  finished while a frame was drawn was left out of the next wait, and its
+  sheet spun no more and never filled (2026-10-13). A hand-off to Android —
+  the clipboard, Open it — is a `quiet` job: off the loop's thread, but no
+  spinner wake and not what `x` stops. **A fling's momentum
   never fetches**: the deeper look takes a tap on `↓ 30 more`, ↓ on the last
   row, or a *fresh* drag down after the list has rested at its end for
   `yt_screens.REST`; momentum is an unbroken stream of wheel events, so it can

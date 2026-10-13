@@ -581,3 +581,40 @@ def test_a_link_only_yt_dlp_knows_opens_its_sheet_not_a_search(monkeypatch, caps
     monkeypatch.setattr(nibbles, "run", lambda tab, first, *a, **k: seen.update(first=first) or [])
     assert ytq.main(["--link", "dQw4w9WgXcQ"]) == 0
     assert seen["first"] == ytq.LINK_KEY + "dQw4w9WgXcQ"
+
+
+def test_stop_kills_the_yt_dlp_a_fetch_is_waiting_on():
+    """Inside a fetch, ``ask`` hands its child to the job, so ``x`` ends it
+    rather than leaving it spending until it answers."""
+    import sys
+    import time
+
+    from nibbles import tui
+
+    job = tui.Job(lambda: ytq.ask([sys.executable, "-c", "import time; time.sleep(30)"], 60),
+                  "asking")
+    job.run(lambda: None)
+    end = time.monotonic() + 10
+    while job._child is None and time.monotonic() < end:
+        time.sleep(0.01)
+    assert job._child is not None
+    job.cancel()
+    while not job.finished and time.monotonic() < end:
+        time.sleep(0.01)
+    assert job.finished
+    assert isinstance(job.error, tui.Cancelled)
+
+
+def test_a_fetch_that_ignores_its_timeout_still_comes_back():
+    """A child that shrugs off SIGTERM is not waited on past its timeout."""
+    import sys
+    import time
+
+    from nibbles import tui
+
+    stubborn = ("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "print('', flush=True); time.sleep(30)")
+    began = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        tui.run_child([sys.executable, "-c", stubborn], 1)
+    assert time.monotonic() - began < 10

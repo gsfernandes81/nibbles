@@ -690,6 +690,7 @@ class VideoSheet(Sheet):
         self.clash: ytq.Duplicate | None = None
         self.checked = False
         self.said = ""
+        self.copying: tui.Job | None = None
         self._app = app
         app.yt.probe(url, self)
 
@@ -886,6 +887,16 @@ class VideoSheet(Sheet):
     def wake(self, app) -> float | None:
         return None
 
+    def done(self, app, job) -> None:
+        """The copy has come back: said inside the sheet, because the line
+        above the tabs is under it — or above the tabs, once it is closed."""
+        self.copying = None
+        said = job.result if job.error is None else f"clipboard failed: {job.error}"
+        if self in app.sheets:
+            self.said = said
+        else:
+            app.say(said)
+
     # Events ---------------------------------------------------------------
 
     def tap(self, app, hit, event) -> None:
@@ -950,8 +961,11 @@ class VideoSheet(Sheet):
             app.open(FormatsSheet(self))
             return True
         if key == "c":
-            # Said inside the sheet: the line above the tabs is under it.
-            self.said = ytq.to_clipboard(self.url)
+            # In the background: termux-clipboard-set without the Termux:API
+            # app waits out its whole timeout, and the app with it.
+            if self.copying is None or self.copying.finished:
+                self.copying = app.start(tui.Job(lambda u=self.url: ytq.to_clipboard(u),
+                                                 "copying", key="clipboard", quiet=True), self)
             return True
         if key == "n":
             self.set_when(app, 1 - self.when)

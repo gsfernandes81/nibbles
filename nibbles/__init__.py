@@ -8,7 +8,7 @@ for — or need — the screens' terminal library on the way.
 
 from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 
 def main(argv: list[str] | None = None) -> int:
