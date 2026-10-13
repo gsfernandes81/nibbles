@@ -253,3 +253,53 @@ def test_open_it_never_holds_the_app(dlq, monkeypatch):
         app.handle(tui.Done(job))
     assert opened == [film]
     assert film.name in app.said
+
+
+def test_a_download_started_now_ends_on_its_sheet_and_opens_as_asked(dlq, monkeypatch):
+    """Open it when done: once the download finishes, its sheet stops saying
+    it is downloading within a poll, says where it went, and says what
+    opening it came to — the answer the open itself gave."""
+    import time
+
+    opened = []
+    monkeypatch.setattr(dlq.ytq, "open_file", lambda path: opened.append(path) or "opened it")
+    body = (
+        "import json, os, pathlib, time\n"
+        "work = pathlib.Path(os.environ['EXPIRE_WORK'])\n"
+        "out = pathlib.Path(os.environ['EXPIRE_OUT'])\n"
+        "out.mkdir(parents=True, exist_ok=True)\n"
+        "for i in range(4):\n"
+        "    (work / '.status.json').write_text(json.dumps({'v': 1, 'state': 'progress',\n"
+        "        'run_id': os.environ['EXPIRE_RUN_ID'], 'part_bytes': i * 100,\n"
+        "        'total_bytes': 400, 'payload_bytes_this_slice': i * 100}))\n"
+        "    time.sleep(0.3)\n"
+        "(out / 'film.mp4').write_bytes(b'x' * 400)\n"
+    )
+    dlq.script("10-film.py", body)
+    app = headless(dlq)
+    assert app.queue.start_now("10-film.py") is None
+    sheet = dlq.qs.DownloadSheet("10-film.py")
+    app.open(sheet)
+    app.queue.running.toggle_open()
+    end = time.monotonic() + 30
+    while app.queue.running.alive and time.monotonic() < end:
+        app.queue.tick()
+        app.compose()
+        time.sleep(0.1)
+    assert not app.queue.running.alive
+    # Well inside the idle poll: the end of a download is read at once.
+    end = time.monotonic() + dlq.qs.IDLE_POLL / 3
+    while (sheet.where(app) != "done" or app.queue.downloading_name()) \
+            and time.monotonic() < end:
+        time.sleep(0.1)
+        app.queue.tick()
+    assert app.queue.downloading_name() == ""
+    assert sheet.where(app) == "done"
+    end = time.monotonic() + 15
+    while not app.queue.running.settled and time.monotonic() < end:
+        time.sleep(0.1)
+    assert [p.name for p in opened] == ["film.mp4"]
+    screen = app.compose().plain()
+    assert app.queue.running.opened in screen
+    # Nothing left to watch: the sheet stops waking the loop.
+    assert sheet.wake(app) is None

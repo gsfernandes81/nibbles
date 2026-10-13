@@ -94,6 +94,8 @@ class QueueModel:
         self.reached_at = 0.0
         self.reach_job: tui.Job | None = None
         self.samples: dict[str, list[tuple[float, int]]] = {}
+        #: :meth:`_seeing` at the last tick.
+        self.seen: tuple[bool, str] = (False, "")
         self.read()
         self.refresh()
 
@@ -107,7 +109,13 @@ class QueueModel:
             for name in forgotten:
                 self.app.receipt(f"forgot {name}: its file had been deleted")
             self.app.say(f"forgot {', '.join(display(n) for n in forgotten)}: the file had gone")
-        self.live = sched._running_now([row["name"] for row in self.rows])
+        # Only the queued: a finished item has left the queue, and its status
+        # file, still fresh, is not a download going on. Nor is what our own
+        # ``nibbles now`` wrote once it has exited (its pid is in the run id).
+        r = self.running
+        exited = r.child.pid if r.child is not None and not r.alive else None
+        self.live = sched._running_now([row["name"] for row in self.rows
+                                        if row["where"] == "queued"], exited)
         self.read_at = time.monotonic()
 
     #: How old a reading may get before looking at the Queue tab asks again.
@@ -162,8 +170,17 @@ class QueueModel:
 
     def tick(self) -> None:
         due = LIVE_POLL if self.downloading_name() else IDLE_POLL
-        if time.monotonic() - self.read_at >= due:
+        # A download starting or ending is read at once: the rows say where
+        # it went (done, still queued, failed), and waiting the idle poll out
+        # left its sheet a quarter of a minute behind.
+        if time.monotonic() - self.read_at >= due or self.seen != self._seeing():
             self.read()
+        self.seen = self._seeing()
+
+    def _seeing(self) -> tuple[bool, str]:
+        """What a start or an end changes: our own run's life, and the name
+        downloading."""
+        return self.running.alive, self.downloading_name()
 
     def wake(self) -> float | None:
         """When the queue next needs a look: the poll, and the countdown."""
@@ -1091,19 +1108,36 @@ class DownloadSheet(Sheet):
         r = app.queue.running
         return r.alive and r.name == self.name
 
+    def where(self, app) -> str:
+        """Where its item is now: ``queued`` while it runs or after a stop,
+        ``done`` once the runner has archived it, or ``failed``."""
+        row = next((r for r in app.queue.rows if r["name"] == self.name), None)
+        return row["where"] if row else ""
+
     def body(self, app, width: int, height: int) -> Piece:
         model = app.queue
         have, total, rate = model.progress(self.name)
         short = height < SHORT
         live = model.downloading_name() == self.name
+        where = self.where(app)
+        ended = not live and where in ("done", "failed")
         when = "now" if self.mine(app) or model.firing.alive else "in the window"
-        head = [("downloading" if live else "stopped", T.attention if live else T.fg_base)]
+        if live:
+            head = [("downloading", T.attention)]
+        elif where == "done":
+            head = [("done", T.success)]
+        elif where == "failed":
+            head = [("failed", T.error)]
+        else:
+            head = [("stopped", T.fg_base)]
         tail = shell.left(model.time_left(self.name))
-        head.append((f" · {when}" + (f" · {tail} left" if tail and live else ""), T.fg_more_subtle))
+        if not ended:
+            head.append((f" · {when}" + (f" · {tail} left" if tail and live else ""),
+                         T.fg_more_subtle))
         parts: list = [w.spans(head, width)]
         if not short:
             parts.append(w.gap(width))
-        frac = have / total if total else 0.0
+        frac = 1.0 if where == "done" else have / total if total else 0.0
         parts.append(w.progress_bar(frac, width))
         figure = f"{shell.size(have)} of {shell.size(total)}" if total else shell.size(have)
         if rate > 0:
@@ -1114,6 +1148,10 @@ class DownloadSheet(Sheet):
         r = model.running
         if r.askable and r.name == self.name:
             parts.append(w.checkbox("Open it when done", r.open_when_done, width, id="open"))
+        elif self.asked(app) and not live:
+            # Where the checkbox was: what opening it came to.
+            parts.append(w.text(r.opened or "opening it…", width,
+                                T.fg_more_subtle if r.opened else T.info))
         if model.mine():
             parts.append(w.dock([Btn("Pause", "x", id="pause"), Btn("Back", "esc", id="back")],
                                 width, app.pressed))
@@ -1121,8 +1159,17 @@ class DownloadSheet(Sheet):
             parts.append(w.button("Back", "esc", width, id="back", pressed=app.pressed))
         return w.vstack(*parts, width=width)
 
+    def asked(self, app) -> bool:
+        """Whether this session's run of it was asked to open when done, and
+        did not stop short of it."""
+        r = app.queue.running
+        return r.name == self.name and r.open_when_done and not r.stopped
+
     def wake(self, app) -> float | None:
-        return LIVE_POLL
+        r = app.queue.running
+        if app.queue.downloading_name() == self.name or (self.asked(app) and not r.settled):
+            return LIVE_POLL
+        return None
 
     def tap(self, app, hit, event) -> None:
         if hit.id == "open":

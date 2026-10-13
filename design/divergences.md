@@ -220,3 +220,22 @@ owner asked for: a Done download whose file was removed says `deleted`, not
 - Built: nothing is skipped until it is set (presets `av01 vp9`, `av01`,
   `vp9`, `none`); the mockup's value is read as the owner's own setting, not
   as a default for everyone.
+
+## A download's sheet once it has ended — 2026-10-13
+
+- Spec: `k-download` draws a download while it runs (`downloading · now ·
+  1h left`, the bar, the figures, Open it when done, Pause and Back) and
+  nothing for after; the build said `stopped` for every ending, a finished
+  one included, and the checkbox went with no word on what it came to.
+- Built: the head says where the download went once it has left the run:
+  `done` (success, the bar full) when the runner archived it, `failed`
+  (error) when it was given up on, and `stopped` only for one still queued
+  (paused, or out of its slice); an ended one drops the `· now` tail. Where
+  the checkbox was, a download that was asked to open says what opening it
+  came to — `opening it…` (info) until the opener answers, then its own
+  answer (`opened film.mp4`, `could not open film.mp4`, or that it did not
+  finish, so nothing was opened).
+- Why: "Open it when done" ran and nothing on the screen said so, and the
+  sheet a person watches for the end of a download is the one place it must
+  say the download ended.
+- Status: awaiting approval

@@ -375,6 +375,22 @@ def test_a_download_is_live_while_its_progress_file_is_fresh(dlq):
     assert dlq.sched._running_now(["10-thing.py"]) == ""
 
 
+def test_a_fresh_progress_file_that_says_it_ended_is_not_a_download(dlq):
+    """The item's last word on its way out — finished, declined or failed —
+    is fresh for a minute after, and none of that minute is downloading."""
+    import json
+
+    dlq.item("10-thing.py")
+    work = dlq.root / "work" / "10-thing.py"
+    work.mkdir(parents=True)
+    report = work / ".status.json"
+    report.write_text(json.dumps({"state": dlq.dl.PROGRESS}))
+    assert dlq.sched._running_now(["10-thing.py"]) == "10-thing.py"
+    for ended in (dlq.dl.COMPLETE, dlq.dl.DECLINED, dlq.dl.FATAL):
+        report.write_text(json.dumps({"state": ended}))
+        assert dlq.sched._running_now(["10-thing.py"]) == "", ended
+
+
 def test_the_last_firing_is_read_back_out_of_the_heartbeat(dlq):
     """~96 firings a day are no-ops, so they overwrite one file rather than
     filling the log; this is the line that says what the last one decided."""
@@ -417,3 +433,27 @@ def test_a_log_of_one_day_lifts_the_date_off_every_line(dlq, capsys, monkeypatch
 def test_a_log_that_is_not_there_says_so_rather_than_nothing(dlq, capsys):
     dlq.sched.tail(dlq.root / "logs" / "nothing.log", 40)
     assert "not written yet" in capsys.readouterr().out
+
+
+def test_of_two_fresh_progress_files_the_one_still_writing_is_downloading(dlq):
+    """In a firing, the item before this one stopped on its slice a moment
+    ago and says ``progress`` on its way out; the one downloading is the one
+    writing now. And a run this process watched exit is not downloading,
+    whatever it said last."""
+    import json
+    import os
+    import time
+
+    for name in ("10-before.py", "20-now.py"):
+        dlq.item(name)
+        work = dlq.root / "work" / name
+        work.mkdir(parents=True)
+        (work / ".status.json").write_text(json.dumps(
+            {"state": dlq.dl.PROGRESS, "run_id": f"1791900000-{4242 if name < '2' else 77}"}))
+    earlier = time.time() - 10
+    before = dlq.root / "work" / "10-before.py" / ".status.json"
+    os.utime(before, (earlier, earlier))
+    assert dlq.sched._running_now(["10-before.py", "20-now.py"]) == "20-now.py"
+    assert dlq.sched._running_now(["10-before.py"]) == "10-before.py"
+    assert dlq.sched._running_now(["10-before.py"], exited=4242) == ""
+    assert dlq.sched._running_now(["20-now.py"], exited=4242) == "20-now.py"

@@ -83,6 +83,7 @@ import time
 from pathlib import Path
 
 from nibbles import home, ytq
+from nibbles.expire_dl import COMPLETE, DECLINED, FATAL
 
 #: The queue root, never this file's directory. Installed from PyPI, this
 #: module is a copy in site-packages, and every path below has to keep pointing
@@ -1025,6 +1026,9 @@ def show_list() -> int:
 #: not cost the queue a slice to draw itself.
 LIVE_SECONDS = 60
 
+#: What an item's status file says last, on its way out: never a live download.
+_ENDED = (COMPLETE, DECLINED, FATAL)
+
 #: The runner's answer, in words, with the tone it is worth saying in. Keyed by
 #: :data:`expire_runner.GATE_STATES` plus ``downloading``, which is not a gate
 #: state — the gate says what the *next firing* would do, and this says what is
@@ -1078,21 +1082,44 @@ def _short(path: Path) -> str:
     return text
 
 
-def _running_now(names: list[str]) -> str:
+def _running_now(names: list[str], exited: int | None = None) -> str:
     """The item being downloaded at this second, or ``""``.
 
     Measured from the freshness of the item's own progress file, so it catches
     a ``nibbles now`` in another terminal as readily as a nightly firing — both
-    write it, and neither is visible in the job registration.
+    write it, and neither is visible in the job registration. Read as live,
+    though, a fresh file went on saying "downloading" for a minute after the
+    download had ended, so two kinds are not:
+
+    - one whose last word is an ending (complete, declined, fatal);
+    - one written by a run already known to have exited: *exited* is the pid
+      of a ``nibbles now`` this process watched end, and its run id carries
+      that pid. A run stopped short says ``progress`` on its way out, so the
+      word alone cannot tell it from one still going.
+
+    Of the rest, the freshest: in a firing the item before this one may
+    have stopped a moment ago, and the one downloading is the one writing.
     """
+    found: list[tuple[float, str]] = []
     for name in names:
+        status = WORK / name / ".status.json"
         try:
-            age = time.time() - (WORK / name / ".status.json").stat().st_mtime
+            age = time.time() - status.stat().st_mtime
         except OSError:
             continue
-        if 0 <= age < LIVE_SECONDS:
-            return name
-    return ""
+        if not 0 <= age < LIVE_SECONDS:
+            continue
+        try:
+            report = json.loads(status.read_text())
+        except (OSError, ValueError):
+            report = None
+        if isinstance(report, dict):
+            if report.get("state") in _ENDED:
+                continue
+            if exited is not None and str(report.get("run_id", "")).endswith(f"-{exited}"):
+                continue
+        found.append((age, name))
+    return min(found)[1] if found else ""
 
 
 def _last_firing() -> tuple[str, str]:
