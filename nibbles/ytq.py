@@ -1323,8 +1323,31 @@ def _family(ext: str) -> str:
     return ext or "?"
 
 
+def _quality(fmt: dict) -> int | None:
+    """The quality a video format is sold as (``1080``), which is not always
+    its height.
+
+    YouTube's own word first, where it leads with one (``1080p``, ``720p60``,
+    ``1080p Premium``). Otherwise the frame's height inside a 16:9 box, as
+    YouTube reckons it: the short side, or nine sixteenths of the long side if
+    that is more. A 2:1 film's 1080p is 3840x1920's little brother at
+    1920x960, and a short's 1080p stands 1920 tall; read off the height, the
+    first offered 960p and the second 1920p, and neither met a quality button.
+    """
+    said = _height_of(str(fmt.get("format_note") or ""))
+    if said:
+        return said
+    width, height = fmt.get("width"), fmt.get("height")
+    if not height:
+        return None
+    if not width:
+        return int(height)
+    short, long = sorted((int(width), int(height)))
+    return max(short, round(long * 9 / 16))
+
+
 def _video_label(fmt: dict) -> str:
-    height = fmt.get("height")
+    height = _quality(fmt)
     where = f"{height}p" if height else (fmt.get("format_note") or "video")
     fps = fmt.get("fps")
     if fps and fps > 30:
@@ -1383,6 +1406,22 @@ def choices(info: dict) -> tuple[list[Choice], int]:
             audios.append(entry)
         else:
             progressive.append(entry)
+
+    # A dubbed video carries its audio once per language, every copy at the
+    # same bitrate: only the original is offered, as an audio choice or in a
+    # merge. yt-dlp ranks it highest (``language_preference``), and the rank
+    # is read off every audio track, sized or not, so an original that came
+    # without a size leaves no dub to stand in for it. Where nothing is
+    # ranked, or every track is ranked alike, nothing is dropped.
+    ranks = {
+        fmt.get("language_preference")
+        for fmt in formats
+        if fmt.get("vcodec") == "none" and fmt.get("acodec") not in (None, "none")
+        and isinstance(fmt.get("language_preference"), (int, float))
+    }
+    if len(ranks) > 1:
+        top = max(ranks)
+        audios = [e for e in audios if e[0].get("language_preference") == top]
 
     # One best audio per container family, so a merge does not have to transcode
     # or fall back to Matroska when it does not need to.

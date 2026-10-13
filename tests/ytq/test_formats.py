@@ -436,3 +436,130 @@ def test_the_bot_check_verdict_is_a_yes_or_no_and_not_an_absence():
     assert ytq.withheld(video_info(extractor="generic", formats=[
         fmt("0", vcodec="h264", acodec="aac", ext="mp4", filesize=1),
     ])) is False
+
+
+# --------------------------------------------------------------------------- #
+# Which quality a format is, and which audio is the video's own
+# --------------------------------------------------------------------------- #
+
+#: YouTube's ladder, each rung's frame for a 2:1 film (3840x1920 at the top):
+#: the width of a 16:9 frame, half of it tall.
+WIDE = [(144, 256, 128), (240, 426, 214), (360, 640, 320), (480, 854, 428),
+        (720, 1280, 640), (1080, 1920, 960), (1440, 2560, 1280), (2160, 3840, 1920)]
+
+
+def framed(format_id, width, height, note=None, size=100 * MiB):
+    out = fmt(format_id, vcodec="avc1", ext="mp4", height=height, filesize=size)
+    out["width"] = width
+    if note is not None:
+        out["format_note"] = note
+    return out
+
+
+def test_a_wide_film_is_offered_at_the_qualities_it_is_sold_as():
+    """A 2:1 film's 480p is 854x428: read off the height it was 428p, met no
+    quality button, and every rung between the smallest and the largest
+    seemed to be missing."""
+    audio = fmt("140", acodec="mp4a", ext="m4a", abr=129, filesize=10 * MiB)
+    bare = video_info(formats=[framed(str(q), w, h) for q, w, h in WIDE] + [audio])
+    noted = video_info(formats=[framed(str(q), w, h, f"{q}p") for q, w, h in WIDE] + [audio])
+    for info in (bare, noted):
+        heights = {ytq.height_of(o) for o in ytq.choices(info)[0] if o.kind != "audio"}
+        assert heights == {q for q, _, _ in WIDE}
+
+
+def test_a_tall_video_is_offered_at_its_short_side():
+    """A short at 1080x1920 is 1080p, as YouTube says, not 1920p."""
+    info = video_info(formats=[
+        framed("137", 1080, 1920),
+        framed("136", 720, 1280),
+        fmt("140", acodec="mp4a", ext="m4a", abr=129, filesize=10 * MiB),
+    ])
+    heights = {ytq.height_of(o) for o in ytq.choices(info)[0] if o.kind != "audio"}
+    assert heights == {1080, 720}
+
+
+@given(st.sampled_from([144, 240, 360, 480, 720, 1080, 1440, 2160]),
+       st.sampled_from([4 / 3, 16 / 9, 2.0, 2.39, 9 / 16, 3 / 4]))
+def test_any_frame_of_a_rung_is_that_rung(quality, ratio):
+    """Whatever the shape, the frame that fills the rung's 16:9 box is that
+    rung: as wide as the box for a wide picture, as tall for a narrow one."""
+    if ratio >= 16 / 9:
+        width = quality * 16 / 9
+        height = width / ratio
+    elif ratio >= 1:
+        height = quality
+        width = height * ratio
+    else:  # portrait: the short side is the rung
+        width = quality
+        height = width / ratio
+    info = video_info(formats=[
+        framed("v", round(width), round(height)),
+        fmt("140", acodec="mp4a", ext="m4a", abr=129, filesize=10 * MiB),
+    ])
+    video = next(o for o in ytq.choices(info)[0] if o.kind != "audio")
+    assert ytq.height_of(video) == quality
+
+
+def test_youtubes_own_word_for_the_quality_wins():
+    info = video_info(formats=[
+        framed("298", 1280, 640, "720p60"),
+        fmt("140", acodec="mp4a", ext="m4a", abr=129, filesize=10 * MiB),
+    ])
+    video = next(o for o in ytq.choices(info)[0] if o.kind != "audio")
+    assert ytq.height_of(video) == 720
+
+
+def dubbed(format_id, language, rank, abr, ext="m4a", acodec="mp4a"):
+    out = fmt(format_id, acodec=acodec, ext=ext, abr=abr, filesize=30 * MiB)
+    out["language"], out["language_preference"] = language, rank
+    return out
+
+
+def test_a_dubbed_video_offers_only_its_own_audio():
+    """YouTube carries a dubbed video's audio once per language, at one
+    bitrate. Only the original is offered, and every merge takes it, even
+    where a dub's bitrate reads a hair higher."""
+    info = video_info(formats=[
+        fmt("137", vcodec="avc1", ext="mp4", height=1080, filesize=400 * MiB),
+        dubbed("140-0", "ar", -1, 130),
+        dubbed("140-1", "hi", -1, 129),
+        dubbed("140-2", "en-US", 10, 129),
+        dubbed("251-0", "ar", -1, 120, "webm", "opus"),
+        dubbed("251-1", "en-US", 10, 110, "webm", "opus"),
+    ])
+    options = ytq.choices(info)[0]
+    assert sorted(o.fmt for o in options if o.kind == "audio") == ["140-2", "251-1"]
+    assert [o.fmt for o in options if o.kind == "merge"] == ["137+140-2"]
+
+
+def test_audio_nobody_ranked_is_all_offered():
+    """Most videos have one track and no ranking to go by: nothing is dropped."""
+    info = video_info(formats=[
+        fmt("140", acodec="mp4a", ext="m4a", abr=129, filesize=10 * MiB),
+        fmt("139", acodec="mp4a", ext="m4a", abr=48, filesize=4 * MiB),
+    ])
+    assert len([o for o in ytq.choices(info)[0] if o.kind == "audio"]) == 2
+
+
+def test_an_unsized_original_is_not_replaced_by_a_dub():
+    """The original track came without a size, so it cannot be offered; a
+    dub must not be merged in its place as if it were the video's own."""
+    original = dubbed("140-2", "en-US", 10, 129)
+    del original["filesize"]
+    info = video_info(formats=[
+        fmt("137", vcodec="avc1", ext="mp4", height=1080, filesize=400 * MiB),
+        dubbed("140-0", "ar", -1, 130),
+        original,
+    ])
+    options = ytq.choices(info)[0]
+    assert not any("140-0" in o.fmt for o in options)
+
+
+def test_tracks_ranked_alike_are_all_offered():
+    info = video_info(formats=[
+        dubbed("140", "en", -1, 129),
+        dubbed("139", "en", -1, 48),
+        fmt("251", acodec="opus", ext="webm", abr=141, filesize=9 * MiB),
+    ])
+    assert len([o for o in ytq.choices(info)[0] if o.kind == "audio"]) == 3
