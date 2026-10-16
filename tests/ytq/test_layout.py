@@ -204,15 +204,12 @@ def test_a_whole_lap_shows_the_whole_title():
     assert LONG_TITLE[-width:] in seen
 
 
-def test_drawing_and_waking_agree_about_which_titles_move():
-    """Written twice they drift, and both failures are silent: a title that
-    moves for no reason, or a wakeup every 300ms for ever on an idle screen."""
+def test_a_printed_title_moves_in_exactly_its_room():
+    """What is drawn is exactly the room the row gives the title, moving or
+    not: a column more and the row wraps, a column less and it is ragged."""
     for width in WIDTHS:
         for title in ("short", LONG_TITLE):
-            result = a_result(title)
-            room = ytq.title_room(result, width)
-            assert ytq.scrolls(result, width) == (len(title) > room)
-            # And what is drawn is exactly the room that decision was made on.
+            room = ytq.title_room(a_result(title), width)
             assert len(ytq.marquee(title, room, 7)) == min(room, len(title))
 
 
@@ -327,13 +324,20 @@ def test_a_title_from_outside_is_drawn_on_its_own_row(width, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
+def wrapped(text: str, width: int) -> list[str]:
+    """What the screens wrap prose with (``widgets.wrapped``, bewitch's
+    ``wrap_row``), read back as the lines a person sees."""
+    return [line.rstrip() for line in w.wrapped(text, width).plain().split("\n")]
+
+
 def test_a_path_is_never_broken_across_two_lines():
     """A path broken at a hyphen is a path retyped wrong, on the screens whose
     whole job is telling somebody what to type."""
     text = "export it to ~/.config/yt-dlp/cookies.txt named by --cookies there"
-    for line in ytq.wrapped(text, 24):
-        assert not line.endswith("-")
-    assert ytq.wrapped("", 20) == [""]
+    for width in (20, 24, 32):
+        for line in wrapped(text, width):
+            assert not line.endswith("-")
+    assert wrapped("", 20) == [""]
 
 
 @given(
@@ -345,7 +349,7 @@ def test_wrapping_never_loses_a_word(text, width):
     """Whitespace may change; nothing else may. A word longer than the whole
     width is broken rather than dropped, which is the one case where a line
     ends mid-word."""
-    lines = ytq.wrapped(text, width)
+    lines = wrapped(text, width)
     assert "".join(lines).replace(" ", "") == text.replace(" ", "")
     if all(len(word) <= width for word in text.split()):
         assert all(len(line) <= width for line in lines)

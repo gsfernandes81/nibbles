@@ -917,12 +917,28 @@ def fetch(
     return status.state
 
 
+def whole(text: str) -> str:
+    """*text* with every surrogate pair in it made the one character it spells.
+
+    Items were once written with ``json.dumps``, which spells an emoji as a
+    UTF-16 pair (``"\\ud83c\\udfb5"``) that Python reads as two lone
+    surrogates: a name no file can be made under, so the item failed every
+    firing. Re-paired where an item's strings come in (:func:`run`,
+    ``ytdl_item.run``), so an item queued that way heals as it runs. A string
+    with no surrogate in it comes back as it was, and a half with no partner
+    stays as it is.
+    """
+    if not isinstance(text, str):
+        return text
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+
+
 def run(
     url: str, name: str, expect_sha256: str | None = None, total_hint: int = 0
 ) -> int:
     """:func:`fetch`, mapped to the exit code the runner expects."""
     try:
-        return EXIT[fetch(url, name, expect_sha256, total_hint)]
+        return EXIT[fetch(whole(url), whole(name), expect_sha256, total_hint)]
     except Exception as exc:  # noqa: BLE001 - an item must never traceback out
         log(f"unhandled error: {exc!r}")
         return EXIT[FATAL]

@@ -103,12 +103,6 @@ def clock(epoch: float, now: float | None = None) -> str:
     return time.strftime("%a %H:%M", day)
 
 
-def ordinal(n: int) -> str:
-    if 10 <= n % 100 <= 20:
-        return f"{n}th"
-    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
-
-
 SPINNER = Dot
 
 

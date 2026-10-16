@@ -1038,13 +1038,13 @@ class ItemSheet(Sheet):
         elif row["where"] == "queued":
             tries = f"try 1/{runner().MAX_ATTEMPTS}"
         head = [(row["where"], T.fg_base)]
-        rest = " · ".join(p for p in (f"{shell.ordinal(place[0])} of {place[1]}" if place else "",
+        rest = " · ".join(p for p in (f"{ytq.ordinal(place[0])} of {place[1]}" if place else "",
                                       tries) if p)
         parts: list = []
         if height < SHORT:
             line = [(row["where"], T.fg_more_subtle)]
             if place:
-                line.append((f" · {shell.ordinal(place[0])} of {place[1]}", T.fg_more_subtle))
+                line.append((f" · {ytq.ordinal(place[0])} of {place[1]}", T.fg_more_subtle))
             if part:
                 line.append((f" · {part}", T.info))
             parts.append(w.spans(line, width))

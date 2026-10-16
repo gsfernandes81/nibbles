@@ -832,7 +832,7 @@ def run(
 ) -> int:
     """:func:`fetch`, mapped to the exit code the runner expects."""
     try:
-        return EXIT[fetch(url, name, fmt, total_hint, merge_ext)]
+        return EXIT[fetch(expire_dl.whole(url), expire_dl.whole(name), fmt, total_hint, merge_ext)]
     except Exception as exc:  # noqa: BLE001 - an item must never traceback out
         log(f"unhandled error: {exc!r}")
         return EXIT[FATAL]

@@ -855,6 +855,28 @@ def dests() -> dict[str, Path]:
     return out
 
 
+def typed_dest(value: str, kinds: tuple[str, ...] = DEST_KINDS) -> str:
+    """A destination as somebody typed it, written down once, where it was
+    typed: one of *kinds* as itself, which :func:`dest_of` resolves at
+    delivery, and anything else a directory made absolute — ``~`` expanded,
+    and a relative one taken from the directory it was typed in.
+
+    Never left relative, because whoever reads it next is somewhere else: a
+    relative ``DEST`` was resolved against the delivering runner's own
+    directory, which is the queue root for Run now, the shell's for a typed
+    ``nibbles now`` and Termux's home for the nightly job, so one item landed
+    in a different folder by which of them fetched it — and recorded where it
+    landed relative to that, so the app, looking from its own directory,
+    found the file gone and forgot it. One function, for ``nibbles <url>
+    --dest`` (both doors) and ``nibbles dest`` (*kinds* empty: a folder
+    called ``audio`` there is a folder), so they cannot disagree again.
+    """
+    if value in kinds:
+        return value
+    where = Path(value).expanduser()
+    return str(where if where.is_absolute() else (Path.cwd() / where).resolve())
+
+
 def dest_of(item: dict) -> Path | None:
     """Where *item*'s finished file should be put, or ``None`` to leave it.
 

@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import zipfile
+from unittest import mock
 
 import pytest
 from hypothesis import given
@@ -50,7 +51,7 @@ def test_a_search_is_one_flat_request_for_a_stated_number(count):
 def test_a_look_at_the_feed_is_bounded_to_what_was_asked_for(count):
     """Unbounded, yt-dlp follows every continuation youtube offers — which for
     a few years of subscriptions is hundreds of pages on a metered radio."""
-    argv = ytq.subs_argv(count)
+    argv = ytq.feed_argv(ytq.SUBS_URL, count)
     assert after(argv, "--playlist-end") == str(count)
     assert "--flat-playlist" in argv
     assert ytq.SUBS_URL in argv
@@ -60,7 +61,7 @@ def test_a_look_at_the_feed_is_bounded_to_what_was_asked_for(count):
 def test_a_look_at_watch_later_is_bounded_the_same_way(count):
     """A Watch Later kept as a to-do list for years is thousands long, so the
     bound is the same whole cost argument as the feed's."""
-    argv = ytq.later_argv(count)
+    argv = ytq.feed_argv(ytq.WL_URL, count)
     assert after(argv, "--playlist-end") == str(count)
     assert "--flat-playlist" in argv
     assert ytq.WL_URL in argv
@@ -72,7 +73,7 @@ def test_each_list_reads_its_own_page(monkeypatch):
     seen = []
     monkeypatch.setattr(ytq, "ask", lambda argv, timeout: seen.append(argv) or {})
     ytq.read_feed(ytq.WATCH_LATER, 30)
-    ytq.subscriptions(30)
+    ytq.read_feed(ytq.SUBS, 30)
     assert ytq.WL_URL in seen[0] and ytq.SUBS_URL not in seen[0]
     assert ytq.SUBS_URL in seen[1] and ytq.WL_URL not in seen[1]
 
@@ -80,7 +81,7 @@ def test_each_list_reads_its_own_page(monkeypatch):
 def test_neither_request_disables_the_user_config():
     """The cookies and the JS runtime live there; without them youtube
     answers with a fraction of what it has, or refuses."""
-    for argv in (ytq.search_argv("x"), ytq.subs_argv(), ytq.later_argv()):
+    for argv in (ytq.search_argv("x"), ytq.feed_argv(ytq.SUBS_URL), ytq.feed_argv(ytq.WL_URL)):
         assert not any(token.startswith("--ignore-config") for token in argv)
         assert "--no-config-locations" not in argv
 
@@ -88,7 +89,7 @@ def test_neither_request_disables_the_user_config():
 def test_the_search_and_the_feed_start_with_the_same_yt_dlp():
     head = ytq.ytdl_item.ytdl_argv()
     assert ytq.search_argv("x")[: len(head)] == head
-    assert ytq.subs_argv()[: len(head)] == head
+    assert ytq.feed_argv(ytq.SUBS_URL)[: len(head)] == head
 
 
 # --------------------------------------------------------------------------- #
@@ -117,6 +118,22 @@ def test_every_way_yt_dlp_can_fail_comes_back_as_one_error(monkeypatch):
         monkeypatch.setattr(ytq.subprocess, "run", run)
         with pytest.raises(ytq.ProbeError):
             ytq.ask(["yt-dlp"], 5)
+
+
+@given(stderr=st.text(max_size=200))
+def test_what_yt_dlp_said_is_one_line_a_screen_can_draw(stderr):
+    """yt-dlp's last word is drawn on the sheet that asked, and what it quotes
+    is the site's: a colour code or a stray control reaching the terminal is
+    Termux's to act on. Whatever it printed, the error is one line of it, and
+    the last line that said anything is the one kept."""
+    with (mock.patch.object(ytq.subprocess, "run", fake_run(code=1, stderr=stderr)),
+          pytest.raises(ytq.ProbeError) as said):
+        ytq.ask(["yt-dlp"], 5)
+    text = str(said.value)
+    assert text == ytq.one_line(text) and text
+    spoken = [ytq.one_line(line) for line in stderr.splitlines() if ytq.one_line(line)]
+    if spoken:
+        assert text == spoken[-1]
 
 
 def test_a_playlist_url_is_refused_rather_than_queued(monkeypatch):
@@ -249,17 +266,6 @@ def test_the_down_arrow_completes_onto_the_first_new_row():
     assert ytq.bumped_place((29, 10), 30) == (30, 10)
     assert ytq.bumped_place((5, 0), 30) == (5, 0)
     assert ytq.bumped_place((0, 0), 0) == (0, 0)
-
-
-def test_the_feed_line_carries_the_price_at_every_width():
-    for width in range(32, 100):
-        line = ytq.feed_meta(30, "just now", 60, False, width)
-        assert len(line) <= width
-        # The price is the fact this line exists for; the age is the comfort.
-        assert "0.4" in line and "60" in line
-    at_end = ytq.feed_meta(28, "just now", None, False, 80)
-    at_cap = ytq.feed_meta(150, "just now", None, True, 80)
-    assert at_end != at_cap
 
 
 # --------------------------------------------------------------------------- #
@@ -494,12 +500,6 @@ def test_an_empty_watch_later_says_both_things_it_can_mean():
     assert ytq.SUBS.empty is ytq.empty_feed_advice
 
 
-def test_the_end_of_each_list_says_which_list_it_is_the_end_of():
-    for feed in ytq.FEEDS.values():
-        line = ytq.feed_meta(12, "just now", None, False, 80, feed.whole)
-        assert feed.whole in line
-
-
 def test_the_refusal_carries_the_same_fix_and_says_which_it_is():
     detail = "there is no yt-dlp config"
     none = ytq.cookie_advice("none", detail)
@@ -554,13 +554,6 @@ def test_a_length_is_minutes_and_seconds_or_what_it_is_instead():
     assert ytq.clock(90, live=True) == "live"
 
 
-def test_how_old_the_listing_on_screen_is():
-    assert ytq.freshness(None) == ""
-    assert ytq.freshness(1000.0, now=1000.0) == "just now"
-    assert ytq.freshness(1000.0, now=1000.0 + 600).endswith("m ago")
-    assert ytq.freshness(1000.0, now=1000.0 + 7200).endswith("h ago")
-
-
 # --------------------------------------------------------------------------- #
 # Where each phrase changes, which is what makes it a rounded answer
 # --------------------------------------------------------------------------- #
@@ -581,14 +574,6 @@ def test_the_age_changes_unit_where_the_precision_does():
     assert said(56) == "~1mo"
     assert said(729) == "~24mo"
     assert said(730) == "~2y"
-
-
-def test_the_listing_s_age_changes_unit_too():
-    read = 1_000.0
-    assert ytq.freshness(read, now=read + 89) == "just now"
-    assert ytq.freshness(read, now=read + 90) == "1m ago"
-    assert ytq.freshness(read, now=read + 5399) == "89m ago"
-    assert ytq.freshness(read, now=read + 5400) == "1h ago"
 
 
 # --------------------------------------------------------------------------- #

@@ -306,7 +306,7 @@ def test_every_size_is_three_figures_and_reads_back_as_itself(n):
                                          (11, "11th"), (12, "12th"), (13, "13th"),
                                          (21, "21st"), (22, "22nd")])
 def test_a_position_is_said_the_way_a_person_says_it(n, said):
-    assert shell.ordinal(n) == said
+    assert ytq.ordinal(n) == said
 
 
 # --------------------------------------------------------------------------- #

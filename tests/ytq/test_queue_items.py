@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import types
+from unittest import mock
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -73,7 +74,7 @@ def test_a_json_spelling_of_nothing_never_reaches_the_item():
     # compiles and every check that stops at "does this file parse" passes it.
     assert not re.search(r"\b(null|true|false)\b", single)
     assert ytq.literal(None) == "None"
-    assert json.loads(ytq.literal('a "quoted" title')) == 'a "quoted" title'
+    assert ast.literal_eval(ytq.literal('a "quoted" title')) == 'a "quoted" title'
 
 
 #: What a title is: any text at all. TikTok's is its caption, line breaks
@@ -120,6 +121,106 @@ def test_no_title_ever_reaches_the_item_as_code(title, ident, url):
     assert len(head) == 1
     # The words are kept: on one line, not lost.
     assert re.sub(r"\W", "", ytq.one_line(title))[:20] in re.sub(r"\W", "", head[0])
+
+
+#: Any text at all, and more of what a phone sees than ``st.text`` draws by
+#: itself: characters past the Basic Multilingual Plane (emoji, the CJK
+#: extensions), lone surrogate halves, and the quotes, backslashes and line
+#: breaks that end a literal.
+ANY_TEXT = st.text(
+    alphabet=st.one_of(
+        st.characters(),
+        st.characters(min_codepoint=0x10000, max_codepoint=0x10FFFF),
+        st.sampled_from(["\ud83c", "\udfb5", "🎵", "\u200d", "'", '"', "\\", "\n"]),
+    ),
+    max_size=60,
+)
+
+
+def run_call(source):
+    """What an item hands ``ytdl_item.run``, read back as Python reads it."""
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "run":
+            return {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords}
+    raise AssertionError("no ytdl_item.run call in the item")
+
+
+@given(title=ANY_TEXT, url=ANY_TEXT, fmt=ANY_TEXT)
+def test_every_string_an_item_runs_with_reads_back_as_itself(title, url, fmt):
+    """``json.dumps`` spelled an emoji as a surrogate pair, which Python reads
+    back as two lone halves: the item's name could not be a file name, and a
+    video with an emoji in its title was queued and could never download.
+    Whatever the strings — astral, lone halves, quotes, breaks — the item
+    hands the download exactly what was written into it."""
+    choice = ytq.Choice("merge", fmt, 100 * MiB, True, "mp4", "1080p mp4", "avc1",
+                        merge_ext=None)
+    args = run_call(ytq.render(url, title, choice, title, "2026-10-16", "video", ""))
+    assert (args["url"], args["name"], args["fmt"]) == (url, title, fmt)
+    assert args["merge_ext"] is None
+
+
+@settings(max_examples=40)
+@given(title=ANY_TEXT)
+def test_a_title_with_an_emoji_is_queued_under_its_own_name(title):
+    """Written to disk and read back as the runner reads an item (UTF-8): the
+    name it downloads under is the title's name, emoji and all."""
+    for leftover in ytq.QUEUE.glob("*.py"):
+        leftover.unlink()
+    name = ytq.title_name(title)
+    source = ytq.render("https://youtu.be/x", name, a_choice(), title, "2026-10-16")
+    path = ytq.write_item(10, name, source, again=True)
+    assert run_call(path.read_text(encoding="utf-8"))["name"] == name
+    assert ytq.item_slug(path.name) == name
+    name.encode("utf-8")  # a name a file can have
+
+
+def _old_literal(value):
+    """How every item was spelled before :func:`ytq.literal` was ``repr``."""
+    return "None" if value is None else json.dumps(value)
+
+
+@settings(max_examples=40)
+@given(title=ANY_TEXT)
+def test_an_item_already_queued_the_old_way_downloads_under_its_name(title):
+    """The phone has items written with ``json.dumps``. They heal where an
+    item's strings come in: the download is asked for under the name that was
+    meant, not two lone halves of it."""
+    from nibbles import expire_dl, ytdl_item
+
+    name = ytq.title_name(title)
+    with mock.patch.object(ytq, "literal", _old_literal):
+        source = ytq.render("https://youtu.be/x", name, a_choice(), title, "2026-10-16")
+    args = run_call(source)
+    asked = []
+
+    def fetch(url, name, *rest):
+        asked.append((url, name))
+        return ytdl_item.COMPLETE
+
+    with mock.patch.object(ytdl_item, "fetch", fetch):
+        assert ytdl_item.run(**args) == ytdl_item.EXIT[ytdl_item.COMPLETE]
+    assert asked == [("https://youtu.be/x", name)]
+
+    # And a file download's item, the same way.
+    asked.clear()
+    with mock.patch.object(expire_dl, "fetch", fetch):
+        assert expire_dl.run(
+            ast.literal_eval(_old_literal(f"https://x.example/{name}")),
+            ast.literal_eval(_old_literal(name)),
+        ) == expire_dl.EXIT[expire_dl.COMPLETE]
+    assert asked == [(f"https://x.example/{name}", name)]
+
+
+@given(text=ANY_TEXT)
+def test_healing_changes_nothing_that_was_not_broken(text):
+    """Re-pairing is the identity on a string with no pair of halves in it,
+    and never makes one that is not whole out of one that was."""
+    from nibbles import expire_dl
+
+    healed = expire_dl.whole(text)
+    if not any("\ud800" <= ch <= "\udfff" for ch in text):
+        assert healed == text
+    assert expire_dl.whole(healed) == healed
 
 
 def test_a_caption_that_spells_code_is_still_only_a_caption(queued):
@@ -197,6 +298,23 @@ def test_a_name_reads_back_as_the_slug_it_was_made_from(number, slug):
     name = ytq.item_name(number, slug)
     assert ytq.item_slug(name) == slug
     assert ytq.ITEM_RE.match(name)
+
+
+@given(number=st.integers(min_value=-1000, max_value=1000))
+def test_a_number_is_a_place_or_nothing_is_written(number):
+    """``-1-…`` is not an item to the runner or the listing, and ``100-…``
+    runs ahead of ``20-…``. The one door takes a place or writes nothing."""
+    for leftover in ytq.QUEUE.glob("*.py"):
+        leftover.unlink()
+    try:
+        path = ytq.write_item(number, "talk", an_item(), again=True)
+    except ValueError:
+        assert not 0 <= number <= ytq.MAX_PRIORITY
+        assert not list(ytq.QUEUE.glob("*.py"))
+        assert not list(ytq.STAGING.glob("*.py"))
+        return
+    assert [p for _, p in ytq.items()] == [path]
+    assert int(ytq.ITEM_RE.match(path.name).group(1)) == number
 
 
 @given(number=st.integers(min_value=0, max_value=99))
@@ -679,6 +797,22 @@ def test_the_file_a_finished_run_delivered_is_the_largest_one_there(tmp_path):
     ytq.QUEUE.mkdir(parents=True, exist_ok=True)
     (ytq.QUEUE / "10-talk.py").write_text("# EXPIRE: v1\n")
     assert ytq.delivered_file("10-talk.py") is None
+
+
+def test_open_it_opens_the_file_the_queue_tab_would(tmp_path):
+    """One answer to "which file is the download", the Queue tab's: a file
+    the hand-over could not move is still in ``out/<item>/``, and it is the
+    one there is to open."""
+    from nibbles import expire_sched
+
+    kept = ytq.HERE / "out" / "10-talk.py"
+    kept.mkdir(parents=True)
+    (kept / "talk.mp4").write_bytes(b"x" * 10)
+    (kept / "talk.mp4.part").write_bytes(b"x" * 100)
+    _state({"10-talk.py": {"retired": "done", "delivered": [str(tmp_path / "gone.mp4")]}})
+    record = expire_sched._state_items()["10-talk.py"]
+    assert ytq.delivered_file("10-talk.py") == kept / "talk.mp4"
+    assert ytq.delivered_file("10-talk.py") == expire_sched._delivered("10-talk.py", record)[0]
 
 
 def test_a_run_that_delivers_opens_what_it_delivered_when_asked(monkeypatch, tmp_path):

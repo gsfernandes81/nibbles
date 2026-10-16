@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import email.utils
 import http.client
-import json
 import math
 import mimetypes
 import re
@@ -34,10 +33,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
 from typing import NamedTuple
 
 from nibbles import expire_dl
+from nibbles import expire_runner
 from nibbles import ytq
 
 BASE_HEADERS = {
@@ -229,11 +228,27 @@ def kind_of(url: str, timeout: int = TIMEOUT) -> str:
     download itself puts every answer to. A file that names no type is still
     a file: what is not a page has nothing in it for yt-dlp to find.
     """
-    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    host = (_split(url).hostname or "").lower()
     if any(host == known or host.endswith(f".{known}") for known in PAGE_HOSTS):
         return "page"
     look = _look(url, timeout, ranged=False) or _look(url, timeout, ranged=True)
     return "page" if expire_dl.is_page(look.headers) else "file"
+
+
+def _split(url: str) -> urllib.parse.SplitResult:
+    """*url* in its parts, or a :class:`ProbeError` saying it is not a link.
+
+    urllib refuses some text outright — an unclosed ``[``, a host in brackets
+    that is no address, a port that is not a number — with a ``ValueError``,
+    and that is a sentence to say, never a traceback. The port is asked for
+    here because it is only checked when it is asked for.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+        parts.port  # noqa: B018 - asked for the check it makes
+    except ValueError as exc:
+        raise ProbeError(f"{url} is not a link: {exc}") from exc
+    return parts
 
 
 #: What :func:`normal_url` leaves as it is: the characters a URL is built
@@ -251,11 +266,17 @@ def normal_url(url: str) -> str:
     send it as typed, and a Cyrillic file name was a traceback. Idempotent:
     an escape already there is kept. The host is left as it is, because
     the resolver and http.client IDNA-encode a host themselves.
+
+    Text urllib cannot split is handed on as it is, with its scheme: what
+    looks at it next (:func:`kind_of`, :func:`probe`) says it is no link.
     """
     text = url.strip()
     if "://" not in text:
         text = f"https://{text}"
-    parts = urllib.parse.urlsplit(text)
+    try:
+        parts = urllib.parse.urlsplit(text)
+    except ValueError:
+        return text
     return urllib.parse.urlunsplit((
         parts.scheme, parts.netloc,
         *(urllib.parse.quote(part, safe=_URL_SAFE)
@@ -289,6 +310,12 @@ def _suffix(name: str) -> str:
     return suffix if dot and SUFFIX.fullmatch(suffix) and _named(stem) else ""
 
 
+def _stem(name: str) -> str:
+    """*name* without the suffix :func:`_suffix` keeps whole."""
+    suffix = _suffix(name)
+    return name[: -len(suffix) - 1] if suffix else name
+
+
 def file_name(raw: str, kind: str = "") -> str:
     """The name a download is saved under: *raw*, cleaned as a video's title
     is (:func:`ytq.title_name`: only what Android's shared storage refuses,
@@ -304,8 +331,7 @@ def file_name(raw: str, kind: str = "") -> str:
     left in it is ``download``.
     """
     raw = (raw or "").strip()
-    suffix = _suffix(raw)
-    stem = raw[: -len(suffix) - 1] if suffix else raw
+    suffix, stem = _suffix(raw), _stem(raw)
     if not suffix and kind and kind not in UNTYPED:
         suffix = (mimetypes.guess_extension(kind) or "").lstrip(".")
     stem = ytq.title_name(stem) if _named(stem) else "download"
@@ -345,20 +371,8 @@ def _doc(text: str) -> str:
     """*text* as the item's docstring may hold it: on one line, with no
     backslash to start an escape (``\\N``, ``\\U`` and ``\\x`` are errors in a
     plain string) and no ``\"\"\"`` to end it. The docstring is for a person
-    reading the item; what is fetched and saved is the json.dumps'd copy."""
+    reading the item; what is fetched and saved is :func:`ytq.literal`'s copy."""
     return _line(text).replace("\\", "/").replace('"""', "'''")
-
-
-def _literal(text: str) -> str:
-    """*text* as a Python string literal that reads back as exactly *text*.
-
-    json.dumps, but never ``ensure_ascii``: that spells a character outside
-    the Basic Multilingual Plane — an emoji, most of all — as a UTF-16
-    surrogate pair, which JSON reads back as the character and *Python* reads
-    back as two lone surrogates, a name no file can be opened under. Written
-    as itself, it is read as itself: the item is UTF-8, as Python reads it.
-    """
-    return json.dumps(text, ensure_ascii=False)
 
 
 def render(
@@ -372,8 +386,10 @@ def render(
     partial: bool = True,
 ) -> str:
     """The queue item source. The strings it runs with go through
-    :func:`_literal` and the copies a person reads through :func:`_doc` and
-    :func:`_line`, so no URL or name can produce a file that does not parse.
+    :func:`ytq.literal` — the one spelling both front ends write, which reads
+    back as exactly what was written — and the copies a person reads through
+    :func:`_doc` and :func:`_line`, so no URL or name can produce a file that
+    does not parse.
 
     *partial* is whether the server resumes: ``PARTIAL: no`` when the probe
     saw it ignore Range, so the runner gives it a firing that can take the
@@ -413,12 +429,12 @@ def render(
 
 import sys
 
-sys.path.insert(0, {json.dumps(str(ytq.MODULE_DIR))})
+sys.path.insert(0, {ytq.literal(str(ytq.MODULE_DIR))})
 from nibbles import expire_dl  # noqa: E402
 
 sys.exit(expire_dl.run(
-    {_literal(url)},
-    {_literal(name)},
+    {ytq.literal(url)},
+    {ytq.literal(name)},
     expect_sha256={ytq.literal(sha256)},
     total_hint={size},
 ))
@@ -512,6 +528,16 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             parser.error(str(exc))
 
+    # One spelling of the link, as the door hands it on (the scheme, what is
+    # not ASCII escaped), whoever called: run directly, or by expire_sched.
+    # And a link urllib cannot read at all is said here, before --expect-bytes
+    # could trust its way past the look and queue what nothing can fetch.
+    args.url = normal_url(args.url)
+    try:
+        _split(args.url)
+    except ProbeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     try:
         found = probe(args.url)
     except ProbeError as exc:
@@ -582,7 +608,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     number = args.number if args.number is not None else ytq.next_number()
-    slug = ytq.slugify(Path(name).stem)
+    # The item is named as a video's is, after what it downloads (one name
+    # everywhere, design §6): the file's name without its suffix, cleaned by
+    # the same rule. A slug made every name that is not ASCII ``video``.
+    slug = ytq.title_name(_stem(name))
+    # A directory made absolute here, once, where it was typed: the runner
+    # delivers from some other directory. A kind (``audio``) stays a kind.
+    dest = expire_runner.typed_dest(args.dest) if args.dest else "file"
     source = render(
         args.url,
         name,
@@ -590,7 +622,7 @@ def main(argv: list[str] | None = None) -> int:
         size,
         sha256,
         time.strftime("%Y-%m-%d", time.gmtime()),
-        dest=str(Path(args.dest).expanduser()) if args.dest else "file",
+        dest=dest,
         # Unknown is not "no": the first firing finds out, and expire_dl
         # stops a server that turns out not to resume before it spends.
         partial=resumable is not False,
@@ -622,7 +654,7 @@ def main(argv: list[str] | None = None) -> int:
         f"queued {path.name} — {ytq.human(size) if size else 'size unstated'}, "
         f"cap {ytq.human(cap)}"
     )
-    where = ytq.landing(args.dest or "file")
+    where = ytq.landing(dest)
     print(f"lands in {where} as {name} once the nightly window has worked through it")
     if resumable is False and size > ytq.SLICE_MIN_BYTES:
         print(

@@ -88,6 +88,10 @@ import zipfile
 from pathlib import Path
 
 from nibbles import home, ytdl_item
+# A size is spelled the runner's way and no other: the listing and the log
+# that print one figure must not print it two ways. The runner imports only
+# ``home``, so this costs no cycle and no zwana-quota.
+from nibbles.expire_runner import human
 import contextlib
 
 #: What a queue item puts on ``sys.path`` to import ``nibbles``: the checkout,
@@ -169,7 +173,7 @@ SUBS_URL = "https://www.youtube.com/feed/subscriptions"
 
 #: How much of the feed one look asks for. YouTube serves the feed a page at a
 #: time and yt-dlp will follow every continuation it is offered, so this is a
-#: bound and not a preference — see :func:`subs_argv`.
+#: bound and not a preference — see :func:`feed_argv`.
 SUBS_RESULTS = 30
 
 #: What a deeper look adds to that bound, and where it stops. The cap is not a
@@ -253,7 +257,11 @@ def ask(argv: list[str], timeout: int) -> dict:
     except subprocess.TimeoutExpired:
         raise ProbeError(f"yt-dlp did not answer within {timeout}s")
     if done.returncode != 0:
-        tail = (done.stderr or done.stdout or "").strip().splitlines()
+        # yt-dlp's last word, which a screen draws: one line (:func:`one_line`),
+        # because what it quotes back is the site's and the colour codes and
+        # stray controls in it are Termux's to act on.
+        tail = [line for line in map(one_line, (done.stderr or done.stdout or "").splitlines())
+                if line]
         raise ProbeError(tail[-1] if tail else f"yt-dlp exited {done.returncode}")
     try:
         info = json.loads(done.stdout)
@@ -821,22 +829,6 @@ def empty_later_advice(detail: str) -> list[str]:
     ]
 
 
-def subs_argv(count: int = SUBS_RESULTS) -> list[str]:
-    """The command one look at the feed runs — :func:`feed_argv` for the feed."""
-    return feed_argv(SUBS_URL, count)
-
-
-def later_argv(count: int = SUBS_RESULTS) -> list[str]:
-    """The command one look at Watch Later runs, on the feed's same bound.
-
-    A playlist is served a hundred entries a page rather than the feed's
-    thirty or so, and a Watch Later that has been a to-do list for years is
-    thousands long — so ``--playlist-end`` is the same whole cost argument
-    here as there.
-    """
-    return feed_argv(WL_URL, count)
-
-
 def feed_argv(url: str, count: int = SUBS_RESULTS) -> list[str]:
     """The command one look at a signed-in list runs, kept separate so it can be checked.
 
@@ -852,6 +844,10 @@ def feed_argv(url: str, count: int = SUBS_RESULTS) -> list[str]:
 
     Nothing here disables the user config, and here that is not a nicety — the
     ``--cookies`` line in it is the only reason this page answers at all.
+
+    One command for both lists, on the same bound: a playlist is served a
+    hundred entries a page rather than the feed's thirty or so, and a Watch
+    Later that has been a to-do list for years is thousands long.
     """
     return [
         *ytdl_item.ytdl_argv(),
@@ -866,23 +862,17 @@ def feed_argv(url: str, count: int = SUBS_RESULTS) -> list[str]:
     ]
 
 
-def subscriptions(count: int = SUBS_RESULTS, timeout: int | None = None) -> list[Result]:
-    """The newest *count* videos from the subscription feed, newest first.
-
-    Longer than a search's timeout because the tab page is bigger and the
-    connection is the vessel's, not a datacentre's — and longer again the more
-    is asked for, because giving up part way through has spent every byte
-    walked so far and kept nothing.
-    """
-    return read_feed(SUBS, count, timeout)
-
-
 def read_feed(feed: Feed, count: int = SUBS_RESULTS, timeout: int | None = None) -> list[Result]:
     """The first *count* videos of a signed-in list, in the order YouTube keeps.
 
     Newest first for the feed; for Watch Later, whatever order the playlist is
     sorted in on YouTube — this does not re-sort it, because that order is
     somebody's own decision about what to watch next.
+
+    Given longer than a search's timeout because the tab page is bigger and
+    the connection is the vessel's, not a datacentre's — and longer again the
+    more is asked for, because giving up part way through has spent every
+    byte walked so far and kept nothing.
     """
     if timeout is None:
         timeout = SUBS_TIMEOUT_BASE + SUBS_TIMEOUT_PER * count
@@ -902,45 +892,6 @@ def feed_cost(count: int) -> str:
     per-page figure is an estimate, not a measurement.
     """
     return f"~{count / SUBS_RESULTS * SUBS_PAGE_MB:.1f} MB"
-
-
-def feed_meta(
-    count: int,
-    when: str,
-    more: int | None,
-    at_cap: bool,
-    width: int,
-    whole: str = "the whole feed",
-) -> str:
-    """The feed's second line: how much is on it, how old, and what more costs.
-
-    Pure and width-aware rather than composed at the point of drawing, because
-    the thing it carries is a **price** and a price clipped off the end of a
-    line is worse than no price at all — which is exactly what happened the
-    first time this was written inline: ``m 60 for ~0.4 …`` on a 40-column
-    phone, the figure lost and the key still offered.
-
-    It replaces "~ dates are approximate", which every row already says for
-    itself with a ``~`` beside its age. This does not say itself anywhere.
-    """
-    if more:
-        # No spaces inside the figure at the floor: this line is read, not
-        # parsed, and the columns are better spent on the number than on the
-        # gap in front of MB.
-        deeper = (
-            f"↓ {more} for {feed_cost(more)}"
-            if width >= WIDE
-            else f"↓ {more} {feed_cost(more).replace(' ', '')}"
-        )
-    else:
-        deeper = "at the cap" if at_cap else whole
-    parts = [f"{count} videos"]
-    # The age is the first thing to go, and it is the right one: it is a
-    # comfort, where the other two are the answer and the price.
-    if when and width >= TIGHT:
-        parts.append(f"read {when}" if width >= WIDE else when)
-    parts.append(deeper)
-    return ("  ·  " if width >= WIDE else " · ").join(parts)
 
 
 def bumped_place(place: tuple[int, int], count: int) -> tuple[int, int]:
@@ -1001,13 +952,13 @@ class Feed:
     """
 
     def __init__(
-        self, key: str, url: str, banner: str, name: str, whole: str, empty
+        self, key: str, url: str, noun: str, name: str, whole: str, empty
     ) -> None:
         #: What the listing is cached under, where a search is keyed on words.
         self.key = key
         self.url = url
-        #: The results screen's banner.
-        self.banner = banner
+        #: What its tab and its Recent row call it.
+        self.noun = noun
         #: The noun in the sentences said about it — the spinner, the failure.
         self.name = name
         #: What the meta line says once there is nothing further back.
@@ -1017,11 +968,11 @@ class Feed:
 
 
 SUBS = Feed(
-    SUBS_KEY, SUBS_URL, " subscriptions ", "the subscription feed",
+    SUBS_KEY, SUBS_URL, "subscriptions", "the subscription feed",
     "the whole feed", empty_feed_advice,
 )
 WATCH_LATER = Feed(
-    WL_KEY, WL_URL, " watch later ", "watch later",
+    WL_KEY, WL_URL, "watch later", "watch later",
     "the whole list", empty_later_advice,
 )
 FEEDS = {feed.key: feed for feed in (SUBS, WATCH_LATER)}
@@ -1055,25 +1006,6 @@ def looks_like_feed(text: str) -> bool:
     too and probing it gets the playlist refusal instead of the feed.
     """
     return which_feed(text) is not None
-
-
-def freshness(fetched: float | None, now: float | None = None) -> str:
-    """How old the listing on screen is, or ``""`` when it was never fetched.
-
-    Said for the feed and not for a search. A search is a question you re-ask
-    by retyping it; a feed is a thing that changes under you, and it is cached
-    for the session precisely so that backing out of a video costs nothing —
-    which means the screen has to say how old what it is showing is, or the
-    cache is just a quiet lie about the time.
-    """
-    if not fetched:
-        return ""
-    seconds = max(0.0, (time.time() if now is None else now) - fetched)
-    if seconds < 90:
-        return "just now"
-    if seconds < 5400:
-        return f"{int(seconds // 60)}m ago"
-    return f"{int(seconds // 3600)}h ago"
 
 
 def age(timestamp: int | None, now: float | None = None) -> str:
@@ -1696,24 +1628,27 @@ def choices(info: dict) -> tuple[list[Choice], int]:
 # --------------------------------------------------------------------------- #
 
 
-def human(n: float) -> str:
-    for unit in ("B", "KiB", "MiB"):
-        if abs(n) < 1024:
-            return f"{n:,.0f} {unit}"
-        n /= 1024
-    return f"{n:,.2f} GiB"
-
-
 def literal(value: str | None) -> str:
-    """*value* as Python source: a quoted string, or ``None``.
+    """*value* as Python source that reads back as exactly *value*: a quoted
+    string, or ``None``. The one spelling both front ends write an item's
+    strings in (``dlq.render`` as well as :func:`render`).
 
-    :func:`json.dumps` alone is right for the strings — it is what stops a
-    title full of quotes from writing an item that will not parse — and wrong
-    for ``None``, which it spells ``null``. That spelling *parses*, so every
-    check that stops at "does this file compile" passes it, and the item dies
-    with ``NameError`` on the night it was finally due to run.
+    :func:`repr`, because a string's repr is the one spelling Python promises
+    to read back as the same string, whatever it holds: quotes, backslashes
+    and line breaks escaped, so a title cannot end the literal or the line.
+    Not :func:`json.dumps`, which was this for years and is wrong twice. It
+    spells ``None`` as ``null``, which *parses* — as a name — so every check
+    that stops at "does this file compile" passed it and the item died with
+    ``NameError`` on the night it was due. And it spells a character beyond
+    the Basic Multilingual Plane — an emoji, most of all — as a UTF-16
+    surrogate pair, ``"\\ud83c\\udfb5"``, which JSON reads back as the
+    character and Python as two lone surrogates: a name no file can be made
+    under, so a video with an emoji in its title was queued and could never
+    download. (Items already written that way heal as they are read:
+    :func:`expire_dl.whole`.) A character repr leaves as itself is written
+    as itself, which the item, UTF-8 as Python reads it, holds.
     """
-    return "None" if value is None else json.dumps(value)
+    return "None" if value is None else repr(str(value))
 
 
 def slugify(title: str, limit: int = 42) -> str:
@@ -1809,7 +1744,7 @@ class Duplicate(RuntimeError):
 
     @property
     def stem(self) -> str:
-        return self.name[:-3] if self.name.endswith(".py") else self.name
+        return self.name.removesuffix(".py")
 
     def says(self) -> str:
         """The verdict in one short line, fit for the narrowest screen."""
@@ -1950,8 +1885,9 @@ def render(
     dest: str = "video",
     key: str = "",
 ) -> str:
-    """The item source. Strings go through :func:`json.dumps` so that a title
-    full of quotes cannot produce a file that does not parse.
+    """The item source. Strings go through :func:`literal` so that a title
+    full of quotes cannot produce a file that does not parse, and every one
+    reads back as exactly what was written.
 
     What is not code — the header comments and the docstring — is written from
     :func:`_in_docstring`'s spelling, whoever called: a title is somebody
@@ -1997,13 +1933,13 @@ queue may take to work through a video this size.
 
 import sys
 
-sys.path.insert(0, {json.dumps(str(MODULE_DIR))})
+sys.path.insert(0, {literal(str(MODULE_DIR))})
 from nibbles import ytdl_item  # noqa: E402
 
 sys.exit(ytdl_item.run(
-    url={json.dumps(url)},
-    name={json.dumps(slug)},
-    fmt={json.dumps(choice.fmt)},
+    url={literal(url)},
+    name={literal(slug)},
+    fmt={literal(choice.fmt)},
     total_hint={choice.size},
     merge_ext={literal(choice.merge_ext)},
 ))
@@ -2018,7 +1954,15 @@ def item_name(number: int, slug: str) -> str:
     holding, and :func:`write_item` itself. A picker handed a name that is a
     second f-string is a picker holding a file that is never written: the two
     would agree today and drift the first time either is touched.
+
+    The number is a place, 0 to :data:`MAX_PRIORITY`, and anything else is
+    refused (``ValueError``) whoever asked: the runner sorts *names*, so
+    ``100`` runs ahead of ``20``, and ``-1-…`` is a name neither the runner nor
+    the listing takes as an item — written, said to be queued, and never run.
+    ``nibbles <url> --number`` refuses it first, in words; this is the door.
     """
+    if not 0 <= number <= MAX_PRIORITY:
+        raise ValueError(f"{number} is not a place in the queue (0 to {MAX_PRIORITY})")
     return f"{number:02d}-{slug}.py"
 
 
@@ -2051,8 +1995,10 @@ def write_item(number: int, slug: str, source: str, again: bool = False) -> Path
     got. The choosing and the moving in happen under one lock, so two writers
     at once cannot both find the same name free.
 
-    A write that fails leaves nothing half-written behind in ``.staging``.
+    A write that fails leaves nothing half-written behind in ``.staging``, and
+    a place that is no place (:func:`item_name`) writes nothing at all.
     """
+    name, copy = item_name(number, slug), 1
     if not again:
         found = find_duplicate(source_of(source), slug)
         if found is not None:
@@ -2062,7 +2008,6 @@ def write_item(number: int, slug: str, source: str, again: bool = False) -> Path
     with (STAGING / ".lock").open("w") as door:
         fcntl.flock(door, fcntl.LOCK_EX)
         used = names_in_use()
-        name, copy = item_name(number, slug), 1
         while name in used:
             copy += 1
             name = item_name(number, f"{slug} ({copy})")
@@ -2257,7 +2202,7 @@ def progress_line(name: str, report: tuple[int, int] | None, width: int) -> str:
     else:
         have, total = report
         body = human(have) + (f" / {human(total)}" if total else "")
-    stem = name[:-3] if name.endswith(".py") else name
+    stem = name.removesuffix(".py")
     return fit(f"↓ {stem}  {body}" if width >= WIDE else f"↓ {body}", width - 1)
 
 
@@ -2272,23 +2217,23 @@ def delivered_file(name: str) -> Path | None:
     And the item must have left the queue: records outlive their items, so an
     earlier item of the same name that finished last week is a ``done`` record
     this run did not write.
+
+    Which file it is is the Queue tab's answer (``expire_sched._delivered``,
+    whose first file is what its Open it opens), so the two screens cannot
+    disagree about which file "the download" is — and a file the hand-over
+    could not move, still in ``out/<item>/``, is found here too. Imported
+    here and not at the top: ``expire_sched`` imports this module.
     """
     if (QUEUE / name).exists():
         return None
-    try:
-        state = json.loads((HERE / "state.json").read_text(encoding="utf-8"))
-        record = state["items"][name]
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
+    from nibbles import expire_sched
+
+    records = expire_sched._state_items()
+    record = records.get(name) if isinstance(records, dict) else None
     if not isinstance(record, dict) or record.get("retired") != "done":
         return None
-    found = []
-    for spelled in record.get("delivered") or []:
-        path = Path(str(spelled))
-        with contextlib.suppress(OSError):
-            if path.is_file():
-                found.append((path.stat().st_size, path))
-    return max(found)[1] if found else None
+    found = expire_sched._delivered(name, record)
+    return found[0] if found else None
 
 
 # --------------------------------------------------------------------------- #
@@ -2711,6 +2656,18 @@ def _char_cols(ch: str) -> int:
     return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
 
 
+def ordinal(number: int) -> str:
+    """``1st``, ``2nd``, ``3rd``… — a position said the way a person says it.
+
+    Spelled once, here, for the queue's own sentences (``expire_ui``, which
+    may not import the screens' modules) and the Queue tab's alike: a second
+    copy is a second answer to how ``12th`` is said.
+    """
+    if 10 <= number % 100 <= 20:
+        return f"{number}th"
+    return f"{number}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(number % 10, 'th') }"
+
+
 def fit(text: str, width: int) -> str:
     """*text* clipped to *width* columns, saying so when something was lost.
 
@@ -2730,22 +2687,6 @@ def fit(text: str, width: int) -> str:
             break
         kept.append(ch)
     return "".join(kept) + "…"
-
-
-def wrapped(text: str, width: int) -> list[str]:
-    """*text* broken to *width*, but never inside a word.
-
-    ``break_on_hyphens`` off, which is the whole reason this is a function.
-    What these screens wrap ends in a path, a flag or a file stem —
-    ``~/.config/yt-dlp/cookies.txt``, ``--cookies``,
-    ``10-crust-of-rust-subtyping`` — and the default splits all three at a
-    hyphen. A name wrapped mid-word is a name somebody retypes wrong, on the
-    screens whose entire job is telling them what to type.
-
-    Everything here that wraps prose goes through it, which is also what stops
-    the name being shadowed by the three loop variables it replaced.
-    """
-    return textwrap.wrap(text, width, break_on_hyphens=False) or [""]
 
 
 #: One step of a scrolling title, and how many steps it holds still at each
@@ -2815,25 +2756,16 @@ def wide_tail(result: Result) -> str:
 
 
 def title_room(result: Result, width: int) -> int:
-    """The columns a result's title gets on the row that draws it.
-
-    One function, because two things have to agree about it and they are in
-    different places: :func:`result_row`, which draws the title, and
-    :func:`results`, which decides whether to keep waking up to scroll it.
-    Written twice they drift, and the failure is silent both ways — a title
-    that moves for no reason, or an idle screen paying a wakeup every 300ms
-    for ever.
+    """The columns a result's title gets on the printed row
+    (:func:`result_row`), measured apart from the drawing so that a test can
+    hold the title to exactly that room. The app's rows are bewitch's, and
+    whether one of their titles moves is ``yt_screens.overflows``'s question.
     """
     if width >= WIDE:
         return max(8, width - 5 - len(wide_tail(result)))
     # Two columns for the mark, one in hand at the right — the same arithmetic
     # the narrow branch of `result_row` lays out with.
     return max(4, width - 1 - 2)
-
-
-def scrolls(result: Result, width: int) -> bool:
-    """Whether this title is longer than the room it has, and so has to move."""
-    return len(result.title) > title_room(result, width)
 
 
 def nights(size: int) -> int:
@@ -3230,10 +3162,6 @@ def learn(choice: Choice, rule: str) -> None:
     save_prefs(changes, last=choice)
 
 
-
-
-
-
 def already_queued(hits: list[Result]) -> set[int]:
     """Which of these are already queued, downloaded or given up on.
 
@@ -3250,12 +3178,6 @@ def already_queued(hits: list[Result]) -> set[int]:
         if key:
             known.add(key)
     return {index for index, hit in enumerate(hits) if hit.key and hit.key in known}
-
-
-
-
-
-
 
 
 # --------------------------------------------------------------------------- #
@@ -3470,7 +3392,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    dest = str(Path(args.dest).expanduser()) if args.dest else "video"
+    # Made absolute here, once (expire_runner.typed_dest): the runner that
+    # delivers it starts in some other directory, and a kind stays a kind.
+    from nibbles import expire_runner
+
+    dest = expire_runner.typed_dest(args.dest) if args.dest else "video"
     # A list, because a session can queue several items now. The download-now
     # case is already running by the time this returns: it was handed to a
     # detached `nibbles now`, so there is nothing left here to wait for.

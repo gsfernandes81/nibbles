@@ -144,13 +144,6 @@ def _slug_of(name: str) -> str:
     return parsed[1] if parsed else _display_name(name)
 
 
-def _ordinal(number: int) -> str:
-    """``1st``, ``2nd``, ``3rd``… — a position said the way a person says it."""
-    if 10 <= number % 100 <= 20:
-        return f"{number}th"
-    return f"{number}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(number % 10, 'th') }"
-
-
 def renumber(name: str, number: int) -> str:
     """The same item at a different priority — **the slug untouched**.
 
@@ -490,7 +483,7 @@ def do_reorder(rows: list[dict], name: str, pos: int) -> tuple[str, bool]:
     if failure:
         return failure, False
     _note(f"moved {name} to {pos + 1} of {len(queued)}")
-    return f"{_slug_of(name)} is {_ordinal(pos + 1)} of {len(queued)}", True
+    return f"{_slug_of(name)} is {ytq.ordinal(pos + 1)} of {len(queued)}", True
 
 
 # --------------------------------------------------------------------------- #

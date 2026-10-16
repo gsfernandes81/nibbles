@@ -181,3 +181,18 @@ def test_a_dest_given_once_is_a_directory_and_not_a_kind(monkeypatch):
     ytq.main(["--now", "--dest", "~/movies", "https://youtu.be/x"])
     assert seen["now"] is True
     assert seen["dest"].endswith("movies") and not seen["dest"].startswith("~")
+
+
+def test_a_relative_dest_is_the_folder_it_was_typed_in(monkeypatch, tmp_path):
+    """Written as typed, ``--dest Movies`` was resolved by whichever runner
+    delivered it, from its own directory. It is made absolute here, where it
+    was typed; and ``--dest audio`` keeps meaning the kind."""
+    seen = {}
+    monkeypatch.setattr(nibbles, "run",
+                        lambda start, first, preloaded, now, dest: seen.update(dest=dest) or [])
+    monkeypatch.setattr(ytq.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.chdir(tmp_path)
+    ytq.main(["--dest", "Movies", "https://youtu.be/x"])
+    assert seen["dest"] == str((tmp_path / "Movies").resolve())
+    ytq.main(["--dest", ytq.AUDIO_DEST, "https://youtu.be/x"])
+    assert seen["dest"] == ytq.AUDIO_DEST

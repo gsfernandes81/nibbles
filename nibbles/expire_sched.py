@@ -985,7 +985,7 @@ def _display_name(name: str) -> str:
     the stem as readily as the whole name, so what is shown is still what can
     be typed back.
     """
-    return name[:-3] if name.endswith(".py") else name
+    return name.removesuffix(".py")
 
 
 #: One spelling of "clipped, and saying so", shared with the module that draws
@@ -1832,9 +1832,7 @@ def set_dest(kind: str, value: str) -> tuple[bool, list[str]]:
         return True, [f"{kind} downloads go to {runner.dests()[kind]} again"]
 
     said: list[str] = []
-    where = Path(value).expanduser()
-    if not where.is_absolute():
-        where = (Path.cwd() / where).resolve()
+    where = Path(runner.typed_dest(value, kinds=()))
     if not where.is_dir():
         if not where.parent.is_dir():
             return False, [f"{where.parent} does not exist"]

@@ -1083,6 +1083,7 @@ class VideoSheet(Sheet):
                             border=T.error))
             return
         problem = ytq.validate(path)
+        name = ytq.item_slug(path.name)  # the name it got: " (2)" when its title was taken
         ytq.learn(choice, "largest" if self.rules[self.mode] == "largest" else "smallest")
         yt.queued(self.url)
         receipt = (f"queued {path.name} — {ytq.human(choice.size)} "

@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1089,6 +1090,148 @@ def test_a_duplicate_matched_by_name_says_it_may_be_another_file(probed, capsys)
     said = capsys.readouterr().err
     assert "another file" in said
     assert "--again" in said
+
+
+@given(asked=st.text(alphabet=st.characters(exclude_categories=["Cs"]), min_size=1,
+                     max_size=60))
+def test_a_file_s_item_is_named_after_its_file_as_a_video_s_is_after_its_title(
+    probed, asked
+):
+    """One name everywhere (design §6): the Queue tab's row is the file's own
+    name, behind its number, in whatever script it is in — a slug made every
+    name that is not ASCII ``video``. The item runs, is listed once, and
+    downloads a file whose name begins with the row's."""
+    for path in (probed.root / "queue").glob("*.py"):
+        path.unlink()
+    assert probed.queuer.main(["https://example.invalid/x", f"--name={asked}", "--again"]) == 0
+    [path] = (probed.root / "queue").glob("*.py")
+    (_, name), _ = _run_args(path.read_text(encoding="utf-8"))
+    row = probed.ytq.item_slug(path.name)
+    assert name.startswith(row)
+    assert probed.ytq.same_name(row) == probed.ytq.same_name(probed.ytq.title_name(row))
+    assert [item["name"] for item in probed.runner.queued_items()[0]] == [path.name]
+
+
+def test_files_in_another_script_are_told_apart_by_name_and_not_all_video(probed, capsys):
+    """Two files whose names are not ASCII were both ``NN-video.py``: the
+    second was refused as the first ``by name``. By their own names they are
+    two files, and the same name from another link is still caught."""
+    for called in ("Отчёт.pdf", "報告.pdf"):
+        assert probed.queuer.main([f"https://a.invalid/{called}"]) == 0
+    rows = sorted(probed.ytq.item_slug(p.name) for p in (probed.root / "queue").glob("*.py"))
+    assert rows == sorted(["Отчёт", "報告"])
+    capsys.readouterr()
+    assert probed.queuer.main(["https://b.invalid/%D0%9E%D1%82%D1%87%D1%91%D1%82.pdf"]) == 1
+    assert "another file" in capsys.readouterr().err
+
+
+def test_the_queuer_hands_on_one_spelling_of_the_link_however_it_was_called(
+    dlq, monkeypatch
+):
+    """Run directly, or by ``expire_sched``, the queuer asks and writes the
+    link as the door would: its scheme added, what is not ASCII escaped."""
+    asked = []
+    monkeypatch.setattr(dlq.queuer, "probe", lambda url, timeout=30:
+                        asked.append(url) or dlq.queuer.Probe(100 * MiB, True))
+    monkeypatch.setattr(dlq.ytq, "SHEBANG", f"#!{sys.executable}")
+    assert dlq.queuer.main(["www.example.invalid/Док.iso"]) == 0
+    spelled = dlq.queuer.normal_url("www.example.invalid/Док.iso")
+    assert asked == [spelled] and spelled.isascii()
+    source = next((dlq.root / "queue").glob("*.py")).read_text(encoding="utf-8")
+    assert dlq.ytq.source_of(source) == f"url:{spelled}"
+    assert _run_args(source)[0][0] == spelled
+
+
+#: Text urllib refuses to read as a link at all: a port that is not a number,
+#: an unclosed bracket, a bracketed host that is no address.
+NOT_LINKS = ["http://127.0.0.1:abc/x.iso", "http://[::1/x.iso", "http://[abc]/x.iso"]
+
+
+@pytest.mark.parametrize("url", NOT_LINKS)
+def test_a_link_urllib_cannot_read_is_a_sentence_and_never_a_traceback(
+    dlq, monkeypatch, capsys, url
+):
+    """``nibbles <url>`` says why, writes nothing and spends nothing, whichever
+    door and whatever the flags — ``--expect-bytes`` included, which trusts a
+    look that failed but never a link nothing could fetch."""
+    monkeypatch.setattr(dlq.ytq, "SHEBANG", f"#!{sys.executable}")
+    for ask in (dlq.queuer.kind_of, dlq.queuer.probe):
+        with pytest.raises(dlq.queuer.ProbeError):
+            ask(url, timeout=2)
+    for argv in ([url], [url, "--expect-bytes", "1000000"], [url, "--name", "x.iso"]):
+        capsys.readouterr()
+        assert dlq.queuer.main(argv) == 1
+        assert dlq.app.main(argv) == 1
+        assert "error" in capsys.readouterr().err
+    assert list((dlq.root / "queue").glob("*.py")) == []
+
+
+def test_a_server_that_does_not_talk_http_is_a_sentence(dlq):
+    """A port that answers, but not in HTTP: http.client's own exception,
+    which is neither an OSError nor a URLError, is the probe's sentence."""
+    import socket
+    import threading
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+
+    def answer():
+        for _ in range(4):
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            with conn:
+                conn.recv(4096)
+                conn.sendall(b"not http at all\r\n\r\n")
+
+    threading.Thread(target=answer, daemon=True).start()
+    url = f"http://127.0.0.1:{listener.getsockname()[1]}/x.iso"
+    try:
+        with pytest.raises(dlq.queuer.ProbeError):
+            dlq.queuer.kind_of(url, timeout=5)
+        with pytest.raises(dlq.queuer.ProbeError):
+            dlq.queuer.probe(url, timeout=5)
+    finally:
+        listener.close()
+
+
+@pytest.mark.parametrize("typed", ["Movies", "./Movies", "sub/../Movies", "~/Movies"])
+def test_a_destination_means_one_folder_wherever_it_was_typed(
+    probed, monkeypatch, tmp_path, typed
+):
+    """A relative ``--dest`` was written as typed and resolved against the
+    directory of whichever runner delivered it — the queue root for Run now,
+    Termux's home for the nightly job — so one item landed in a different
+    folder by who fetched it, and the app, looking from its own directory,
+    found it gone and forgot it. Both doors and ``nibbles dest`` now write
+    the one folder it meant, from where it was typed; a kind stays a kind."""
+    typed_in = tmp_path / "typed-in"
+    typed_in.mkdir()
+    monkeypatch.chdir(typed_in)
+    meant = str(Path(typed).expanduser() if typed.startswith("~")
+                else (typed_in / "Movies").resolve())
+
+    assert probed.queuer.main(["https://example.invalid/x.iso", "--dest", typed]) == 0
+    item = probed.runner.parse_item(next((probed.root / "queue").glob("*.py")))
+    seen = {}
+    monkeypatch.setattr(probed.app, "run", lambda start, first, preloaded, now, dest:
+                        seen.update(dest=dest) or [])
+    monkeypatch.setattr(probed.ytq.sys.stdout, "isatty", lambda: True, raising=False)
+    assert probed.ytq.main(["--dest", typed, "https://youtu.be/x"]) == 0
+    ok, _ = probed.sched.set_dest("video", typed)
+    assert ok
+    assert item["dest"] == seen["dest"] == probed.runner.load_config()["video_dir"] == meant
+
+    # Delivered from anywhere, it is the same folder.
+    monkeypatch.chdir(tmp_path)
+    assert probed.runner.dest_of(item) == Path(meant)
+
+    for kind in probed.runner.DEST_KINDS:
+        assert probed.runner.typed_dest(kind) == kind
+        assert probed.ytq.main(["--dest", kind, "https://youtu.be/x"]) == 0
+        assert seen["dest"] == kind
 
 
 def test_a_state_file_that_will_not_parse_is_not_a_crash(dlq):
