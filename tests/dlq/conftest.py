@@ -1,7 +1,7 @@
 """The one seam the suite has: a queue root that is not the real one.
 
 Every module here anchors to a checkout rather than to ``__file__`` — that is
-the decision that keeps an installed ``dlq`` managing the real queue — so the
+the decision that keeps an installed ``nibbles`` managing the real queue — so the
 only honest way to test one is to make a checkout somewhere else and run the
 modules out of *it*. That is what these fixtures do: this checkout's modules
 are copied into a temporary directory, ``EXPIRE_HOME`` and ``HOME`` are pointed
@@ -93,7 +93,7 @@ class Checkout(SimpleNamespace):
 
     The attributes are the modules as the root sees them — ``runner``,
     ``sched``, ``ui``, ``dl``, ``queuer`` (``dlq.py``), ``ytq``, ``qw``, and
-    the app's ``app`` (``nibbles.py``) and ``qs`` (``queue_screens.py``) — so
+    the app's ``app`` (``app.py``) and ``qs`` (``queue_screens.py``) — so
     a test asserts against the same objects the screen under it is running.
     """
 

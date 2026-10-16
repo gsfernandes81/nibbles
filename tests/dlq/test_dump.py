@@ -181,3 +181,88 @@ def test_a_failed_item_is_what_it_shows_by_default(dlq, capsys):
     dlq.item("20-failed.py", where="failed")
     said, _ = dumped(dlq, capsys)
     assert "20-failed.py" in said
+
+
+def section(said: str, title: str) -> list[str]:
+    """The lines of the dump's *title* section, its heading left off."""
+    lines = said.splitlines()
+    start = lines.index(f"== {title}") + 1
+    end = next(
+        (at for at in range(start, len(lines)) if lines[at].startswith("== ")),
+        len(lines),
+    )
+    return lines[start:end]
+
+
+def test_every_items_record_is_in_the_dump_whole_and_on_a_line_of_its_own(dlq, capsys):
+    """Whatever the runner wrote about an item is the evidence, and which field
+    matters is what the reader did not know to ask: the dump once kept a
+    brief of keys the runner has never written. One line an item, so a queue
+    of forty is forty lines rather than one."""
+    records = {
+        "10-done.py": {
+            "attempts": 1,
+            "last_exit": 0,
+            "retired": "done",
+            "bytes": 52_428_800,
+            "part_bytes": 52_428_800,
+            "delivered": ["/storage/emulated/0/Download/A talk.mp4"],
+        },
+        "20-failed.py": {
+            "attempts": 3,
+            "stalls": 2,
+            "last": "2026-10-15 23:41:07Z",
+            "last_exit": 75,
+            "retired": "failed",
+        },
+    }
+    dlq.state(records, spent=[[1_700_000_000, 1000]], ewma_bps=250_000.0)
+    said, _ = dumped(dlq, capsys)
+    lines = section(said, "state.json")
+    for name, record in records.items():
+        mine = [line for line in lines if name in line]
+        assert len(mine) == 1, mine
+        (line,) = mine
+        assert not any(other in line for other in records if other != name)
+        for key, value in record.items():
+            assert key in line
+            for leaf in value if isinstance(value, list) else [value]:
+                assert str(leaf) in line
+
+
+def kind_line(lines: list[str], kind: str) -> str:
+    """The destinations section's line for *kind*: the one led by its name."""
+    (line,) = [line for line in lines if line.split() and line.split()[0].startswith(kind)]
+    return line
+
+
+@pytest.mark.parametrize(
+    "stored", [5, ["/sdcard/Movies"], True, "", "~nobody-on-this-phone/Movies"]
+)
+def test_a_destination_it_declines_is_said_and_reads_as_the_default(
+    dlq, capsys, stored
+):
+    """The rule ``nibbles dest`` keeps (:func:`expire_runner.dest_state`): a
+    stored value that cannot be a folder is not the one in force, so it reads
+    exactly as nothing set would, and the line under it says what was
+    declined."""
+    unset = section(dumped(dlq, capsys)[0], "destinations")
+    dlq.config({"video_dir": stored})
+    declined = section(dumped(dlq, capsys)[0], "destinations")
+    _, why = dlq.runner.dest_state("video")
+    extra = [line for line in declined if line not in unset]
+    assert len(extra) == 1 and why in extra[0]
+    assert [line for line in declined if line not in extra] == unset
+
+
+def test_a_destination_in_force_reads_otherwise_than_the_default(dlq, capsys):
+    """Beside the folder it names, something says it was chosen."""
+    unset = section(dumped(dlq, capsys)[0], "destinations")
+    films = dlq.root / "films"
+    films.mkdir()
+    dlq.config({"video_dir": str(films)})
+    chosen = section(dumped(dlq, capsys)[0], "destinations")
+    default = str(dlq.runner.default_dests()["video"])
+    assert kind_line(chosen, "video").replace(str(films), "") != kind_line(
+        unset, "video"
+    ).replace(default, "")

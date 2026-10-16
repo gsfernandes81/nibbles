@@ -508,6 +508,68 @@ def test_a_destination_typed_with_spaces_round_it_is_that_destination(dlq):
     assert dlq.runner.dests()["video"] == films
 
 
+def dest_blocks(dlq, capsys, monkeypatch) -> dict[str, list[str]]:
+    """``nibbles dest``'s lines under each kind's heading, by kind.
+
+    Wide enough that nothing wraps, so a line is a fact.
+    """
+    monkeypatch.setenv("COLUMNS", "300")
+    assert dlq.sched.main(["dest"]) == 0
+    said = capsys.readouterr().out
+    blocks = [block.splitlines() for block in said.split("\n\n")]
+    return {
+        block[0]: block[1:]
+        for block in blocks
+        if block and block[0] in dlq.runner.DEST_KINDS
+    }
+
+
+@pytest.mark.parametrize(
+    "stored", [5, ["/sdcard/Movies"], True, "", "~nobody-on-this-phone/Movies"]
+)
+def test_a_destination_that_is_declined_reads_as_the_default_and_says_why(
+    dlq, capsys, monkeypatch, stored
+):
+    """What is in force is what the runner delivers by
+    (:func:`expire_runner.dest_state`), never whether the key holds something
+    truthy: a stored list read "set" over the default's folder, and an empty
+    string read "default" with nothing to say why."""
+    unset = dest_blocks(dlq, capsys, monkeypatch)
+    dlq.config({"video_dir": stored})
+    declined = dest_blocks(dlq, capsys, monkeypatch)
+    _, why = dlq.runner.dest_state("video")
+    extra = [line for line in declined["video"] if line not in unset["video"]]
+    assert len(extra) == 1 and why in extra[0]
+    assert [line for line in declined["video"] if line not in extra] == unset["video"]
+    assert {kind: declined[kind] for kind in ("audio", "file")} == {
+        kind: unset[kind] for kind in ("audio", "file")
+    }
+
+
+def test_a_destination_in_force_says_so_beside_its_folder(dlq, capsys, monkeypatch):
+    unset = dest_blocks(dlq, capsys, monkeypatch)
+    films = dlq.root / "films"
+    films.mkdir()
+    dlq.config({"video_dir": str(films)})
+    chosen = dest_blocks(dlq, capsys, monkeypatch)
+    # Besides the line naming the folder, something reads otherwise.
+    default = str(dlq.runner.default_dests()["video"])
+    assert [line for line in chosen["video"] if str(films) not in line] != [
+        line for line in unset["video"] if default not in line
+    ]
+
+
+def test_a_config_it_cannot_read_is_said_above_the_destinations(
+    dlq, capsys, monkeypatch
+):
+    """It is why every destination reads as its default, and why none can be
+    set — said once, as ``nibbles settings`` says it."""
+    dlq.config("{ not json")
+    monkeypatch.setenv("COLUMNS", "300")
+    assert dlq.sched.main(["dest"]) == 0
+    assert dlq.runner.config_problem() in capsys.readouterr().out
+
+
 def test_the_listing_and_the_completions_show_the_same_downloads(dlq, capsys):
     dlq.item("10-thing.py", desc="a thing")
     dlq.item("20-other.py", where="failed")

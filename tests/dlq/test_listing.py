@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 
 import pytest
@@ -294,6 +295,57 @@ def test_where_it_was_put_outlives_the_file(dlq):
     row = row_for(dlq.sched.items(), "10-thing.py")
     assert row["recorded"] == [landing / "thing.iso"]
     assert dlq.sched.show_path(row) == 1  # it finished, and it is not there now
+
+
+def delivered_into_out(dlq, name: str) -> tuple[dict, object]:
+    """A queued item with *name* in its ``out/`` folder and a copy still being
+    made beside it, as :func:`expire_dl.move_file` makes one: hidden."""
+    dlq.item("10-thing.py")
+    out = dlq.root / "out" / "10-thing.py"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    (out / name).write_bytes(b"x" * 10)
+    (out / ".nibbles-123.part").write_bytes(b"y" * 5)
+    return row_for(dlq.sched.items(), "10-thing.py"), out / name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Server.temp.mp4",  # ends as a merge in progress ends
+        "Lecture 4.part 2.mp4",  # ".part" in the middle of a title
+        "talk.mp4.part",  # or at the end of one
+        "backup.meta.json",  # expire_dl's sidecar suffix, as a file's own
+        "session.ytdl",  # yt-dlp's index suffix, as a file's own
+    ],
+)
+def test_what_an_item_put_in_out_is_finished_whatever_its_name_ends_in(dlq, name):
+    """``out/<item>/`` is where an item puts its finished file, whole, and
+    nothing downloads there: yt-dlp's bookkeeping lives in ``work/``. Read
+    with those rules, a title that merely ended like scaffolding was a
+    download delivered and listed as one not yet started; what is hidden is
+    the copy still being made onto the name."""
+    row, landed = delivered_into_out(dlq, name)
+    assert row["files"] == [landed]
+    # And it reads as a download that has its file, not as one still to come.
+    assert dlq.sched._state_of(row) != dlq.sched._state_of({**row, "files": []})
+
+
+@given(
+    title=st.text(
+        st.characters(codec="utf-8", exclude_characters="/\x00"),
+        min_size=1,
+        max_size=60,
+    ).filter(lambda title: not title.startswith(".")),
+    ending=st.sampled_from(
+        ["", ".mp4", ".part", ".part.mp4", ".temp.mp4", ".ytdl", ".meta.json"]
+    ),
+)
+def test_anything_visible_in_an_items_out_folder_is_its_finished_file(
+    dlq, title, ending
+):
+    row, landed = delivered_into_out(dlq, title + ending)
+    assert row["files"] == [landed]
 
 
 # --------------------------------------------------------------------------- #

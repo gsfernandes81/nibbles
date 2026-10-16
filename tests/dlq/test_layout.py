@@ -201,6 +201,39 @@ def test_what_the_screen_says_is_spendable_is_what_the_runner_decided(dlq, width
     assert any(said in line for line in lines), said
 
 
+@given(width=st.integers(32, 120))
+def test_a_manual_budgets_status_screen_fits(dlq, width):
+    """Its figures are set out by the same rows as the portal's
+    (:func:`expire_sched._figure_rows`), one layout whichever source they
+    came from, and every line of the block fits."""
+    stocked(dlq)
+    dlq.config({"budget": "manual", "allowance_mb": 2_000, "reserve_mb": 100})
+    facts = dlq.facts(force=True)
+    assert facts["source"] == "manual"
+    for line in plain(dlq.sched.compose_status(facts, width, paint)):
+        assert fits(line, width), line
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+@pytest.mark.parametrize("command", [["dest"], ["settings"]])
+def test_the_printed_settings_and_destinations_fit(
+    dlq, capsys, monkeypatch, command, width
+):
+    """Both print their facts and their usage through the same pieces, a
+    declined value and a broken file included."""
+    for config in (
+        {"video_dir": ["/sdcard/Movies"], "window_minutes": 7, "budget": "manual"},
+        "{ not json",
+    ):
+        dlq.config(config)
+        monkeypatch.setenv("COLUMNS", str(width))
+        assert dlq.sched.main(command) == 0
+        said = capsys.readouterr().out.splitlines()
+        assert said
+        for line in said:
+            assert fits(line, width), line
+
+
 @pytest.mark.parametrize("verdict", ["go", "early", "late", "empty", "off", "spent",
                                      "blind", "no-portal", "stale"])
 def test_every_verdict_has_words_on_both_screens(dlq, verdict):

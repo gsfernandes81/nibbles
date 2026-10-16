@@ -33,7 +33,7 @@ Things here that are load-bearing:
   environment and ``sys.modules`` for their whole session, so the command runs
   them one after the other through a shell, never as one pytest.
 
-The curses event loops are fenced with ``# nomut: start`` / ``# nomut: end``: a
+The event loops are fenced with ``# nomut: start`` / ``# nomut: end``: a
 mutant inside one does not fail a test, it hangs a terminal until the timeout
 kills it. What those loops do is checked under a pty instead, which is also why
 the mutation run skips the ``tui`` mark — those tests are most of the suite's

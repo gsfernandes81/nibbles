@@ -58,7 +58,7 @@ choosing it does not end the session: the sheet closes, and the status bar
 along the foot says how far the download has got.
 
 This module is the YouTube half's logic and its printing paths. The screens are
-nibbles' (``nibbles.py``, ``yt_screens.py``); ``nibbles`` opens the app on its
+nibbles' (``app.py``, ``yt_screens.py``); ``nibbles`` opens the app on its
 Search tab, and ``nibbles.main`` decides what reaches :func:`main`.
 """
 
@@ -139,9 +139,9 @@ ITEM_RE = re.compile(r"^(\d{2,})-")
 MAX_PRIORITY = 99
 
 #: The width the full-detail layouts need. Below it the format list drops the
-#: format id and the codec detail, which are the two columns nobody chooses on,
-#: and the confirm screen drops to the figures alone. Termux in portrait is
-#: around 40 columns; the size and the label are what a choice is made from.
+#: format id, the codec detail and the cap, which are the columns nobody
+#: chooses on. Termux in portrait is around 40 columns; the size and the label
+#: are what a choice is made from.
 #: Matches ``expire_sched.WIDE``, so one terminal does not get two answers
 #: about whether it is wide.
 WIDE = 72
@@ -781,9 +781,9 @@ def cookie_fix(detail: str) -> list[str]:
 def cookie_advice(state: str, detail: str) -> list[str]:
     """Why the feed cannot be read, and the one thing that fixes it.
 
-    A screen rather than a line, and the fix written on it, for the reason
-    :func:`duplicate_screen` gives: this is a dead end, and a dead end that
-    does not say the way out is one somebody concludes is a broken tool.
+    Lines rather than one, and the fix written in them, because this is a
+    dead end, and a dead end that does not say the way out is one somebody
+    concludes is a broken tool.
     """
     return [
         {
@@ -839,8 +839,8 @@ def feed_argv(url: str, count: int = SUBS_RESULTS) -> list[str]:
     stops pulling once it has *count*, so one look is one request.
 
     ``--flat-playlist`` is the other half: the feed is a list of videos and
-    extracting each one is what the format screen is for, later, on the one
-    that gets picked.
+    extracting each one is what the video sheet's probe is for, later, on
+    the one that gets picked.
 
     Nothing here disables the user config, and here that is not a nicety — the
     ``--cookies`` line in it is the only reason this page answers at all.
@@ -902,8 +902,9 @@ def bumped_place(place: tuple[int, int], count: int) -> tuple[int, int]:
     Asked from anywhere else the place stays put. No key asks from mid-list
     any more — the `m` alias that did was removed — but a listing that came
     back shorter than the row that asked for it is the same shape and lands
-    here. Overshoot is :func:`viewport`'s to clamp, so a feed that came back
-    no longer than it was leaves the cursor on the last row it had.
+    here. Overshoot is :meth:`shell.ListView.settle`'s to clamp, so a feed
+    that came back no longer than it was leaves the cursor on the last row it
+    had.
     """
     row, top = place
     if count and row == count - 1:
@@ -2140,8 +2141,9 @@ def now_argv(name: str) -> list[str]:
     than by console script, so it is this package — the checkout or the
     installed copy that is running — whatever is first on PATH; the queue root
     it works on is :data:`HERE` either way (:func:`home.root`). ``--yes``
-    because the confirm screen was the asking, and being asked twice teaches
-    people to stop reading the question.
+    because the screen that started it — the video sheet's Now, the Queue
+    tab's Download now — was the asking, and being asked twice teaches people
+    to stop reading the question.
     """
     return [sys.executable, "-m", "nibbles", "now", name, "--yes"]
 
@@ -3244,7 +3246,7 @@ def list_formats(url: str, dump: str | None = None) -> int:
         return 1
     width = shutil.get_terminal_size(fallback=(80, 24)).columns
     # A saved search dump is a playlist envelope, and its rows are the ones the
-    # results screen draws — not formats, which it has none of.
+    # Search tab lists — not formats, which it has none of.
     if info.get("entries") is not None:
         return list_results(entries(info), width)
     options, unsized = choices(info)
@@ -3252,7 +3254,7 @@ def list_formats(url: str, dump: str | None = None) -> int:
     if width >= WIDE:
         title += f"  [{info.get('extractor_key')}]"
     print(title[:width])
-    # The same verdict the format screen shows, for the path with no screen.
+    # The same verdict the video sheet shows, for the path with no screen.
     # On stderr so that a pipe reading the table is not handed a row that is
     # not one, and so it survives being redirected away from.
     if withheld(info):

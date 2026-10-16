@@ -39,10 +39,12 @@ app every ``termux-*`` call hangs rather than failing.
 
 Usage::
 
-    dlq [status|list|ui|path NAME|dest|settings|queue|logs|run-now|arm|cancel]
+    python3 expire_sched.py [status|list|ui|path NAME|dest|settings|logs|dump|run-now|arm|cancel]
 
-``expire_sched.py`` with nothing after it is ``nibbles queue`` — see :func:`default_action`,
-which falls back to ``status`` when there is no terminal to draw on.
+``nibbles`` hands these words here (``app.QUEUE_VERBS``), all but ``ui``,
+which is ``nibbles queue``. ``expire_sched.py`` with nothing after it is
+``nibbles queue`` — see :func:`default_action`, which falls back to
+``status`` when there is no terminal to draw on.
 
 ``ui`` is where the queue is *changed* — reordered, renamed, retried, removed,
 or told to download something now. Those used to be commands here and are not
@@ -54,14 +56,15 @@ answers, the settings and the job.
 ``nibbles run-now --blind`` is the answer to ``ic.zwana.io`` being unreachable —
 the phone on mobile data, or the portal down. The nightly guards are all read
 off that portal, so a blind run has none of them and spends paid data instead;
-it says how much and asks first, exactly as the screen's ``n`` does for one
+it says how much and asks first, exactly as ``nibbles now`` does for one
 item. It
 is also the one run nothing interrupts for the clock, since the deadlines all
 belong to an allowance it is not spending, so it runs in the foreground and
 ctrl-c is what stops it.
 
-``dlq`` is this file installed on PATH (see ``pyproject.toml``); running
-``python3 expire_sched.py …`` from the checkout does exactly the same thing.
+``nibbles`` is the one command installed on PATH (see ``pyproject.toml``);
+``python3 expire_sched.py …`` is the checkout's door to this module, and
+answers the same words the same way.
 
 ``NAME`` is name-ish: any unambiguous part of an item's file name, or its
 priority number. :func:`match` decides, and ``nibbles names`` prints the same list
@@ -341,12 +344,21 @@ def do_arm() -> tuple[bool, str]:
     return True, said or "job registered"
 
 
-def arm() -> None:
-    """``nibbles arm``: register the job, or stop with the reason it did not."""
-    worked, said = do_arm()
+def _or_exit(worked: bool, said: str) -> None:
+    """Print what a verb did, or stop with it as the error it is.
+
+    The command line's half of every ``do_*`` that answers ``(it worked, what
+    to say)``: one tail, so arming and unregistering cannot come to report a
+    failure two different ways.
+    """
     if not worked:
         sys.exit(f"error: {said}")
     print(said)
+
+
+def arm() -> None:
+    """``nibbles arm``: register the job, or stop with the reason it did not."""
+    _or_exit(*do_arm())
 
 
 def do_cancel() -> tuple[bool, str]:
@@ -366,10 +378,7 @@ def do_cancel() -> tuple[bool, str]:
 
 def cancel() -> None:
     """``nibbles cancel``: unregister it, or stop with the reason it did not."""
-    worked, said = do_cancel()
-    if not worked:
-        sys.exit(f"error: {said}")
-    print(said)
+    _or_exit(*do_cancel())
 
 
 #: How :func:`job_rows` says the job is registered, and the only place that
@@ -651,6 +660,17 @@ def _delivered(name: str, record: dict | None = None) -> list[Path]:
     ``video.mp4``. Scanning ``out/<item>/`` is the fallback for items that have
     not been handed over — no ``DEST``, or a destination that could not be
     reached — and that directory belongs to one item, so it is safe to scan.
+
+    Everything in it that is not hidden is a finished file. Nothing downloads
+    into ``out/``: yt-dlp works in ``work/<item>/dl`` and ``expire_dl`` in
+    ``work/<item>``, and each puts the finished file here whole, under the
+    download's own name — so yt-dlp's bookkeeping rules (:func:`_is_payload`)
+    have nothing to find, and asked anyway they hid a title that merely ended
+    like scaffolding (``Server.temp.mp4``) or held ``.part`` anywhere
+    (``Lecture 4.part 2.mp4``) — a download finished and delivered, listed as
+    one that had not started. What is hidden is a copy still being made:
+    :func:`expire_dl.move_file` writes ``.nibbles-<pid>.part`` and renames it
+    onto the name only once it is whole.
     """
     found = [path for path in _noted(record) if _is_file(path)]
     if not found:
@@ -658,9 +678,7 @@ def _delivered(name: str, record: dict | None = None) -> list[Path]:
             found = [
                 path
                 for path in (OUT / name).iterdir()
-                if path.is_file()
-                and _is_payload(path.name)
-                and ".part" not in path.name
+                if path.is_file() and not path.name.startswith(".")
             ]
         except OSError:
             return []
@@ -1330,10 +1348,6 @@ def compose_status(
         for line in _wrap(text, width - len(indent)):
             row(f"{indent}{line}", f"{indent}{paint(line, tone)}" if tone else None)
 
-    def pick(long: str, short: str, used: int) -> str:
-        """The fuller phrasing when there is room for it, the shorter when not."""
-        return long if used + len(long) <= width else short
-
     # ---- the verdict ------------------------------------------------------ #
     title = "DOWNLOAD QUEUE"
     when = _clock(facts["now"])
@@ -1443,14 +1457,7 @@ def compose_status(
                 "90",
             ),
         ]
-        value_w = max(len(value) for value, _, _, _ in entries)
-        for value, long, short, hue in entries:
-            cell = value.rjust(value_w)
-            note = pick(long, short, 2 + value_w + 1)
-            row(
-                f"  {cell} {note}",
-                f"  {paint(cell, hue)} {paint(note, '90')}",
-            )
+        rows.extend(_figure_rows(entries, width, paint))
         if not doc["reading"]["online"]:
             wrapped("the portal says this session is offline", "33")
 
@@ -1514,12 +1521,29 @@ def _manual_rows(facts: dict, width: int, paint) -> list[tuple[str, str]]:
         ),
         (f"{human(facts['bps'])}/s", "measured download speed", "measured speed", "90"),
     ]
-    value_w = max(len(value) for value, _, _, _ in entries)
-    for value, long, short, hue in entries:
-        cell = value.rjust(value_w)
-        note = long if 2 + value_w + 1 + len(long) <= width else short
-        out.append((f"  {cell} {note}", f"  {paint(cell, hue)} {paint(note, '90')}"))
+    out.extend(_figure_rows(entries, width, paint))
     wrapped("what the rest of the phone uses is not counted; the reserve is for it", "90")
+    return out
+
+
+def _figure_rows(
+    entries: list[tuple[str, str, str, str]], width: int, paint
+) -> list[tuple[str, str]]:
+    """The data block's figures: ``value note`` a line, the values in a column.
+
+    Each entry is ``(value, long, short, hue)``. The values are right-aligned
+    so their units line up, and the note is the long phrasing where the line
+    has room for it and the short one where it has not. One layout for both
+    sources' blocks (:func:`compose_status`, :func:`_manual_rows`), so the
+    same figure is never set out two ways depending on where it was read.
+    Measured in columns, like every other printed line here.
+    """
+    value_w = max((_cols(value) for value, *_ in entries), default=0)
+    out: list[tuple[str, str]] = []
+    for value, long, short, hue in entries:
+        cell = " " * (value_w - _cols(value)) + value
+        note = long if 2 + value_w + 1 + _cols(long) <= width else short
+        out.append((f"  {cell} {note}", f"  {paint(cell, hue)} {paint(note, '90')}"))
     return out
 
 
@@ -1712,6 +1736,50 @@ FILLED_BY = {"video": "videos", "audio": "audio-only picks",
              "file": "plain file URLs"}
 
 
+def _note(text: str, tone: str, width: int, paint) -> None:
+    """*text* indented under the heading it belongs to, wrapped, never clipped.
+
+    The line every ``nibbles dest`` and ``nibbles settings`` fact is printed
+    as, and their usage blocks' notes too: a fact clipped at the edge of a
+    phone is usually the half that said what to do about it.
+    """
+    for line in _wrap(text, width - 2):
+        print(f"  {paint(line, tone)}")
+
+
+def _forms(
+    command: str, forms: list[tuple[str, str]], notes: list[str], width: int, paint
+) -> None:
+    """A command's usage: its name once, its forms under it, then *notes*.
+
+    The command once rather than in front of every form: at 40 columns the
+    name alone is a third of the line, and repeating it pushes what each form
+    does onto a wrap. ``nibbles dest`` and ``nibbles settings`` print theirs
+    through this, so the two blocks are one shape.
+    """
+    print(f"{_me()} {command}")
+    form_w = max(_cols(form) for form, _ in forms)
+    for form, does in forms:
+        print(f"  {_pad(form, form_w)}   {paint(does, '90')}")
+    for said in notes:
+        _note(said, "90", width, paint)
+
+
+def _said(worked: bool, lines: list[str]) -> int:
+    """Print what a setter said — to stdout if it took, as errors if it did
+    not — and answer with the exit code that goes with it.
+
+    The tail of ``nibbles dest`` and ``nibbles settings``, which both hand
+    their deciding half's ``(it worked, what to say)`` straight here.
+    """
+    for line in lines:
+        if worked:
+            print(line)
+        else:
+            print(f"error: {line}", file=sys.stderr)
+    return 0 if worked else 1
+
+
 def show_dest(argv: list[str]) -> int:
     """Show or set where finished downloads are put.
 
@@ -1728,15 +1796,14 @@ def show_dest(argv: list[str]) -> int:
         config = runner.load_config()
         defaults = runner.default_dests()
 
-        def note(text: str, tone: str) -> None:
-            """A line under a destination, wrapped rather than run off the side.
-
-            The one that matters is the missing-permission line, which is long,
-            and which is the whole reason this command prints anything before
-            the data is spent.
-            """
-            for line in _wrap(text, width - 2):
-                print(f"  {paint(line, tone)}")
+        # The file's own fault first and once, as `nibbles settings` says it:
+        # it is why every destination below reads as its default, and why
+        # none of them can be changed until it is mended.
+        broken = runner.config_problem()
+        if broken:
+            _note(f"✗ {broken}", "31", width, paint)
+            _note("those below are the defaults; nothing can be set", "90", width, paint)
+            print()
 
         # The kind as a heading with its facts under it, rather than the path
         # hung off a first column: on a phone the path is most of the line
@@ -1745,37 +1812,39 @@ def show_dest(argv: list[str]) -> int:
         for number, (kind, where) in enumerate(runner.dests().items()):
             if number:
                 print()
+            # "set" only of a folder that is the one in force: a stored value
+            # that cannot be a folder is declined and the default delivers in
+            # its place, so the word under it is "default" and the red line
+            # says what was declined. Asked of the runner, which is where the
+            # delivery and the dump ask it too.
+            chosen, declined = runner.dest_state(kind, config)
             print(paint(kind, "1"))
-            note(_short(where), "")
-            note(
-                f"{'set' if config.get(f'{kind}_dir') else 'default'}, "
-                f"used for {FILLED_BY[kind]}",
-                "90",
-            )
+            _note(_short(where), "", width, paint)
+            in_force = "default" if chosen is None else "set"
+            _note(f"{in_force}, used for {FILLED_BY[kind]}", "90", width, paint)
+            if declined:
+                _note(f"✗ config.json: {declined}", "31", width, paint)
+            # The line that matters most, and the long one: a permission never
+            # granted is the whole reason this prints anything before the data
+            # is spent rather than at the delivery after it.
             problem = runner.dest_problem(where)
             if problem:
-                note(f"✗ {problem}", "31")
+                _note(f"✗ {problem}", "31", width, paint)
         print()
-        # The command once, then the two forms under it: at 40 columns the
-        # command name alone is a third of the line, and repeating it pushes
-        # what each form does onto a wrap.
-        #
         # `KIND` rather than the kinds spelled into both forms, which is what
         # this did while there were two of them: three made the longer form
         # exactly 40 columns, filling a phone's line edge to edge with no
         # margin, and a fourth would have wrapped it. The names go underneath
         # once, where adding one costs nothing.
-        print(f"{_me()} dest")
-        forms = [("KIND PATH", "change one"), ("KIND default", "put it back")]
-        form_w = max(len(form) for form, _ in forms)
-        for form, does in forms:
-            print(f"  {form.ljust(form_w)}   {paint(does, '90')}")
         named = ", ".join(runner.DEST_KINDS[:-1]) + f" or {runner.DEST_KINDS[-1]}"
-        for line in _wrap(f"KIND is {named}", width - 2):
-            print(f"  {paint(line, '90')}")
         spelled = ", ".join(_short(p) for p in dict.fromkeys(defaults.values()))
-        for line in _wrap(f"defaults: {spelled}", width - 2):
-            print(f"  {paint(line, '90')}")
+        _forms(
+            "dest",
+            [("KIND PATH", "change one"), ("KIND default", "put it back")],
+            [f"KIND is {named}", f"defaults: {spelled}"],
+            width,
+            paint,
+        )
         return 0
 
     kind = argv[0]
@@ -1790,13 +1859,7 @@ def show_dest(argv: list[str]) -> int:
         print(f"usage: {_me()} dest {kind} PATH", file=sys.stderr)
         return 2
 
-    worked, lines = set_dest(kind, argv[1])
-    for line in lines:
-        if worked:
-            print(line)
-        else:
-            print(f"error: {line}", file=sys.stderr)
-    return 0 if worked else 1
+    return _said(*set_dest(kind, argv[1]))
 
 
 def set_dest(kind: str, value: str) -> tuple[bool, list[str]]:
@@ -1961,19 +2024,14 @@ def show_settings(argv: list[str]) -> int:
         width = _width()
         values = runner.settings()
 
-        def note(text: str, tone: str) -> None:
-            """A line under a setting, wrapped rather than run off the side."""
-            for line in _wrap(text, width - 2):
-                print(f"  {paint(line, tone)}")
-
         # The file's own fault first and once, because it is the reason every
         # setting below reads as its default and because nothing can be changed
         # until it is fixed — a list saying "default" all the way down with
         # nothing explaining it is the version of this that gets it rewritten.
         broken = runner.config_problem()
         if broken:
-            note(f"✗ {broken}", "31")
-            note("those below are the built-in ones; nothing can be set", "90")
+            _note(f"✗ {broken}", "31", width, paint)
+            _note("those below are the built-in ones; nothing can be set", "90", width, paint)
             print()
 
         for number, (name, spec) in enumerate(runner.SETTINGS.items()):
@@ -1987,20 +2045,18 @@ def show_settings(argv: list[str]) -> int:
             # runner, which is where the screen and the dump ask it too.
             stored, problem, where = runner.setting_state(name)
             print(paint(name, "1"))
-            note(runner.spell_setting(name, values[name]), "")
-            note(f"{where}, {spec['label']}", "90")
+            _note(runner.spell_setting(name, values[name]), "", width, paint)
+            _note(f"{where}, {spec['label']}", "90", width, paint)
             if problem:
-                note(f"✗ config.json says {stored!r}: {problem}", "31")
+                _note(f"✗ config.json says {stored!r}: {problem}", "31", width, paint)
         print()
-        # The command once and the two forms under it, as `nibbles dest` prints
-        # them: at 40 columns the command name alone is a third of the line.
-        print(f"{_me()} settings")
-        forms = [("NAME VALUE", "change one"), ("NAME default", "put it back")]
-        form_w = max(len(form) for form, _ in forms)
-        for form, does in forms:
-            print(f"  {form.ljust(form_w)}   {paint(does, '90')}")
-        for line in _wrap(f"NAME is {_setting_names()}", width - 2):
-            print(f"  {paint(line, '90')}")
+        _forms(
+            "settings",
+            [("NAME VALUE", "change one"), ("NAME default", "put it back")],
+            [f"NAME is {_setting_names()}"],
+            width,
+            paint,
+        )
         return 0
 
     name = argv[0]
@@ -2020,13 +2076,7 @@ def show_settings(argv: list[str]) -> int:
 
     # Joined rather than argv[1] alone, so `nibbles settings window 45 min` is a
     # sentence the shell may split and this still reads as one value.
-    worked, lines = set_setting(name, " ".join(argv[1:]))
-    for line in lines:
-        if worked:
-            print(line)
-        else:
-            print(f"error: {line}", file=sys.stderr)
-    return 0 if worked else 1
+    return _said(*set_setting(name, " ".join(argv[1:])))
 
 
 def set_setting(name: str, text: str) -> tuple[bool, list[str]]:
@@ -2088,8 +2138,9 @@ def show_path(row: dict) -> int:
 
     Only the path goes to stdout, so ``cd (nibbles path x)`` works and the exit
     code says whether there is anything there; anything a human needs to know
-    besides the path goes to stderr. Opening the file is ``nibbles queue``'s ``o``,
-    which is the screen that already has the download picked.
+    besides the path goes to stderr. Opening the file is Open it on the
+    download's sheet in ``nibbles queue``, which already has the download
+    picked.
     """
     files = row["files"]
     if not files and row.get("lost"):
@@ -2601,15 +2652,16 @@ NAMED = ("path", "now")
 #:
 #: ``names`` is shell completion's own entry point, a machine-readable spelling
 #: of ``list``. ``now`` is the machine interface between the screens and the
-#: runner: ``ytq``'s ``n`` key and ``nibbles queue``'s both spawn ``nibbles now NAME
-#: --yes`` detached, because a download has to outlive the screen that started
-#: it and the runner's lock has to be taken by whatever is downloading. The
-#: asking that ``--yes`` skips happened on the screen, which is also where the
-#: reachability of the portal is put in front of someone; a bare ``nibbles now``
-#: typed at a shell would ask a worse version of the same question.
+#: runner: the video sheet's Now and the Queue tab's Download now both spawn
+#: ``nibbles now NAME --yes`` detached (:func:`ytq.start_now`), because a
+#: download has to outlive the screen that started it and the runner's lock has
+#: to be taken by whatever is downloading. The asking that ``--yes`` skips
+#: happened on the screen, which is also where the reachability of the portal
+#: is put in front of someone; a bare ``nibbles now`` typed at a shell would ask
+#: a worse version of the same question.
 HIDDEN = ("names", "now")
 
-#: ``--now`` was asked for as an option and reads as one; ``dlq`` has no
+#: ``--now`` was asked for as an option and reads as one; this module has no
 #: options, only actions, so it is one of those wearing the other's clothes.
 ALIASES = {"--now": "now", "--list": "list"}
 
@@ -2623,9 +2675,9 @@ def _me() -> str:
     the other one sends people to the wrong place. (``dlq`` until 2026-10-10,
     when ``nibbles`` became the one command; its verbs are this file's.)
 
-    The exceptions are the other front ends drawing this module's screens:
-    the runner's own ``--status``, and ``expire_ui`` composing the status onto
-    its queue screen. Every command spelled with this belongs to *this* file —
+    The exceptions are the other front ends saying this module's sentences:
+    the runner's own ``--status``, and the app's Queue and More tabs (the job
+    row, a broken root). Every command spelled with this belongs to *this* file —
     ``list``, ``run-now``, ``arm`` — and neither of those files has any of
     them, so its name in front of one is an instruction that fails when it is
     followed. Hence the test is "was this module invoked", not "was some other
@@ -2767,27 +2819,49 @@ def dump(target: str | None = None) -> int:
         if reading["problem"]:
             print(f"    {reading['problem']}")
 
+    def _destinations() -> None:
+        # Where each kind is delivered, and whether that is what config.json
+        # asked for: a stored value that cannot be a folder is declined and
+        # the default delivers in its place (dest_state), and the value is
+        # the evidence for a film that turned up somewhere nobody chose.
+        runner = _runner()
+        config = runner.load_config()
+        for kind, where in runner.dests().items():
+            chosen, declined = runner.dest_state(kind, config)
+            in_force = "default" if chosen is None else "set"
+            print(f"  {kind + '_dir':<18}: {where} ({in_force})")
+            if declined:
+                print(f"    ignoring config.json's {declined}")
+            problem = runner.dest_problem(where)
+            if problem:
+                print(f"    {problem}")
+
     def _state() -> None:
         raw = (ROOT / "state.json")
         if not raw.is_file():
             print("  (no state.json)")
             return
         state = json.loads(raw.read_text())
+        if not isinstance(state, dict):
+            print(f"  {state!r}")
+            return
         for name, record in sorted(state.items()):
             if name == "spent" and isinstance(record, list):
                 # The ledger: a summary, since it is a row per run.
                 total = sum(spent for _, spent in _runner()._ledger(state))
                 print(f"  spent: {len(record)} entries, {total:,} bytes kept")
                 continue
-            if isinstance(record, dict):
-                brief = {
-                    key: record[key]
-                    for key in ("strikes", "last_error", "error", "done", "delivered")
-                    if key in record
-                }
-                print(f"  {name}: {brief if brief else record}")
-            else:
-                print(f"  {name}: {record}")
+            if name == "items" and isinstance(record, dict):
+                # Every item's record whole, one to a line: what it is worth
+                # reading for is whichever field the reader did not think to
+                # ask about — the attempts, the stalls, the last exit, where
+                # it was delivered — so none is chosen for them. (A brief that
+                # did choose asked for keys the runner has never written.)
+                print(f"  items: {len(record)}")
+                for item, kept in sorted(record.items()):
+                    print(f"    {item}: {kept}")
+                continue
+            print(f"  {name}: {record}")
 
     def _items() -> None:
         rows = items()
@@ -2839,6 +2913,7 @@ def dump(target: str | None = None) -> int:
     guarded("environment", _environment)
     guarded("roots", _roots)
     guarded("settings", _settings)
+    guarded("destinations", _destinations)
     guarded("budget source", _source)
     guarded("state.json", _state)
     guarded("items", _items)
@@ -2847,17 +2922,19 @@ def dump(target: str | None = None) -> int:
 
 
 def default_action(interactive: bool | None = None) -> str:
-    """What a bare ``dlq`` does: open the screen.
+    """What a bare ``expire_sched.py`` does: open the screen.
 
     The screen is where the queue is worked on, so typing the command with
     nothing after it lands there rather than on a page of figures — and every
-    read-only answer is a key away from it, which is not true the other way
+    read-only answer is a tap away from it, which is not true the other way
     round.
 
     Off a terminal it is ``status`` instead, which is what a bare ``dlq``
-    always did. That is not a nicety: ``dlq | less``, an ssh command with no
-    tty, a line in a script — all of those used to print the status screen, and
-    a full-screen app in any of them is a usage error where there used to be an answer.
+    always did, and is still pinned for this file (a bare ``nibbles`` only
+    ever opens the app: :func:`nibbles.app.main`). That is not a nicety: piped
+    into ``less``, an ssh command with no tty, a line in a script — all of
+    those used to print the status screen, and a full-screen app in any of
+    them is a usage error where there used to be an answer.
     The default may never be an action that *does* something either; a test
     must pin that, because the failure would be a bare command that arms the
     job or spends data.
