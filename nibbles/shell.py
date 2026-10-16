@@ -24,24 +24,31 @@ from nibbles.widgets import T, Piece, Surface
 # --------------------------------------------------------------------------- #
 
 
+#: What a size is counted in above a thousand bytes, smallest first.
+UNITS = ("KiB", "MiB", "GiB", "TiB")
+
+
 def size(n: float) -> str:
     """``92 MiB``, ``10.2 MiB``, ``1.02 GiB``: three figures at most.
 
     The one spelling of a size on these screens, so the figure on a button
-    and the figure above it cannot come out different.
+    and the figure above it cannot come out different. The unit and the
+    places are chosen by the figure as it will be printed, not as it stands:
+    999.7 KiB would print as ``1000``, so it is ``0.98 MiB``, and 9.997 MiB
+    is ``10 MiB`` and not ``10.00 MiB`` (``round`` and the format agree).
     """
     n = max(0.0, float(n))
-    for unit in ("B", "KiB", "MiB", "GiB"):
-        if n < 1000 or unit == "GiB":
-            if unit == "B":
-                return f"{int(n)} B"
-            if n >= 100:
-                return f"{n:.0f} {unit}"
-            if n >= 10:
-                return f"{n:.1f} {unit}".replace(".0 ", " ")
-            return f"{n:.2f} {unit}"
+    if round(n) < 1000:
+        return f"{n:.0f} B"
+    for unit in UNITS:
         n /= 1024
-    return f"{n:.2f} GiB"
+        if round(n) < 1000 or unit == UNITS[-1]:
+            break
+    if round(n, 1) >= 100:
+        return f"{n:.0f} {unit}"
+    if round(n, 2) >= 10:
+        return f"{n:.1f} {unit}".replace(".0 ", " ")
+    return f"{n:.2f} {unit}"
 
 
 def mb(n: float) -> str:
@@ -314,7 +321,7 @@ class ListView:
     ↓ keep the same margin. With fewer than three items on screen the margin
     is nothing. The last :data:`widgets.BAR_ZONE` columns are the scrollbar's:
     a tap there jumps, and a drag that **starts** there moves the thumb a row
-    per row of finger travel.
+    per row of finger travel, the way the finger went.
     """
 
     cursor: int = -1
@@ -327,6 +334,13 @@ class ListView:
     height: int = 0
     y: int = 0
     width: int = 0
+    #: Where the bar last put the thumb: its row, and the view it stood for
+    #: (top, height, rows). A thumb row can be worth less than an entry, and
+    #: then the view a row of the drag stands for is the one it was already
+    #: on; the next row goes on from the finger, not from the thumb that view
+    #: draws, or the drag would stop there for good. Anything else that moves
+    #: the view leaves it standing for a view that is no longer there.
+    grip: tuple[int, int, int, int] | None = None
 
     # Geometry -------------------------------------------------------------
 
@@ -354,8 +368,9 @@ class ListView:
     def total_rows(self) -> int:
         return sum(e.height for e in self.entries)
 
-    def offset_rows(self) -> int:
-        return sum(e.height for e in self.entries[: self.top])
+    def offset_rows(self, top: int | None = None) -> int:
+        """The rows above *top* (the view's own when not given)."""
+        return sum(e.height for e in self.entries[: self.top if top is None else top])
 
     def selectable(self) -> list[int]:
         return [i for i, e in enumerate(self.entries) if e.selectable]
@@ -470,31 +485,59 @@ class ListView:
         return (self.width - w.BAR_ZONE <= x < self.width
                 and self.y <= y < self.y + self.height)
 
+    def travel(self) -> int:
+        """How far the view can scroll, in rows: those above the furthest
+        top. Not every row past the view's height: the last entries can
+        leave a spare row no top ever scrolls past, and a thumb scaled to
+        the rows sits at the bottom an entry short of the end, where a tap
+        would stop too."""
+        return self.offset_rows(self.furthest())
+
+    def thumb(self) -> tuple[int, int]:
+        """The thumb as drawn, ``(start, length)``, on a track the view's
+        height that stands for its :meth:`travel`."""
+        return w.thumb(self.height, self.travel() + self.height, self.height,
+                       self.offset_rows())
+
     def bar_drag(self, dy: int) -> None:
-        """A drag that began on the bar: the thumb moves a row per row."""
-        total, room = self.total_rows(), self.height
-        start, length = w.thumb(room, total, room, self.offset_rows())
-        self._thumb_to(start + dy, length)
+        """A drag that began on the bar: the thumb follows the finger, a row
+        per row. *dy* is a :class:`tui.Scroll`'s, which is the way the view
+        moves and not the finger: Termux scrolls naturally, so a finger
+        going down the screen sends the wheel up (-1), and the thumb goes
+        down with it."""
+        start, length = self.thumb()
+        if self.grip is not None and self.grip[1:] == self._gripped():
+            start = self.grip[0]
+        self._thumb_to(start - dy, length, way=-dy)
 
     def bar_tap(self, y: int) -> None:
         """A tap on the bar: the thumb's middle goes where the finger was."""
-        total, room = self.total_rows(), self.height
-        _, length = w.thumb(room, total, room, self.offset_rows())
+        _, length = self.thumb()
         self._thumb_to(y - self.y - length // 2, length)
 
-    def _thumb_to(self, start: int, length: int) -> None:
+    def _gripped(self) -> tuple[int, int, int]:
+        return (self.top, self.height, self.total_rows())
+
+    def _thumb_to(self, start: int, length: int, way: int = 0) -> None:
+        """The thumb to *start*, and the view to the top it stands for: its
+        share of the travel, to the nearest whole entry, which draws the
+        thumb back on the row the finger is on whenever an entry is worth
+        less than a thumb row. A drag (*way*, the finger's: +1 down the
+        screen) never moves the view against it."""
         room = self.height - length
         if room <= 0:
             return
         start = max(0, min(room, start))
-        target_rows = round(start * max(0, self.total_rows() - self.height) / room)
+        target = start * self.travel() / room
         top, used = 0, 0
-        while top < len(self.entries) and used + self.entries[top].height <= target_rows:
+        while top < self.furthest() and used + self.entries[top].height / 2 <= target:
             used += self.entries[top].height
             top += 1
-        self.top = min(top, self.furthest())
+        if (top - self.top) * way >= 0:
+            self.top = top
         self.acc = 0
         self.ride()
+        self.grip = (start, *self._gripped())
 
     # Drawing ---------------------------------------------------------------
 
@@ -517,6 +560,6 @@ class ListView:
             self.shown.append((i, row, e.height))
             row += e.height
         if bar and height > 0:
-            s.put(w.scrollbar(height, self.total_rows(), height, self.offset_rows()),
+            s.put(w.scrollbar(height, self.travel() + height, height, self.offset_rows()),
                   x + width - 1, y)
             s.target(f"{id}-bar", x + width - w.BAR_ZONE, y, w.BAR_ZONE, height)

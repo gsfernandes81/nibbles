@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from nibbles import widgets as w
 from nibbles import ytq
 from conftest import search_info, video_info
 from termux_pty import DOWN, ENTER, ESC
@@ -270,6 +271,38 @@ def test_a_drag_on_the_list_never_opens_anything(tui, make_dump):
     assert "Video number 0" not in session.text  # the view moved
     session.drag(-8, x, y)
     assert "esc ×" not in session.text
+
+
+def thumb_rows(session) -> list[int]:
+    """The rows the list's scrollbar thumb is drawn on, in the last column."""
+    return [y for y, line in enumerate(session.screen.display)
+            if line[-1:] == w.glyphs.SCROLL_THUMB]
+
+
+def first_video(session) -> int:
+    return next(int(line.split("Video number ")[1].split()[0]) for line in session.lines
+                if "Video number " in line)
+
+
+def test_a_drag_on_the_bar_carries_the_thumb_the_way_the_finger_goes(tui, make_dump):
+    """Termux scrolls naturally, so a finger going down the bar arrives as
+    the wheel going up; the thumb goes down with the finger all the same, a
+    row per row, and the list with it."""
+    dump = make_dump(search_info([f"Video number {n}" for n in range(30)]))
+    session = tui("--from-json", str(dump))
+    session.wait_for(lambda lines: "Video number 0" in joined(lines))
+    session.settle()
+    x = session.cols - 1
+    rows = thumb_rows(session)
+    session.tap(x, rows[0] + 6)  # the thumb's middle to the middle of the bar
+    top, was = thumb_rows(session)[0], first_video(session)
+    assert top > rows[0]
+    session.drag(-3, x, top)  # the finger three rows down the screen
+    assert thumb_rows(session)[0] == top + 3
+    assert first_video(session) > was
+    session.drag(3, x, top + 3)  # and back up
+    assert thumb_rows(session)[0] == top
+    assert first_video(session) == was
 
 
 # --------------------------------------------------------------------------- #

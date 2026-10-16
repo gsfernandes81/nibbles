@@ -10,6 +10,11 @@ a small landscape window — and at each one, for every tab and every sheet:
 - a sheet's pinned answers and its ``esc ×`` are always on the screen;
 - the five tabs are always there under a tab screen.
 
+And below that floor, down to a single cell — pinch-zoom, a floating window
+or split screen get there, and Termux stops only at 4×4 — nothing has to fit,
+but the app keeps drawing: exactly the terminal's size, every target on it,
+and never an exception that takes the app down with the receipts.
+
 These are properties of the drawing, not of the words: what a button says is
 free to change, and none of this notices.
 """
@@ -29,6 +34,13 @@ MiB = 1024**2
 
 WIDTHS = [32, 33, 36, 40, 41, 48, 60, 80]
 HEIGHTS = list(range(11, 31))
+#: Below the floor: every width a margin runs out at (a sheet's title at 12,
+#: Feed's count at 14, the window card at 18, the video sheet at 19), from
+#: one cell up, short and tall; and the floor's widths, too short.
+NARROW = [1, 2, 3, 4, 5, 6, 8, 11, 12, 13, 14, 17, 18, 19, 24, 31]
+SHORT = [1, 2, 3, 4, 5, 7, 10]
+TINY = [(W, H) for W in NARROW for H in [*SHORT, 24]] + [(W, H) for W in (32, 40)
+                                                          for H in SHORT]
 
 #: Targets that hold others, rather than being something to press.
 CONTAINERS = {"outside", "sheet", "sheet-bar"}
@@ -74,6 +86,17 @@ def check(app, label) -> None:
         assert [h.data for h in app.hits.hits if h.id == "tab"] == list(range(5)), label
 
 
+def drawn(app, label) -> None:
+    """Below the floor: the screen's own size, and every target on it."""
+    W, H = app.width, app.height
+    block = app.compose()
+    assert (block.width, block.height) == (W, H), label
+    assert len(block.plain().split("\n")) == H, label
+    for hit in app.hits.hits:
+        assert hit.x >= 0 and hit.x + hit.w <= W and hit.y >= 0 and hit.y + hit.h <= H, (
+            label, hit)
+
+
 def sweep(app, label, pinned: tuple[str, ...] = ()) -> None:
     for width in WIDTHS:
         for height in HEIGHTS:
@@ -82,6 +105,9 @@ def sweep(app, label, pinned: tuple[str, ...] = ()) -> None:
             for id in pinned:
                 assert any(h.id == id or h.id.startswith(id) for h in app.hits.hits), (
                     label, width, height, id)
+    for width, height in TINY:
+        app.width, app.height = width, height
+        drawn(app, f"{label} {width}x{height}")
 
 
 @pytest.fixture

@@ -22,15 +22,12 @@ from dataclasses import dataclass, field
 
 from nibbles import tui  # noqa: F401  (puts the bewitch checkout on the path)
 from bewitch import glyphs
-from bewitch.bubbles import (
-    dialog_title,
-    header,
-    list_item,
-    progress_bar,
-    scrollbar,
-    section,
-    tag,
-)
+from bewitch.bubbles import dialog_title as _dialog_title
+from bewitch.bubbles import header as _header
+from bewitch.bubbles import list_item
+from bewitch.bubbles import progress_bar as _progress_bar
+from bewitch.bubbles import scrollbar, tag
+from bewitch.bubbles import section as _section
 from bewitch.bubbles.widgets import scroll_thumb
 from bewitch.lipgloss import (
     Block,
@@ -41,7 +38,8 @@ from bewitch.lipgloss import (
     rounded_border,
     string_width,
 )
-from bewitch.lipgloss._cells import blank, row_width, to_row, truncate_row, wrap_row
+from bewitch.lipgloss._cells import blank, row_width, to_row, wrap_row
+from bewitch.lipgloss._cells import truncate_row as _truncate_row
 from bewitch.theme import CHARM as T
 
 __all__ = [
@@ -126,7 +124,7 @@ def piece(block: Block, id: str | None = None, data: object = None) -> Piece:
 def vstack(*parts: Piece | Block | None, width: int | None = None) -> Piece:
     """Pieces one under another, left-aligned, padded to the widest."""
     items = [p if isinstance(p, Piece) else Piece(p) for p in parts if p is not None]
-    w = width if width is not None else max((p.width for p in items), default=0)
+    w = max(0, width) if width is not None else max((p.width for p in items), default=0)
     rows: list = []
     hits: list[Hit] = []
     for p in items:
@@ -154,6 +152,7 @@ def hstack(*parts: Piece | Block) -> Piece:
 
 
 def gap(width: int, height: int = 1) -> Piece:
+    width = max(0, width)
     return Piece(Block.from_rows([blank(width) for _ in range(height)], width))
 
 
@@ -176,18 +175,21 @@ class Surface:
         p = p if isinstance(p, Piece) else Piece(p)
         self.canvas.compose(p.block, x, y)
         for hit in p.hits:
-            moved = hit.moved(x, y)
-            # A target is only where it was drawn: clipped to the screen.
-            x0, y0 = max(0, moved.x), max(0, moved.y)
-            x1 = min(self.width, moved.x + moved.w)
-            y1 = min(self.height, moved.y + moved.h)
-            if x1 > x0 and y1 > y0:
-                self.hits.add(Hit(x0, y0, x1 - x0, y1 - y0, moved.id, moved.data))
+            self._add(hit.moved(x, y))
         return p
 
     def target(self, id: str, x: int, y: int, w: int, h: int, data: object = None) -> None:
         """A tap target with nothing drawn for it (the dimmed screen, a row)."""
-        self.hits.add(Hit(x, y, w, h, id, data))
+        self._add(Hit(x, y, w, h, id, data))
+
+    def _add(self, hit: Hit) -> None:
+        # A target is only where it was drawn: clipped to the screen. (A
+        # sheet taller than a pinch-zoomed screen starts above its top.)
+        x0, y0 = max(0, hit.x), max(0, hit.y)
+        x1 = min(self.width, hit.x + hit.w)
+        y1 = min(self.height, hit.y + hit.h)
+        if x1 > x0 and y1 > y0:
+            self.hits.add(Hit(x0, y0, x1 - x0, y1 - y0, hit.id, hit.data))
 
     def render(self) -> Block:
         return self.canvas.render()
@@ -198,13 +200,48 @@ class Surface:
 # --------------------------------------------------------------------------- #
 
 
+def truncate_row(row: list, limit: int, tail: list | None = None) -> list:
+    """bewitch's cut, which never returns for a limit under nought: it hands
+    its tail back to itself, and the tail does not fit either.
+
+    Every Block of a stated width goes through it, and a screen pinch-zoomed,
+    floated or split narrower than its own margins asks for one (``W - 14``
+    at 13 columns). So every recipe here, and every bewitch one handed on,
+    takes a width under nought as nought: nothing fits in less than nothing,
+    what is drawn is wider than that, and the screen cuts it.
+    """
+    return _truncate_row(row, max(0, limit), tail)
+
+
+def header(name: str, details: Sequence[str] = (), width: int = 40) -> Block:
+    """bewitch's header, never less than nothing wide (:func:`truncate_row`)."""
+    return _header(name, details, max(0, width))
+
+
+def section(title: str, width: int, info: str | None = None) -> Block:
+    """bewitch's section, never less than nothing wide (:func:`truncate_row`)."""
+    return _section(title, max(0, width), info)
+
+
+def dialog_title(title: str, width: int) -> Block:
+    """bewitch's dialog title, never less than nothing wide (:func:`truncate_row`)."""
+    return _dialog_title(title, max(0, width))
+
+
+def progress_bar(fraction: float, width: int, show_percentage: bool = True) -> Block:
+    """bewitch's progress bar, never less than nothing wide (:func:`truncate_row`)."""
+    return _progress_bar(fraction, max(0, width), show_percentage=show_percentage)
+
+
 def _exact(row: list, width: int, pen: Pen | None = None) -> list:
+    width = max(0, width)
     row = truncate_row(row, width)
     return row + blank(width - row_width(row), pen or Pen())
 
 
 def text(s: str, width: int, fg=None, bold=None, bg=None) -> Block:
     """One line of *s*, cut with … to *width*."""
+    width = max(0, width)
     pen = Pen(fg=fg or T.fg_base, bold=bold, bg=bg)
     row = truncate_row(to_row(s, pen), width, to_row(glyphs.ELLIPSIS, pen))
     return Block.from_rows([row + blank(width - row_width(row), Pen(bg=bg))], width)
@@ -212,6 +249,7 @@ def text(s: str, width: int, fg=None, bold=None, bg=None) -> Block:
 
 def spans(parts: Sequence[tuple], width: int, bg=None) -> Block:
     """One line from ``(text, fg[, bold])`` parts, cut with … to *width*."""
+    width = max(0, width)
     row: list = []
     for s, fg, *rest in parts:
         row += to_row(s, Pen(fg=fg, bold=rest[0] if rest else None, bg=bg))
@@ -222,6 +260,7 @@ def spans(parts: Sequence[tuple], width: int, bg=None) -> Block:
 
 def wrapped(s: str, width: int, fg=None, limit: int | None = None) -> Block:
     """*s* wrapped to *width*, at most *limit* lines (the last one cut)."""
+    width = max(0, width)
     pen = Pen(fg=fg or T.fg_base)
     rows = wrap_row(to_row(s, pen), width) or [[]]
     if limit is not None and len(rows) > limit:
@@ -307,6 +346,7 @@ def dock(buttons: Sequence[Btn], width: int, pressed: str | None = None) -> Piec
     Never wider than it was given: when the labels do not fit, the widest
     button gives a column at a time and its label ends in ``…``.
     """
+    width = max(0, width)
     if not buttons:
         return gap(width, 3)
     widths = [button_min(b.word, b.key, b.note) for b in buttons]
@@ -350,6 +390,7 @@ def segmented(
     target, and as heavy on the screen, as a long one (At 03:00). Each box is
     a target ``id`` with its index as the data.
     """
+    width = max(0, width)
     parts = []
     for i, (word, w) in enumerate(zip(options, equal_widths(width, len(options)), strict=True)):
         on = i == chosen
@@ -379,6 +420,7 @@ def checkbox(word: str, on: bool, width: int, id: str = "") -> Piece:
     """A checkbox the way Charm's huh draws one, as a full-width three-row
     tap target: a green ``✓`` and a ``success`` outline when ticked, a quiet
     ``•`` when not. bewitch's ``bubbles.huh.checkbox``, boxed."""
+    width = max(0, width)
     if _huh_checkbox is not None:
         return piece(_huh_checkbox(word, on, width, boxed=True), id or None)
     glyph = to_row(("✓" if on else glyphs.BULLET) + " ",
@@ -399,6 +441,7 @@ def field(value: str, width: int, placeholder: str = "", focus: bool = True,
     """A text input: a rounded box, ``primary`` when focused, the text and a
     block cursor in ``secondary`` at its end. A value too long shows its tail,
     because the tail is what is being typed."""
+    width = max(0, width)
     inner = max(1, width - 4)
     cursor = to_row(" ", Pen(bg=T.secondary)) if focus else []
     if value:
@@ -428,14 +471,15 @@ BAR_ZONE = 3
 def row_item(title, width: int, subtitle=None, selected: bool = False,
              mark: str = "", mark_color=None, dimmed: bool = False) -> Block:
     """A two-line list row (bewitch's ``list_item``)."""
-    return list_item(title, width, subtitle=subtitle, selected=selected, mark=mark,
-                     mark_color=mark_color, dimmed=dimmed)
+    return list_item(title, max(0, width), subtitle=subtitle, selected=selected,
+                     mark=mark, mark_color=mark_color, dimmed=dimmed)
 
 
 def setting_row(key: str, name: str, value: str, meaning: str, width: int,
                 selected: bool = False, value_fg=None) -> Block:
     """A setting as a two-line row: key, name, the value in ``primary`` at
     the right, and a grey line saying what it means."""
+    width = max(0, width)
     bg = T.bg_less_visible if selected else None
     left = to_row(f" {key} " if key else "   ", Pen(fg=T.fg_more_subtle, bg=bg))
     left += to_row(name, Pen(fg=T.fg_base, bg=bg))
@@ -476,6 +520,7 @@ def tab_bar(active: int, width: int, status: tuple[str, str, str, str]) -> Piece
     (the chosen one a pill in ``primary`` with a column of purple either
     side), a blank row, and the status bar. Rows one to three are each tab's
     target."""
+    width = max(0, width)
     rule = to_row(glyphs.SECTION * width, Pen(fg=T.separator))
     edges = tab_edges(width)
     labels: list = []
@@ -507,6 +552,7 @@ def status_bar(status: tuple[str, str, str, str], width: int) -> Block:
     at the left, the detail on a lifted panel (cut with … before either end
     gives way, one clear column kept at its right end), and a quieter segment
     at the right. The label is always a word, never only a colour."""
+    width = max(0, width)
     label, kind, detail, right = status
     lab = tag(label, kind if kind in STATUS_KINDS else "primary").rows()[0]
     rgt = to_row(f" {right} ", Pen(fg=T.fg_base, bg=T.bg_most_visible)) if right else []
@@ -578,7 +624,7 @@ def sheet(
             y0, y1 = max(hit.y, offset), min(hit.y + hit.h, offset + room)
             if y1 > y0:
                 hits.append(Hit(hit.x, y0 - offset, hit.w, y1 - y0, hit.id, hit.data))
-        shown = Piece(Block.from_rows(rows, inner), hits)
+        shown = Piece(Block.from_rows(rows, max(0, inner)), hits)
     stack = vstack(head, shown, footer, width=inner)
     block = (Style().border(rounded_border(), True, True, False, True)
              .border_foreground(border or T.primary).padding(0, 1).width(width)

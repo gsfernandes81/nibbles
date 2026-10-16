@@ -15,7 +15,7 @@ import time
 import unicodedata
 
 import pytest
-from hypothesis import given
+from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from nibbles import shell
@@ -207,6 +207,32 @@ def test_the_status_bar_keeps_its_label_and_a_clear_column(detail, width):
     assert line.endswith(" 19m ")
 
 
+@given(word=words, width=st.integers(-40, 120))
+def test_nothing_is_drawn_in_less_than_nothing(word, width):
+    """A screen pinch-zoomed narrower than its own margins asks a recipe for
+    a width under nought. It draws one of nought (bewitch's cut never
+    returned from one), and every other width exactly."""
+    lines = (
+        w.text(word, width), w.spans([(word, None), (word, None, True)], width),
+        w.wrapped(word, width), w.wrapped(word * 3, width, limit=1),
+        w.gap(width, 2).block,
+        w.vstack(w.text(word, 3), width=width).block, w.header(word, [word], width),
+        w.section(word, width, word), w.dialog_title(word, width), w.bar(0.4, width),
+        w.progress_bar(0.4, width), w.status_bar((word, "warn", word, word), width),
+        w.tab_bar(1, width, (word, "info", word, word)).block,
+        w.setting_row("k", word, word, word, width), w.row_item(word, width, word),
+    )
+    for block in lines:
+        assert block.width == max(0, width)
+    # Framed recipes keep their frame and are cut by the screen instead.
+    w.dock([w.Btn(word, "k"), w.Btn(word)], width)
+    w.segmented([word, word], 0, width, "pick")
+    w.checkbox(word, True, width)
+    w.field(word, width)
+    w.button(word, "k", width)
+    assert w.row_width(w.truncate_row(w.to_row(word), min(width, 0), w.to_row("…"))) == 0
+
+
 # --------------------------------------------------------------------------- #
 # Words
 # --------------------------------------------------------------------------- #
@@ -240,6 +266,40 @@ def test_a_clock_is_the_phones_own_and_never_utc():
                                          (int(1.02 * 1024 * MiB), "1.02 GiB")])
 def test_a_size_is_three_figures_at_most(n, said):
     assert shell.size(n) == said
+
+
+#: What each unit ``shell.size`` prints is worth, in bytes.
+UNIT = {"B": 1, **{unit: 1024 ** (i + 1) for i, unit in enumerate(shell.UNITS)}}
+#: The whole range: anything under a thousand of the largest unit.
+LARGEST = 999 * UNIT[shell.UNITS[-1]]
+#: Where a figure rounds up past the rule that chose it: a thousand of one
+#: unit, a hundred, ten, and the units' own edges.
+EDGES = sorted({
+    edge for k in range(len(UNIT))
+    for f in (9.995, 9.999, 99.95, 99.99, 999.5, 999.9, 1023.9)
+    for edge in (f * 1024**k, int(f * 1024**k)) if edge <= LARGEST
+})
+
+
+def three_figures_said_back(n) -> None:
+    figure, unit = shell.size(n).split(" ")
+    assert sum(ch.isdigit() for ch in figure) <= 3, (n, figure)
+    places = len(figure.partition(".")[2])
+    # Within half the last place printed, of the unit printed. The figure
+    # crossing to the next unit (999.7 KiB said as 0.98 MiB) is in it too.
+    assert abs(float(figure) * UNIT[unit] - n) <= (0.5 * 10**-places + 1e-9) * UNIT[unit], (
+        n, figure, unit)
+
+
+@pytest.mark.parametrize("n", EDGES)
+def test_a_size_on_the_edge_of_a_unit_is_still_three_figures(n):
+    three_figures_said_back(n)
+
+
+@given(n=st.one_of(st.integers(0, LARGEST),
+                   st.floats(0, LARGEST, allow_nan=False, allow_infinity=False)))
+def test_every_size_is_three_figures_and_reads_back_as_itself(n):
+    three_figures_said_back(n)
 
 
 @pytest.mark.parametrize(("n", "said"), [(1, "1st"), (2, "2nd"), (3, "3rd"), (4, "4th"),
@@ -443,11 +503,75 @@ def test_the_view_always_hands_back_a_place_the_screen_draws(n, height, cursor, 
             assert view.top <= view.cursor < view.top + max(1, view.visible())
 
 
+#: Termux scrolls naturally: a finger going down the screen sends the wheel
+#: up, which ``tui`` hands on as ``Scroll(-1)``. What a finger does on the
+#: bar is written in those terms here, never as a bare sign.
+FINGER_DOWN, FINGER_UP = -1, 1
+
+
 def test_a_drag_that_starts_on_the_bar_moves_the_thumb_a_row_per_row():
+    """The way the finger went: the thumb is under it."""
     view = shell.ListView(entries=rows(100), height=20)
     view.width, view.y = 40, 0
-    start, _ = w.thumb(20, view.total_rows(), 20, view.offset_rows())
-    view.bar_drag(3)
-    moved, _ = w.thumb(20, view.total_rows(), 20, view.offset_rows())
-    assert moved == start + 3
+    start, _ = view.thumb()
+    view.bar_drag(3 * FINGER_DOWN)
+    assert view.thumb()[0] == start + 3
+    view.bar_drag(2 * FINGER_UP)
+    assert view.thumb()[0] == start + 1
     assert view.in_bar(39, 5) and view.in_bar(37, 5) and not view.in_bar(36, 5)
+
+
+def listing(heights, height):
+    entries = [shell.Entry(h, lambda wd, sel, h=h: w.gap(wd, h).block, key=i)
+               for i, h in enumerate(heights)]
+    view = shell.ListView(entries=entries, height=height, cursor=0)
+    view.width, view.y = 40, 0
+    view.settle()
+    return view
+
+
+#: Lists as the screens make them: two-row rows, a three-row More row with a
+#: problem, the queue's one-row cut line; a view from a folded sheet's to a
+#: tall phone's.
+shapes = dict(heights=st.lists(st.integers(1, 3), min_size=1, max_size=60),
+              height=st.integers(2, 30))
+
+
+@given(**shapes)
+def test_a_drag_on_the_bar_reaches_either_end_and_never_turns_back(heights, height):
+    """A thumb row can be worth less than an entry; the drag goes on from the
+    finger regardless, rather than stopping where a row moved nothing."""
+    view = listing(heights, height)
+    for finger, end in ((FINGER_DOWN, view.furthest()), (FINGER_UP, 0)):
+        for _ in range(height):  # the whole bar, and then some
+            was, thumb_was = view.top, view.thumb()[0]
+            view.bar_drag(finger)
+            # Down the screen is down the list, for the view and the thumb.
+            assert (view.top - was) * finger <= 0
+            assert (view.thumb()[0] - thumb_was) * finger <= 0
+        assert view.top == end
+
+
+@given(n=st.integers(1, 80), entry=st.integers(1, 3), height=st.integers(2, 30))
+def test_the_thumb_is_drawn_under_the_finger_a_row_per_row(n, entry, height):
+    """Wherever an entry is worth no more than a row of the bar, the thumb
+    is drawn on the row the finger is on, every row of the way down and
+    back up."""
+    view = listing([entry] * n, height)
+    room = height - view.thumb()[1]
+    assume(room > 0 and view.travel() >= entry * room)
+    for row in [*range(1, room + 1), *range(room - 1, -1, -1)]:
+        view.bar_drag(FINGER_DOWN if row > view.thumb()[0] else FINGER_UP)
+        assert view.thumb()[0] == row
+
+
+@given(**shapes)
+def test_a_tap_at_either_end_of_the_bar_shows_that_end(heights, height):
+    """The thumb at the bottom is the last entry on the screen, never one
+    short of it over a blank row."""
+    view = listing(heights, height)
+    view.bar_tap(height - 1)
+    assert view.top == view.furthest()
+    assert sum(view.thumb()) == height  # and the thumb is at the bottom
+    view.bar_tap(0)
+    assert view.top == 0 and view.thumb()[0] == 0
