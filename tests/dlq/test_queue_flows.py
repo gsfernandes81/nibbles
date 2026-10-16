@@ -9,6 +9,12 @@ looking right.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import time
+
+from hypothesis import given
+from hypothesis import strategies as st
 
 MiB = 1024**2
 
@@ -74,6 +80,24 @@ def test_remove_keeps_what_was_paid_for_unless_told(dlq):
     assert not (dlq.root / "work" / "20-drop.py").exists()
 
 
+def test_remove_keeps_what_a_firing_bought_while_it_was_asking(dlq):
+    """Asked with nothing on the disk, so the one answer is "remove it"; a
+    firing buys part of it and exits before the tap. The tap takes the item
+    off the list and leaves the bytes it never asked about."""
+    dlq.item("10-film.py", cap=600 * MiB)
+    app = headless(dlq)
+    open_row(app, "10-film.py")
+    key(app, "d")
+    assert not [a for a in app.sheets[-1].answers if a.kind == "danger"]
+    work = dlq.root / "work" / "10-film.py"
+    work.mkdir(parents=True)
+    (work / "film.f137.mp4.part").write_bytes(b"x" * MiB)
+    app.queue.read()  # the app's own poll: the list knows, the question does not
+    tap(app, "answer:0")
+    assert not (dlq.root / "queue" / "10-film.py").exists()
+    assert (work / "film.f137.mp4.part").stat().st_size == MiB
+
+
 def test_no_on_remove_removes_nothing(dlq):
     dlq.item("10-stay.py")
     app = headless(dlq)
@@ -99,6 +123,74 @@ def test_rename_moves_everything_the_download_owns(dlq):
     assert (dlq.root / "queue" / new).exists()
     assert (dlq.root / "work" / new / "part.bin").exists()
     assert not (dlq.root / "queue" / "10-old-name.py").exists()
+
+
+def test_a_stray_file_in_the_queue_does_not_stop_a_move(dlq):
+    """``20-holiday.png`` is listed among the queued; Move, ↑, ↑, Put here on
+    the download below it still puts that download first, and the app is
+    still there to say so."""
+    dlq.item("10-A.py")
+    dlq.item("30-B.py")
+    (dlq.root / "queue" / "20-holiday.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    app = headless(dlq)
+    open_row(app, "30-B.py")
+    key(app, "m")
+    for name in ("up", "up", "enter"):
+        key(app, name)
+    assert app.tabs[3].holding is None
+    names = sorted(p.name for p in (dlq.root / "queue").glob("*.py"))
+    assert [n.split("-", 1)[1] for n in names] == ["B.py", "A.py"]
+    assert (dlq.root / "queue" / "20-holiday.png").exists()
+    app.compose()
+
+
+#: Titles as YouTube writes them: brackets, the characters a glob reads as
+#: patterns, and the scripts and emoji a phone's titles are full of.
+TITLES = st.text(st.sampled_from(list("ab [](){}*?!#%^&-_.' 日本🎵")), min_size=1, max_size=30)
+
+
+@given(title=TITLES, now_first=st.booleans(), number=st.integers(0, 99))
+def test_its_log_is_the_log_written_last_whatever_the_title(dlq, title, now_first, number):
+    """A title keeps its brackets, and a bracket is not a pattern: the log an
+    item wrote is found under the name ``title_name`` gave it. Of the night's
+    log and a Download now's on the same day, the one written last is the one
+    opened, whichever sorts last; and another item's log is never this one's,
+    even where its name ends in this one's."""
+    logs = dlq.root / "logs"
+    shutil.rmtree(logs, ignore_errors=True)
+    logs.mkdir()
+    name = dlq.ytq.item_name(number, dlq.ytq.title_name(title))
+    night = logs / f"2026-10-15-{name}.log"
+    morning = logs / f"2026-10-15-now-{name}.log"
+    other = logs / f"2026-10-16-41-x-{name}.log"
+    for path in (night, morning, other):
+        path.write_text(path.name)
+    older, newer = (morning, night) if now_first else (night, morning)
+    stamp = time.time()
+    os.utime(older, (stamp - 13 * 3600, stamp - 13 * 3600))
+    os.utime(newer, (stamp, stamp))
+    os.utime(other, (stamp + 60, stamp + 60))
+    assert dlq.ui.item_log(name) == newer
+
+
+def test_its_log_on_a_bracketed_title_opens_that_log(dlq):
+    """The button on the sheet is that function's answer: a failed
+    ``[Official Video]`` opens the log it wrote, not "no log yet"."""
+    from nibbles import tui
+
+    name = "40-Song [Official Video].py"
+    dlq.item(name, where="failed")
+    log = dlq.root / "logs" / f"2026-10-15-{name}.log"
+    log.parent.mkdir(exist_ok=True)
+    log.write_text("night\n")
+    app = headless(dlq)
+    app.tabs[3].group = 1
+    app.compose()
+    hit = next(h for h in app.hits.hits if h.id == "row")
+    app.handle(tui.Tap(hit.x + 1, hit.y))
+    key(app, "l")
+    assert isinstance(app.sheets[-1], dlq.qs.LogSheet)
+    assert app.sheets[-1].path == log
 
 
 def test_a_number_setting_is_set_from_its_presets_without_typing(dlq):

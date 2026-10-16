@@ -113,6 +113,19 @@ def parse_name(name: str) -> tuple[int, str] | None:
     return int(found.group(1)), found.group(2)
 
 
+def _key_of(name: str) -> int:
+    """The number at the front of anything ``queue/`` lists, download or not.
+
+    By the runner's own rule (:data:`ytq.ITEM_RE`) and not :data:`NAME_RE`,
+    because the listing is: a stray such as ``20-holiday.png`` fails the
+    stricter rule, is listed as a queued row all the same, and sits at 20 in
+    the order the runner sorts by — which is the place its neighbours have to
+    be put around. Nought only for a name nothing lists.
+    """
+    found = ytq.ITEM_RE.match(name)
+    return int(found.group(1)) if found else 0
+
+
 def _slug_of(name: str) -> str:
     """An item's name as this screen shows it: the slug, with no number on it.
 
@@ -222,6 +235,12 @@ def removal(row: dict, bytes_too: bool = False) -> tuple[list[Path], list[Path]]
     Nothing outside the queue root is ever in the first list, which a test
     must pin: an item's delivered file is in Downloads, and it is the
     property of whoever asked for it rather than of the queue.
+
+    Whether the scratch holds anything is asked of the disk, now, and never of
+    ``row["have"]``: the row is what the confirm was built from, and a confirm
+    can stay up across a firing that bought part of this download and exited.
+    Read off the row, a partial that was empty when the question was asked is
+    deleted when it is answered, by the answer that keeps the bytes.
     """
     goes = [row["path"]]
     kept: list[Path] = []
@@ -231,7 +250,7 @@ def removal(row: dict, bytes_too: bool = False) -> tuple[list[Path], list[Path]]
         # before moving a byte still leaves the status file the runner writes —
         # so there is nothing there to keep and it goes either way. Keeping it
         # would leave a directory nothing lists and nothing will ever resume.
-        (goes if bytes_too or not row["have"] else kept).append(work)
+        (goes if bytes_too or not sched._payload_bytes(work) else kept).append(work)
     out = sched.OUT / row["name"]
     with contextlib.suppress(OSError):
         kept += sorted(path for path in out.iterdir() if path.is_file())
@@ -304,6 +323,60 @@ def _free_key(taken: set[int]) -> int | None:
     return None
 
 
+def _occupied(moving: set[str]) -> set[str]:
+    """Every name something other than the queued items *moving* answers to.
+
+    The rename's collision rule (:func:`_taken`) over a whole set of items at
+    once, because a move is a rename too. A name is not free because
+    ``queue/`` has no file by it: a finished or failed item may answer to it —
+    and easily, since the keys :func:`slot` and :func:`spread` hand out are
+    the keys :func:`ytq.next_number` handed out before, so a title queued
+    again lands on its own old name — and so may a ``work/`` or ``out/``
+    directory an item left behind, or a record in ``state.json`` that outlived
+    its item. Moving onto any of them makes two items one: the record is
+    overwritten or inherited, the finished one drops out of the listing, and
+    the queued one adopts bytes it never downloaded and may never run again.
+
+    What *moving* own goes with them — their queue files, scratch, outboxes
+    and records — so their names are taken out of that half. Never out of
+    ``failed/`` and ``done/``, which no queued item owns.
+    """
+    theirs: set[str] = set()
+    for root in (sched.QUEUE, sched.WORK, sched.OUT):
+        with contextlib.suppress(OSError):
+            theirs.update(entry.name for entry in root.iterdir())
+    with contextlib.suppress(Exception):
+        theirs.update(sched._runner().load_state().get("items") or {})
+    held: set[str] = set()
+    for root in (sched.FAILED, sched.DONE):
+        with contextlib.suppress(OSError):
+            held.update(path.name for path in root.rglob("*"))
+    return (theirs - moving) | held
+
+
+def _fresh_keys(names: list[str], occupied: set[str]) -> list[int] | None:
+    """Keys for *names* in this order, none of them making a name in *occupied*.
+
+    :func:`spread`'s, each bumped past any key that would land its item on a
+    name something else holds, and kept strictly rising so that the order the
+    runner sorts is the order asked for. Where bumping runs off the end of the
+    two digits the keys are packed from the bottom instead; ``None`` only when
+    even that does not fit.
+    """
+    for bases in (spread(len(names)), [0] * len(names)):
+        keys: list[int] = []
+        for name, base in zip(names, bases, strict=True):
+            key = max(base, keys[-1] + 1 if keys else 0)
+            while key <= ytq.MAX_PRIORITY and renumber(name, key) in occupied:
+                key += 1
+            if key > ytq.MAX_PRIORITY:
+                break
+            keys.append(key)
+        else:
+            return keys
+    return None
+
+
 def _reindex(order: list[str]) -> str | None:
     """Give every queued item a fresh key, in this order. A failure, or ``None``.
 
@@ -319,19 +392,24 @@ def _reindex(order: list[str]) -> str | None:
     order nobody asked for; the alternative — parking on a dotfile — is a queue
     with downloads missing from it, which is the one thing that must never
     happen quietly.
+
+    No new name, parked or final, is one something outside the move answers
+    to (:func:`_occupied`). And a stray in *order* — a file listed as queued
+    whose name is not a download's — keeps the name it has: it is not this
+    screen's to renumber, and nothing here can be spelled onto it.
     """
-    if len(order) > ytq.MAX_PRIORITY:
+    names = [name for name in order if parse_name(name)]
+    if len(names) > ytq.MAX_PRIORITY:
         return f"more than {ytq.MAX_PRIORITY} downloads is more than there is room for"
-    wanted = {
-        name: renumber(name, key)
-        for name, key in zip(order, spread(len(order)), strict=True)
-    }
+    occupied = _occupied(set(names))
+    keys = _fresh_keys(names, occupied)
+    if keys is None:
+        return "no room to reorder; remove something first"
+    wanted = {name: renumber(name, key) for name, key in zip(names, keys, strict=True)}
     pending = {old: new for old, new in wanted.items() if old != new}
     # Every key that must not be parked on: one an item already answers to, and
     # one something is about to.
-    spoken = {parse_name(name)[0] for name in wanted} | {
-        parse_name(name)[0] for name in wanted.values()
-    }
+    spoken = {parse_name(name)[0] for name in wanted} | set(keys)
     guard = 2 * len(wanted) + 4
     while pending:
         guard -= 1
@@ -340,7 +418,10 @@ def _reindex(order: list[str]) -> str | None:
         free = [old for old, new in pending.items() if not (sched.QUEUE / new).exists()]
         if not free:
             old = next(iter(pending))
-            key = _free_key(spoken)
+            # Nor on a key that would make it a name something else holds.
+            key = _free_key(spoken | {
+                k for k in range(ytq.MAX_PRIORITY + 1) if renumber(old, k) in occupied
+            })
             if key is None:
                 return "no room to reorder; remove something first"
             spoken.add(key)
@@ -385,14 +466,24 @@ def do_reorder(rows: list[dict], name: str, pos: int) -> tuple[str, bool]:
     queued = [row["name"] for row in rows if row["where"] == "queued"]
     if name not in queued:
         return "only a queued download has a place in the order", False
+    if parse_name(name) is None:
+        # A stray — ``20-holiday.png`` — is listed so that it can be explained,
+        # not because it is a download: a new number spelled onto it would
+        # make the photo a ``.py`` file as well as move it.
+        return "only an NN-name.py download can be moved", False
     others = [item for item in queued if item != name]
     pos = max(0, min(pos, len(others)))
     if others[:pos] + [name] + others[pos:] == queued:
         return "left where it was", False
-    keys = [parse_name(item)[0] for item in others]
-    key = slot(keys, pos)
+    key = slot([_key_of(item) for item in others], pos)
     target = renumber(name, key) if key is not None else ""
-    if target and not (sched.QUEUE / target).exists():
+    # The runner sorts file names, so that is what has to put it between its
+    # new neighbours — not the arithmetic, which a neighbour numbered past two
+    # digits defeats — and a name something else holds is no room at all.
+    between = (pos == 0 or others[pos - 1] < target) and (
+        pos == len(others) or target < others[pos]
+    )
+    if target and between and target not in _occupied({name}):
         failure = _rename_bare(name, target)
     else:
         failure = _reindex(others[:pos] + [name] + others[pos:])
@@ -435,15 +526,22 @@ def _taken(new_name: str) -> str | None:
     obvious one. The other is a ``work/`` or ``out/`` directory left behind by
     an item that was removed while its finished files were kept: renaming onto
     it would mix two downloads' bytes into one directory, and the item would
-    deliver a file it never downloaded.
+    deliver a file it never downloaded. A record in ``state.json`` that
+    outlived its item is the third: the renamed item would inherit its
+    attempts, or overwrite where another download's file was delivered.
+
+    Decided by :func:`_occupied`, the rule a move answers to as well; the walk
+    below only finds the words.
     """
+    if new_name not in _occupied(set()):
+        return None
     for where, path in sched._paths():
         if path.name == new_name:
             return f"{where} already has a {_display_name(new_name)}"
     for root in (sched.WORK, sched.OUT):
         if (root / new_name).exists():
             return f"{root.name}/{_display_name(new_name)} still has bytes in it"
-    return None
+    return f"state.json still has a record of {_display_name(new_name)}"
 
 
 def refuse_rename(row: dict, new_name: str) -> str | None:
@@ -453,6 +551,10 @@ def refuse_rename(row: dict, new_name: str) -> str | None:
         return problem
     if new_name == row["name"]:
         return "that is the name it has"
+    if not NAME_RE.match(row["name"]):
+        # A stray's own name says what kind of file it is; a download's name
+        # spelled onto ``20-holiday.png`` would make the photo a ``.py``.
+        return "only an NN-name.py download can be renamed"
     if not NAME_RE.match(new_name):
         return "a name is a number, a dash, a slug and .py"
     return _taken(new_name)
@@ -526,6 +628,13 @@ def _move_record(old: str, new: str) -> None:
     items = state.get("items") or {}
     if old not in items:
         return
+    if new in items:
+        # Never over another item's history: both callers refuse such a name
+        # first (:func:`_taken`, :func:`_occupied`), and should one get here
+        # anyway, this item's attempts are the cheaper loss — the other record
+        # may be the only one of where a delivered file went.
+        _note(f"kept the record of {old} under that name: {new} already has one")
+        return
     items[new] = items.pop(old)
     state["items"] = items
     runner.save_state(state)
@@ -556,10 +665,24 @@ def do_rename(row: dict, new_name: str) -> str:
 
 
 def do_remove(row: dict, bytes_too: bool = False, why: str = "removed") -> str:
-    """Take the item off the list, keeping every byte unless told otherwise."""
+    """Take the item off the list, keeping every byte unless told otherwise.
+
+    *row* is what the question was asked about, and the answer can come hours
+    later — a confirm stays up across a firing, and one that bought part of
+    this download and exited has left bytes the question never named. So what
+    is on the disk is measured again here: keeping keeps whatever is there
+    now (:func:`removal` decides from the disk too), what is said is the size
+    there now, and deleting more than the yes named is refused, because the
+    size on that answer was the consent to lose it.
+    """
     problem = busy_problem()
     if problem:
         return problem
+    have = sched._payload_bytes(sched.WORK / row["name"])
+    if bytes_too and have > row["have"]:
+        grown = ytq.human(have - row["have"])
+        return f"it has downloaded {grown} more since you asked; nothing was removed"
+    row = {**row, "have": have}
     goes, kept = removal(row, bytes_too)
     for path in goes:
         try:
@@ -680,16 +803,21 @@ def actions_for(row: dict) -> list[tuple[str, str]]:
     the item — the lock, mostly — because an action that quietly vanishes
     between one look and the next reads as a bug. Those are offered and then
     explained when they are pressed.
+
+    A stray — a file listed because its name starts ``NN-`` but not named
+    ``NN-name.py`` — is offered neither a move nor a rename: either would spell
+    a download's name onto it, and ``20-holiday.png`` would become a ``.py``.
     """
     where = row["where"]
+    named = parse_name(row["name"]) is not None
     offered: list[tuple[str, str]] = []
     if where == "queued" and not row["error"] and row["cap"] > row["have"]:
         offered.append(("n", "download it now"))
     if where == "failed":
         offered.append(("u", "put it back in the queue"))
-    if where == "queued":
+    if where == "queued" and named:
         offered.append(("m", "move it in the queue"))
-    if where in ("queued", "failed"):
+    if where in ("queued", "failed") and named:
         offered.append(("r", "rename"))
     if where == "queued" and row["attempts"]:
         offered.append(("t", f"clear {row['attempts']} failed tries"))
@@ -897,17 +1025,41 @@ def preview(rows: list[dict], name: str, pos: int) -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 
+#: What comes before an item's name in its log's: the UTC day, and ``now-`` for
+#: the log a ``nibbles now`` writes. Nothing else may, or ``41-foo-10-x.py``'s
+#: log would be ``10-x.py``'s too.
+_LOG_HEAD = re.compile(r"\d{4}-\d{2}-\d{2}-(?:now-)?")
+
+
 def item_log(name: str) -> Path | None:
-    """The newest log this item wrote, or ``None``.
+    """The log this item wrote last, or ``None``.
 
     Both spellings are matched: the runner writes ``<date>-<item>.log`` and a
-    ``nibbles now`` writes ``<date>-now-<item>.log``.
+    ``nibbles now`` writes ``<date>-now-<item>.log``. The name is read
+    literally rather than as a glob — titles keep their brackets, and
+    ``[Official Video]`` read as a character class matches nothing, so the
+    failures a log is there to explain would say there is none.
+
+    Last *written*, by the clock, and not last by name: on one day the ``now-``
+    spelling sorts after the other whichever came second, so a morning's
+    Download now would stand in for the night's failure.
     """
+    tail = f"{name}.log"
+    found = []
     try:
-        found = sorted(sched.LOGS.glob(f"*-{name}.log"))
+        entries = list(sched.LOGS.iterdir())
     except OSError:
         return None
-    return found[-1] if found else None
+    for path in entries:
+        if not path.name.endswith(tail):
+            continue
+        if not _LOG_HEAD.fullmatch(path.name[: -len(tail)]):
+            continue
+        try:
+            found.append((path.stat().st_mtime, path.name, path))
+        except OSError:
+            continue
+    return max(found)[2] if found else None
 
 
 # --------------------------------------------------------------------------- #

@@ -19,6 +19,7 @@ import time
 
 import fcntl
 import json
+import shutil
 
 import pytest
 from hypothesis import assume, given
@@ -59,6 +60,17 @@ def move(dlq, slug, pos):
     rows = dlq.sched.items()
     name = next(row["name"] for row in rows if slug in row["name"])
     return dlq.ui.do_reorder(rows, name, pos)
+
+
+def clear(dlq):
+    """An empty queue again: a property's examples all share one fixture."""
+    for sub in ("queue", "done", "failed", "work", "out"):
+        for path in (dlq.root / sub).iterdir():
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.name != "README.md":
+                path.unlink()
+    (dlq.root / "state.json").unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -179,6 +191,182 @@ def test_the_screen_order_and_the_runner_order_are_the_same_order(dlq, moves):
             slug_of = dlq.ui.parse_name(name)[1]
             kept = (dlq.root / "work" / name / "file.part").read_bytes()
             assert kept.startswith(slug_of.encode())
+
+
+#: The keys a move is most likely to hand out over a queue at 10, 20 and 30 —
+#: halves, midpoints, the next ten, and :func:`spread`'s — so that a name
+#: something else holds is one a move actually reaches for.
+LIKELY = st.one_of(
+    st.sampled_from([5, 10, 15, 20, 22, 25, 30, 35, 40, 44, 66]), st.integers(0, 99)
+)
+
+
+def _held(dlq, names):
+    """Every byte and every record that answers to one of *names*."""
+    found = {}
+    for sub in ("done", "failed", "work", "out"):
+        for path in sorted((dlq.root / sub).rglob("*")):
+            relative = path.relative_to(dlq.root)
+            mine = relative.parts[1] in names if sub in ("work", "out") else True
+            if mine and path.is_file():
+                found[str(relative)] = path.read_bytes()
+    records = json.loads((dlq.root / "state.json").read_text())["items"]
+    found.update({f"record {name}": records.get(name) for name in names})
+    return found
+
+
+@given(
+    moves=st.lists(
+        st.tuples(st.sampled_from(["one", "two", "three", "holiday"]), st.integers(0, 3)),
+        max_size=6,
+    ),
+    held=st.lists(
+        st.tuples(
+            st.sampled_from(["done", "failed", "work", "out", "record"]),
+            st.sampled_from(["one", "two", "three"]),
+            LIKELY,
+        ),
+        max_size=8,
+    ),
+    stray=st.none() | st.integers(0, 120),
+)
+def test_a_move_never_lands_on_a_name_something_else_holds(dlq, moves, held, stray):
+    """A move is a rename, and answers to the rename's collision rule.
+
+    ``queue/`` having no file by a name does not make it free: a finished or
+    failed download may answer to it, and so may a ``work/`` or ``out/`` left
+    behind or a record that outlived its item — and the keys a move hands out
+    are the keys :func:`ytq.next_number` handed out before, so a title queued
+    again lands on its own old name easily. Landing there makes two items one.
+    And a stray (``20-holiday.png``) sits among the queued rows: moving around
+    it must not raise, and moving it must not make the photo a ``.py``.
+
+    After every move: nothing held by another name has changed, every queued
+    download still has its own bytes and its own record, the listing has a row
+    for every item file on disk, and the downloads are in the order asked for.
+    """
+    clear(dlq)
+    stock(dlq, "one", "two", "three")
+    records = {name: {"marker": dlq.ui.parse_name(name)[1]} for name in queued(dlq)}
+    names: set[str] = set()
+    for kind, slug, key in held:
+        name = f"{key:02d}-{slug}.py"
+        if name in records and name not in names:
+            continue  # a queued download's own name: that is its own
+        if kind in ("done", "failed"):
+            if any(next((dlq.root / sub).rglob(name), None) for sub in ("done", "failed")):
+                continue  # one finished or failed item to a name, as on a phone
+            dlq.item(name, where="done/2026-10-01" if kind == "done" else "failed")
+        elif kind in ("work", "out"):
+            (dlq.root / kind / name).mkdir(parents=True, exist_ok=True)
+            (dlq.root / kind / name / "left.bin").write_bytes(f"held {name}".encode())
+        records[name] = {"marker": f"held {name}", "part_bytes": 300 * MiB}
+        names.add(name)
+    dlq.state(records)
+    picture = b"\x89PNG\r\n\x1a\n" + b"holiday"
+    if stray is not None:
+        (dlq.root / "queue" / f"{stray:02d}-holiday.png").write_bytes(picture)
+    before = _held(dlq, names)
+
+    def files():
+        return sum(
+            1
+            for sub in ("queue", "done", "failed")
+            for path in (dlq.root / sub).rglob("*")
+            if path.is_file() and dlq.ytq.ITEM_RE.match(path.name)
+        )
+
+    for slug, pos in moves:
+        rows = dlq.sched.items()
+        listed = [row["name"] for row in rows if row["where"] == "queued"]
+        name = next((item for item in listed if slug in item), None)
+        if name is None:
+            continue  # the stray is not there this time
+        asked = [row["name"] for row in dlq.ui.preview(rows, name, pos)
+                 if row["where"] == "queued"]
+        said, moved = dlq.ui.do_reorder(rows, name, pos)
+        assert said
+        if dlq.ui.parse_name(name) is None:
+            assert not moved
+        else:
+            assert moved or asked == listed, said
+        order = asked if moved else listed
+        assert slugs(dlq) == [dlq.ui.parse_name(item)[1] for item in order
+                              if dlq.ui.parse_name(item)]
+        assert all(len(item.split("-", 1)[0]) == 2 for item in queued(dlq))
+        assert _held(dlq, names) == before
+        state = json.loads((dlq.root / "state.json").read_text())["items"]
+        for item in queued(dlq):
+            mine = dlq.ui.parse_name(item)[1]
+            assert state[item]["marker"] == mine
+            assert (dlq.root / "work" / item / "file.part").read_bytes().startswith(
+                mine.encode()
+            )
+        assert len(dlq.sched.items()) == files()
+        if stray is not None:
+            assert (dlq.root / "queue" / f"{stray:02d}-holiday.png").read_bytes() == picture
+
+
+@pytest.mark.parametrize("fired", [False, True])
+def test_a_title_queued_again_does_not_take_the_finished_ones_name(dlq, fired):
+    """The case the property stands for, as it happens on the phone.
+
+    ``Song`` finished as ``20-Song.py`` (its record says where the file went;
+    its ``work/`` was left holding the bookkeeping), then was queued again as
+    ``50-Song.py`` behind ``40-A.py``. Moved to the top, it halves onto ``20``
+    — the finished one's name. Not yet started, it would inherit the finished
+    one's record, and the runner would count it fetched and never start it;
+    with a partial of its own, the move would fail on the ``work/`` in the way.
+    """
+    dlq.item("20-Song.py", where="done/2026-10-01")
+    leftover = dlq.root / "work" / "20-Song.py"
+    leftover.mkdir(parents=True)
+    (leftover / ".status.json").write_text('{"state": "complete"}')
+    done = {"attempts": 1, "retired": "done", "part_bytes": 300 * MiB,
+            "delivered": ["/storage/emulated/0/Download/Song.mp4"]}
+    dlq.state({"20-Song.py": done})
+    dlq.item("40-A.py")
+    dlq.item("50-Song.py", cap=60 * MiB)
+    if fired:
+        (dlq.root / "work" / "50-Song.py").mkdir(parents=True)
+        (dlq.root / "work" / "50-Song.py" / "file.part").write_bytes(b"s" * 1000)
+
+    said, moved = dlq.ui.do_reorder(dlq.sched.items(), "50-Song.py", 0)
+    assert moved, said
+    assert slugs(dlq) == ["Song", "A"]
+    song = queued(dlq)[0]
+    assert song != "20-Song.py"
+    # The finished one is still listed, still its own, still where it was.
+    assert len(dlq.sched.items()) == 3
+    state = json.loads((dlq.root / "state.json").read_text())["items"]
+    assert state["20-Song.py"] == done and "retired" not in state.get(song, {})
+    assert (leftover / ".status.json").read_text() == '{"state": "complete"}'
+    if fired:
+        assert (dlq.root / "work" / song / "file.part").stat().st_size == 1000
+    # And the new download is one the night would still start.
+    item = dlq.runner.parse_item(dlq.root / "queue" / song)
+    granted, _ = dlq.runner.admit(item, state.get(song, {}), 500 * MiB, 1e6, 3600, False)
+    assert granted > 0
+
+
+def test_a_stray_in_the_queue_neither_moves_nor_stops_a_move(dlq):
+    """``20-holiday.png`` is listed as a queued row so that it can be
+    explained. Moving its neighbours past it must work, and nothing may spell
+    a download's name onto it."""
+    dlq.item("10-A.py")
+    dlq.item("30-B.py")
+    picture = dlq.root / "queue" / "20-holiday.png"
+    picture.write_bytes(b"\x89PNG\r\n\x1a\n")
+    rows = dlq.sched.items()
+    stray = next(row for row in rows if row["name"] == picture.name)
+    assert not {"m", "r"} & {key for key, _ in dlq.ui.actions_for(stray)}
+    said, moved = dlq.ui.do_reorder(rows, picture.name, 0)
+    assert not moved and said
+    assert dlq.ui.refuse_rename(stray, "20-holiday.py")
+    assert picture.read_bytes() == b"\x89PNG\r\n\x1a\n"
+    said, moved = dlq.ui.do_reorder(dlq.sched.items(), "30-B.py", 0)
+    assert moved, said
+    assert slugs(dlq) == ["B", "A"] and picture.exists()
 
 
 def test_a_place_is_a_position_and_never_a_number(dlq):
@@ -334,6 +522,45 @@ def test_scratch_that_holds_nothing_paid_for_goes_either_way(dlq):
     assert row["have"] == 0
     dlq.ui.do_remove(row)
     assert not work.exists()
+
+
+@given(
+    then=st.sampled_from([0, 4096]),
+    grown=st.sampled_from([0, 1, 300 * 1024]),
+    bytes_too=st.booleans(),
+)
+def test_a_removal_never_deletes_bytes_its_question_did_not_name(
+    dlq, then, grown, bytes_too
+):
+    """The question is asked about the row, and answered after a firing.
+
+    A remove confirm stays up for as long as nobody answers it, and a firing
+    (or a ``nibbles now``) can buy part of the download and exit in between —
+    the lock is free again by the time the answer comes. Whatever the disk did
+    meanwhile, the answer that keeps the bytes keeps every one of them, and
+    the answer that deletes them deletes no more than it named.
+    """
+    clear(dlq)
+    dlq.item("10-film.py", cap=600 * MiB)
+    work = dlq.root / "work" / "10-film.py"
+    work.mkdir(parents=True)
+    (work / ".status.json").write_text("{}")
+    if then:
+        (work / "film.part").write_bytes(b"x" * then)
+    row = dlq.sched.items()[0]
+    assert row["have"] == then
+    if grown:  # a firing bought this much and exited while the question was up
+        with (work / "film.part").open("ab") as handle:
+            handle.write(b"y" * grown)
+    there = dlq.sched._payload_bytes(work)
+
+    said = dlq.ui.do_remove(row, bytes_too=bytes_too)
+    assert said
+    lost = there - dlq.sched._payload_bytes(work)
+    assert lost <= (then if bytes_too else 0)
+    gone = not (dlq.root / "queue" / "10-film.py").exists()
+    # Refused only where deleting would have taken more than it named.
+    assert gone == (not bytes_too or not grown)
 
 
 def test_the_keys_the_remove_screen_answers_to_never_vary(dlq):
