@@ -8,11 +8,16 @@ for — never on wording.
 
 from __future__ import annotations
 
+import errno
+import threading
 import time
+
+import pytest
 
 from nibbles import app as nibbles
 from nibbles import shell
 from nibbles import tui
+from nibbles import widgets
 from nibbles import ytq
 from nibbles import yt_screens as ys
 from conftest import fmt, search_info, video_info
@@ -24,6 +29,15 @@ def headless(tab=0, size=(40, 24)):
     app = nibbles.App(None, tab, size=size)
     app.guard.opened = -10.0
     return app
+
+
+def settle(app):
+    """Every job the app started, finished and its Done delivered."""
+    for job, _ in list(app.jobs):
+        end = time.monotonic() + 5
+        while not job.finished and time.monotonic() < end:
+            time.sleep(0.01)
+        app.handle(tui.Done(job))
 
 
 def tap(app, id):
@@ -152,6 +166,48 @@ def test_a_duplicate_is_answered_on_the_sheet(clean_queue, queued):
     assert len(list(ytq.QUEUE.glob("*.py"))) == 2
 
 
+def no_space(*args, **kwargs):
+    raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def said(app, text):
+    """Whether a notice up holds *text* among its lines."""
+    return any(isinstance(s, shell.Notice) and any(text in line for line in s.lines)
+               for s in app.sheets)
+
+
+def test_an_item_that_cannot_be_written_is_said_and_the_sheet_kept(clean_queue, monkeypatch):
+    """A full phone: a notice over the sheet, never the app gone. The sheet
+    keeps its probe and its choice for the next try; nothing queued, no
+    receipt."""
+    monkeypatch.setattr(ytq, "write_item", no_space)
+    app = headless()
+    with_listing(app, info=video_info())
+    tap(app, "row")
+    tap(app, "go")
+    assert isinstance(app.sheets[-1], shell.Notice)
+    assert said(app, str(OSError(errno.ENOSPC, "No space left on device")))
+    assert isinstance(app.sheets[-2], ys.VideoSheet) and app.sheets[-2].chosen()[0] is not None
+    assert not list(ytq.QUEUE.glob("*.py")) and not app.receipts
+
+
+def test_a_start_that_fails_still_says_what_was_queued(clean_queue, monkeypatch):
+    """Now, and the download cannot be started: the item is written, so its
+    receipt is given, and a notice says why it did not start."""
+    monkeypatch.setattr(ytq, "queue_busy", lambda: False)
+    monkeypatch.setattr(ytq, "start_now", no_space)
+    app = headless()
+    with_listing(app, info=video_info())
+    tap(app, "row")
+    tap(app, "when:1")
+    tap(app, "go")
+    written = list(ytq.QUEUE.glob("*.py"))
+    assert len(written) == 1
+    assert any(written[0].name in receipt for receipt in app.receipts)
+    assert said(app, str(OSError(errno.ENOSPC, "No space left on device")))
+    assert not any(isinstance(s, ys.VideoSheet) for s in app.sheets)
+
+
 def test_looking_at_the_queue_does_not_read_the_portal_every_time(monkeypatch):
     """A reading is a network call; opening the tab or closing a sheet over it
     asks again only once the one on screen has gone stale."""
@@ -195,6 +251,93 @@ def test_q_types_into_a_focused_field_rather_than_quitting():
     assert not app.done and app.tabs[0].value == "quiz"
 
 
+@pytest.mark.parametrize("state", ["nothing searched", "results", "tapped", "searching"])
+def test_the_search_field_does_what_it_is_drawn_as(monkeypatch, state):
+    """Drawn focused is typing: ``q`` and ``x`` are letters. Drawn otherwise
+    they are Quit and Stop. At every height, the keyboard up and down, since
+    with the keyboard up and nothing searched the bar takes focus (k-search)."""
+    drawn = []
+    real = widgets.field
+
+    def field(value, width, *args, focus=True, **kwargs):
+        drawn.append(focus)
+        return real(value, width, *args, focus=focus, **kwargs)
+
+    monkeypatch.setattr(widgets, "field", field)
+    release = threading.Event()
+    monkeypatch.setattr(ytq, "search", lambda q: release.wait(5) and [])
+    try:
+        for width in (32, 40):
+            for height in range(11, 31):
+                app = headless(size=(width, height))
+                search = app.tabs[0]
+                if state == "results":
+                    with_listing(app)
+                elif state == "tapped":
+                    tap(app, "field")
+                elif state == "searching":
+                    search.search("rust")
+                app.compose()
+                label = (state, width, height)
+                assert search.typing == drawn[-1], label
+                before = search.value
+                app.handle(tui.Key("q"))
+                app.handle(tui.Key("x"))
+                if drawn[-1]:
+                    assert not app.done and search.value == before + "qx", label
+                else:
+                    assert app.done, label
+    finally:
+        release.set()
+
+
+def test_a_second_go_on_the_same_words_buys_nothing_more(monkeypatch):
+    """Go, then Go or Enter again while those words are being fetched: one
+    search, the first, kept — also once it has finished with its answer not
+    yet heard. Other words are another search, and the first is stopped."""
+    asked = []
+    release = threading.Event()
+
+    def search(q):
+        asked.append(q)
+        release.wait(5)
+        return ytq.entries(search_info([f"{q} one", f"{q} two"]))
+
+    monkeypatch.setattr(ytq, "search", search)
+    app = headless()
+    tab = app.tabs[0]
+    tap(app, "field")
+    for ch in "rust":
+        app.handle(tui.Key(ch))
+    tap(app, "go")
+    first = tab.job
+    tap(app, "go")
+    app.handle(tui.Key("enter"))
+    assert tab.job is first and not first.cancelled
+    release.set()
+    end = time.monotonic() + 5
+    while not first.finished and time.monotonic() < end:
+        time.sleep(0.01)
+    tap(app, "go")
+    assert tab.job is first
+    settle(app)
+    assert asked == ["rust"] and tab.key_shown == "rust"
+
+    release.clear()
+    tap(app, "field")
+    for ch in " lifetimes":
+        app.handle(tui.Key(ch))
+    tap(app, "go")
+    second = tab.job
+    tap(app, "field")
+    app.handle(tui.Key("s"))
+    tap(app, "go")
+    assert second.cancelled and tab.job is not second
+    release.set()
+    settle(app)
+    assert sorted(asked) == ["rust", "rust lifetimes", "rust lifetimess"]
+
+
 def test_the_formats_sheet_picks_with_the_arrows_too():
     app = headless()
     with_listing(app, info=video_info())
@@ -236,6 +379,108 @@ def test_a_link_only_yt_dlp_knows_opens_its_sheet_and_probes_it(monkeypatch):
             time.sleep(0.01)
         app.handle(tui.Done(job))
     assert asked == ["dQw4w9WgXcQ"]
+
+
+class Feeds:
+    """Feed and Later with stand-ins for the cookie jar and the read: *jar*
+    is what ``cookie_state`` says, and each read takes the next of *answers*
+    (a list of videos, or an exception to raise)."""
+
+    LISTING = ytq.entries(search_info([f"Video number {n}" for n in range(ytq.SUBS_RESULTS)]))
+
+    def __init__(self, monkeypatch):
+        self.jar = "file"
+        self.answers: list = []
+        monkeypatch.setattr(ytq, "cookie_state", lambda *a: (self.jar, "cookies.txt, 2d old"))
+        monkeypatch.setattr(ytq, "read_feed", self.read)
+
+    def read(self, feed, count):
+        got = self.answers.pop(0)
+        if isinstance(got, BaseException):
+            raise got
+        return got
+
+    def fail(self, failure):
+        if failure == "no cookie":
+            self.jar = "missing"
+        else:
+            self.answers.append(ytq.ProbeError("HTTP Error 429: Too Many Requests")
+                                if failure == "error" else [])
+
+
+@pytest.mark.parametrize("failure", ["error", "empty", "no cookie"])
+@pytest.mark.parametrize("when", ["first read", "re-read", "deeper look"])
+def test_a_feed_read_that_fails_is_said_whatever_is_on_screen(monkeypatch, failure, when):
+    """A read that fails, an empty answer and a missing cookie jar each reach
+    the person whether or not a listing is up: in the list's place, or a
+    notice over the old rows — never the old rows saying nothing, which
+    reads as nothing new. Feed and Later alike."""
+    feeds = Feeds(monkeypatch)
+    for tab in (1, 2):
+        feeds.jar = "file"
+        if when == "first read":
+            feeds.fail(failure)
+        else:
+            feeds.answers.append(Feeds.LISTING)
+        app = headless(tab=tab, size=(80, 24))
+        settle(app)
+        feed = app.tabs[tab]
+        if when != "first read":
+            assert not feed.problem and not app.sheets
+            feeds.fail(failure)
+            if when == "re-read":
+                app.handle(tui.Key("r"))
+            else:
+                tap(app, "pull")
+            settle(app)
+        label = (failure, when, tab)
+        assert feed.problem, label
+        top = app.sheets[-1] if app.sheets else None
+        if isinstance(top, shell.Notice):
+            assert top.lines[0] == feed.problem[0], label
+        else:
+            assert when == "first read" and feed.problem[0] in app.compose().plain(), label
+
+
+def test_a_feed_failure_waits_for_its_tab_and_a_good_read_clears_it(monkeypatch):
+    """A Re-read that fails while another tab or a sheet is up is said when
+    the feed is back on top, not over what is in use; one that succeeds
+    afterwards leaves nothing to say."""
+    feeds = Feeds(monkeypatch)
+    feeds.answers.append(Feeds.LISTING)
+    monkeypatch.setattr(ytq, "probe", lambda url: video_info())
+    app = headless(tab=1)
+    settle(app)
+    feed = app.tabs[1]
+    for away in ("another tab", "a sheet"):
+        release = threading.Event()
+
+        def late(feed_, count, release=release):
+            release.wait(5)
+            raise ytq.ProbeError("HTTP Error 429: Too Many Requests")
+
+        monkeypatch.setattr(ytq, "read_feed", late)
+        app.handle(tui.Key("r"))
+        if away == "another tab":
+            app.switch(0)
+        else:
+            ys.open_row(app, ytq.SUBS_KEY, 0)
+        release.set()
+        settle(app)
+        assert feed.problem
+        assert not any(isinstance(s, shell.Notice) for s in app.sheets), away
+        if away == "another tab":
+            app.switch(1)
+        else:
+            app.close(app.sheets[-1])
+        assert isinstance(app.top, shell.Notice) and app.top.lines[0] == feed.problem[0], away
+        app.handle(tui.Key("esc"))
+        assert app.top is feed
+    monkeypatch.setattr(ytq, "read_feed", feeds.read)
+    feeds.answers.append(Feeds.LISTING)
+    app.handle(tui.Key("r"))
+    settle(app)
+    assert not feed.problem and not app.sheets
 
 
 class Loop:

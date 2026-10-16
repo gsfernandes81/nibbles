@@ -149,6 +149,30 @@ def test_the_video_sheet_on_audio_fits(app):
     sweep(app, "video audio", pinned=("go",))
 
 
+@pytest.mark.parametrize("chips", [
+    [240, 480, 720], [360, 720, 1080],  # More's presets
+    [240, 360, 480, 720], [144, 240, 360, 480, 720, 1080, 1440, 2160],
+])
+def test_hand_set_quality_chips_never_squeeze_a_tier_button(app, chips):
+    """Heights set by hand are every one of them, so they can outnumber the
+    row: it holds fewer buttons rather than narrower ones. At every width,
+    every tier button's label is whole, and the tier the sheet is on and
+    ``audio`` are always among them; the heights left out live under Formats."""
+    assert ytq.save_prefs({"chips": chips}) is None
+    for tier in (("video", 360), ("video", 1080)):
+        video(app, tier=tier)
+        for width in range(32, 81):
+            for height in (14, 24):
+                app.width, app.height = width, height
+                lines = app.compose().plain().split("\n")
+                row = [h for h in app.hits.hits if h.id.startswith("tier")]
+                ids = {h.id for h in row}
+                label = f"{chips} on {tier} at {width}x{height}"
+                assert f"tier:{tier[1]}" in ids and "tier-audio" in ids, (label, ids)
+                for hit in row:
+                    assert "…" not in lines[hit.y + 1][hit.x:hit.x + hit.w], (label, hit)
+
+
 def test_the_duplicate_line_is_pinned_with_its_answer(app):
     clash = ytq.Duplicate(ytq.DONE / "2026-08-11" / "10-x.py", "done", "source")
     video(app, clash=clash)

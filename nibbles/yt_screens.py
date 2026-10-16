@@ -279,7 +279,22 @@ class SearchTab(Screen):
 
     @property
     def typing(self) -> bool:  # type: ignore[override]
-        return self.focus
+        return self.focused(self._app)
+
+    def focused(self, app) -> bool:
+        """Whether the field holds the keyboard: tapped, or (``k-search``)
+        the keyboard is up with nothing searched and no search running.
+
+        The one answer the drawing, :attr:`typing` and :meth:`key` all ask:
+        a field drawn ready to type into while the keys went elsewhere let
+        ``q`` quit the app and swallowed the ``x`` of ``xbox``. A running
+        search leaves the keys to the screen, so ``x`` is the Stop its line
+        offers, and the field is drawn as letting go of them."""
+        if self.focus:
+            return True
+        shown = app.yt.searched.get(self.key_shown) if self.key_shown else None
+        searching = self.job is not None and not self.job.finished
+        return shown is None and not searching and app.height < SHORT
 
     def show(self, key: str) -> None:
         self.key_shown = key
@@ -294,6 +309,13 @@ class SearchTab(Screen):
         if query in yt.searched:
             yt.landed(query, yt.searched[query])
             self.show(query)
+            return
+        asking = self.job
+        if asking is not None and not asking.cancelled and asking.key == query:
+            # Already asking for exactly these words, or asked with the answer
+            # still on its way (``self.job`` is let go only when its Done is
+            # heard): a second Go or Enter would kill a fetch half paid for
+            # and buy the same one again. Stop, then Go, still starts afresh.
             return
         if self.job is not None and not self.job.finished:
             self.job.cancel()
@@ -334,7 +356,7 @@ class SearchTab(Screen):
         hits = yt.searched.get(self.key_shown or "", None) if self.key_shown else None
         details = [self.key_shown, str(len(hits))] if hits is not None else ["search"]
         s.put(w.header(APP_NAME, details, W), 0, 0)
-        focus = self.focus or (hits is None and app.height < SHORT)
+        focus = self.focused(app)
         s.put(w.hstack(
             w.field(self.value, W - 10, focus=focus, id="field"),
             w.button("Go", "⏎", 10, "primary" if focus else "normal", id="go",
@@ -418,7 +440,7 @@ class SearchTab(Screen):
 
     def key(self, app, key: str) -> bool:
         yt = app.yt
-        if self.focus:
+        if self.focused(app):
             if key == "enter":
                 self._submit(app)
             elif key == "esc":
@@ -476,6 +498,9 @@ class FeedTab(Screen):
         self.read_once = False
         self.last_scroll = 0.0
         self.bump = False
+        #: A failure not yet said: it came back while something else was up.
+        self.unsaid = False
+        self.error = False
 
     @property
     def key_(self) -> str:
@@ -485,6 +510,28 @@ class FeedTab(Screen):
         if not self.read_once:
             self.read_once = True
             self.read(app)
+        elif self.unsaid:
+            self.say_problem(app)
+
+    def failed(self, app, lines: list[str], error: bool) -> None:
+        """A read that did not bring a list: *lines* say why.
+
+        With nothing listed yet they are drawn where the list would be. With
+        a listing already on screen the old rows stay, so the failure is a
+        notice over them, as a search's is — or a Re-read, a deeper look or
+        an expired cookie would come back to the same rows and say nothing,
+        which reads as nothing new. Said when this tab is up with nothing over
+        it, so it never lands on another tab or on a sheet in use."""
+        self.problem = lines
+        self.error = error
+        self.unsaid = bool(app.yt.searched.get(self.key_))
+        if self.unsaid and app.tabs[app.tab] is self and not app.sheets:
+            self.say_problem(app)
+
+    def say_problem(self, app) -> None:
+        self.unsaid = False
+        title = {ytq.SUBS_KEY: "Feed", ytq.WL_KEY: "Later"}[self.key_]
+        app.open(Notice(title, self.problem, border=T.error if self.error else None))
 
     def read(self, app, deeper: bool = False) -> None:
         """Read the list at the depth wanted, after the cookie is asked
@@ -495,10 +542,11 @@ class FeedTab(Screen):
             return
         state, detail = ytq.cookie_state()
         if state in ("none", "missing"):
-            self.problem = ytq.cookie_advice(state, detail)
             yt.want[self.key_] = yt.asked[self.key_]
+            self.failed(app, ytq.cookie_advice(state, detail), error=False)
             return
         self.problem = []
+        self.unsaid = False
         count = yt.want[self.key_]
         self.job = app.start(
             tui.Job(lambda c=count, f=self.feed: ytq.read_feed(f, c),
@@ -514,12 +562,13 @@ class FeedTab(Screen):
         count, detail, deeper = job.key
         if job.error is not None:
             yt.want[self.key_] = yt.asked[self.key_]
-            self.problem = [f"{self.feed.name} did not come back", str(job.error),
-                            *ytq.cookie_fix(detail)]
+            self.failed(app, [f"{self.feed.name} did not come back", str(job.error),
+                              *ytq.cookie_fix(detail)], error=True)
             return
         hits = job.result or []
         if not hits:
-            self.problem = self.feed.empty(detail)
+            yt.want[self.key_] = yt.asked[self.key_]
+            self.failed(app, self.feed.empty(detail), error=False)
             return
         old = len(yt.searched.get(self.key_, []))
         view = yt.view(self.key_)
@@ -668,6 +717,18 @@ class FeedTab(Screen):
 # --------------------------------------------------------------------------- #
 # The video sheet
 # --------------------------------------------------------------------------- #
+
+
+def around(items: list, at, room: int) -> list:
+    """*room* of *items*, in their order, with *at* as near the middle as the
+    ends allow (from the start when *at* is not among them); all of them when
+    they fit. What the tier row keeps when its buttons outnumber its room: a
+    button is never narrowed to make space, the row holds fewer."""
+    if len(items) <= room:
+        return items
+    i = items.index(at) if at in items else 0
+    lo = max(0, min(i - room // 2, len(items) - room))
+    return items[lo:lo + room]
 
 
 class VideoSheet(Sheet):
@@ -844,20 +905,20 @@ class VideoSheet(Sheet):
         if self.mode == "audio":
             buttons.append(Btn("← video", "", id="tier-video"))
             have = self.tiers("audio")
-            shown = have
-            if len(have) > slots - 1:
-                at = have.index(current) if current in have else 0
-                lo = max(0, min(at - (slots - 1) // 2, len(have) - (slots - 1)))
-                shown = have[lo:lo + slots - 1]
-            for t in shown:
+            for t in around(have, current, slots - 1):
                 buttons.append(Btn(f"{t[1]}k", "", "primary" if t == current else "normal",
                                    id=f"tier:{t[1]}", data=t))
         else:
             have = {t[1] for t in self.tiers("video")}
             heights = ytq.chip_heights(self.prefs, slots - 1)
-            if current and current[0] == "video" and current[1] not in heights:
-                heights = sorted(heights[1:] + [current[1]]) if len(heights) >= slots - 1 \
-                    else sorted(heights + [current[1]])
+            on = current[1] if current and current[0] == "video" else None
+            if on is not None and on not in heights:
+                heights = sorted(heights[1:] + [on]) if len(heights) == slots - 1 \
+                    else sorted(heights + [on])
+            # Heights set by hand are every one of them (More's row reads the
+            # whole range), so more than the room is possible: the ones around
+            # the tier the sheet is on, and the rest live under Formats.
+            heights = around(heights, on, slots - 1)
             for h in heights:
                 kind = "primary" if current == ("video", h) else ("normal" if h in have else "off")
                 buttons.append(Btn(f"{h}p", "", kind, id=f"tier:{h}", data=("video", h)))
@@ -1004,6 +1065,13 @@ class VideoSheet(Sheet):
         except ytq.Duplicate as clash:
             self.clash = clash
             return
+        except OSError as exc:
+            # A full phone, mostly. Said over the sheet, which stays with its
+            # probe and its choice: nothing bought is lost, and the next try
+            # is the same tap.
+            app.open(Notice("Not queued", ["the item could not be written", str(exc)],
+                            border=T.error))
+            return
         problem = ytq.validate(path)
         ytq.learn(choice, "largest" if self.rules[self.mode] == "largest" else "smallest")
         yt.queued(self.url)
@@ -1012,7 +1080,13 @@ class VideoSheet(Sheet):
         app.close(self)
         app.queue.changed()
         if self.when == 1:
-            refused = app.queue.start_now(path.name)
+            try:
+                refused = app.queue.start_now(path.name)
+            except OSError as exc:
+                # The item is written; only the start failed. Said like any
+                # other refusal, receipt and all, so it is not queued unseen.
+                refused = ["it could not be started", str(exc),
+                           f"{name} is queued and will run in the window"]
             if refused:
                 app.receipt(receipt)
                 app.open(Notice("Queued, not started", refused))
