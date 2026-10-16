@@ -222,10 +222,12 @@ class Cancelled(RuntimeError):
 class Job:
     """A fetch in a thread. ``result`` or ``error`` once it is done.
 
-    *what* names it for the spinner (``asking YouTube for formats``); *key*
-    says what it is a fetch *of*, so a screen can tell its own answer from
-    another's. The thread never touches a screen: it fills ``result`` and
-    wakes the loop, and the loop is the only thing that reads it.
+    *what* says what it is doing (``asking YouTube for formats``), for
+    whoever reads it: the screens draw their own words, and it is there in
+    the job's ``repr`` in the ``NIBBLES_DEBUG`` log. *key* says what it is a
+    fetch *of*, so a screen can tell its own answer from another's. The
+    thread never touches a screen: it fills ``result`` and wakes the loop,
+    and the loop is the only thing that reads it.
     """
 
     work: Callable[[], object]
@@ -335,6 +337,10 @@ class Session:
         self._wake_r, self._wake_w = os.pipe()
         os.set_blocking(self._wake_r, False)
         os.set_blocking(self._wake_w, False)
+        #: Held while the wake pipe is written or let go (:meth:`wake`).
+        #: Re-entrant, because a signal handler that wakes the loop runs on
+        #: the main thread, and may run inside another wake.
+        self._wake_lock = threading.RLock()
         self._resized = False
         self._suspend = False
         self._ended = 0
@@ -401,7 +407,10 @@ class Session:
         for sig, handler in self._old.items():
             signal.signal(sig, handler)
         self._leave()
-        for fd in (self._wake_r, self._wake_w):
+        with self._wake_lock:
+            fds = (self._wake_r, self._wake_w)
+            self._wake_r = self._wake_w = -1
+        for fd in fds:
             with contextlib.suppress(OSError):
                 os.close(fd)
 
@@ -409,8 +418,17 @@ class Session:
     # it at a safe point. Nothing here touches the terminal.
 
     def wake(self) -> None:
-        with contextlib.suppress(OSError):
-            os.write(self._wake_w, b".")
+        """Wake the loop. A job still running when the session ended — a
+        fetch on its way down after the app stopped it, or a hand-off to
+        Android, which is left to finish — calls this when it finishes,
+        after the pipe is closed and its number perhaps given to a file
+        opened since: it writes nothing then, rather than a byte into
+        whatever that file is."""
+        with self._wake_lock:
+            if self._wake_w < 0:
+                return
+            with contextlib.suppress(OSError):
+                os.write(self._wake_w, b".")
 
     def _on_winch(self, *_: object) -> None:
         self._resized = True

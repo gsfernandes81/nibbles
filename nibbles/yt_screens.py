@@ -7,9 +7,11 @@ a spinner says what is running, and ``x`` stops the newest.
 
 What spends data, and only on a deliberate act: the search (``⏎ Go``, ~0.1
 MB), the format probe (one tap on a row, ~0.3 MB), the feed's first read on
-first opening its tab, ``r Re-read``, and the deeper look (``↓ 30 more``, a
-tap, ↓ on the last row, or a fresh drag down once the list has rested at the
-end). A fling's momentum never fetches.
+first opening its tab (a tap on it, or the keys stopping there for
+:data:`DWELL`), ``r Re-read``, and the deeper look (``↓ 30 more``, a tap, ↓
+on the last row, or a fresh drag down once the list has rested at the end).
+A fling's momentum never fetches, and neither does Tab passing a list on the
+way to another tab.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from nibbles import shell
 from nibbles import tui
 from nibbles import widgets as w
 from nibbles import ytq
+from nibbles.app import FEED, LATER, SEARCH
 from nibbles.shell import SHORT, Entry, ListView, Notice, Screen, Sheet, spin
 from nibbles.widgets import T, Btn, Piece, Surface
 
@@ -31,6 +34,28 @@ SEARCH_COST = "~0.1 MB"
 PROBE_COST = "~0.3 MB"
 #: How long the list must rest at its end before a drag down counts as a pull.
 REST = 0.5
+#: How long the keys must stop on Feed or Later before its first read starts.
+#: Tab steps through every tab between where it starts and where it stops —
+#: Search to Queue is Feed and Later on the way — and a list passed is no list
+#: asked for. Android's double-tap window, as the tap guard's: quicker than
+#: that is still one gesture of the thumb.
+DWELL = 0.300
+
+#: What the header and Recent call each signed-in list.
+FEED_NOUNS = {ytq.SUBS_KEY: "subscriptions", ytq.WL_KEY: "watch later"}
+
+
+def feed_tab(feed: ytq.Feed) -> int:
+    """The tab a signed-in list is on."""
+    return FEED if feed is ytq.SUBS else LATER
+
+
+def tier_label(tier: tuple[str, int] | None) -> str:
+    """``480p``, ``128k``: a tier as its button and its heading say it, and
+    nothing for none."""
+    if tier is None:
+        return ""
+    return f"{tier[1]}k" if tier[0] == "audio" else f"{tier[1]}p"
 
 
 def feed_mb(count: int) -> str:
@@ -96,12 +121,12 @@ class YouTube:
             if preloaded.get("entries") is not None:
                 key = preloaded.get("title") or "(saved search)"
                 self.landed(key, ytq.entries(preloaded))
-                app.tabs[0].show(key)
-                app.switch(0)
+                app.tabs[SEARCH].show(key)
+                app.switch(SEARCH)
             else:
                 url = preloaded.get("webpage_url") or preloaded.get("url") or first or ""
                 self.probed[url] = (preloaded, *ytq.choices(preloaded))
-                app.switch(0)
+                app.switch(SEARCH)
                 app.open(VideoSheet(app, url, preloaded.get("title") or url, ""))
             return
         if first:
@@ -117,19 +142,19 @@ class YouTube:
             # A link yt-dlp takes that the field would search for (a bare
             # video id), handed over by ``nibbles <x>``.
             link = text[len(ytq.LINK_KEY):]
-            app.switch(0)
+            app.switch(SEARCH)
             app.open(VideoSheet(app, link, link, ""))
             return
         feed = ytq.which_feed(text)
         if feed is not None:
-            app.switch(1 if feed is ytq.SUBS else 2)
+            app.switch(feed_tab(feed))
             return
         if ytq.looks_like_url(text):
-            app.switch(0)
+            app.switch(SEARCH)
             app.open(VideoSheet(app, text, text, ""))
             return
-        app.switch(0)
-        app.tabs[0].search(text)
+        app.switch(SEARCH)
+        app.tabs[SEARCH].search(app, text)
 
     def landed(self, key: str, hits: list[ytq.Result]) -> None:
         self.searched[key] = hits
@@ -156,7 +181,7 @@ class YouTube:
         self.queued_urls.add(url)
         self._held.clear()
 
-    def probe(self, url: str, owner: Screen) -> tui.Job | None:
+    def probe(self, url: str) -> tui.Job | None:
         """The format fetch for *url*, started once and kept for the session:
         closing the sheet does not cancel it."""
         if url in self.probed:
@@ -178,9 +203,14 @@ class ProbeOwner(Screen):
     def __init__(self, yt: YouTube, url: str) -> None:
         self.yt, self.url = yt, url
 
+    def _waiting(self, app) -> VideoSheet | None:
+        """The sheet still waiting for this video's formats, if one is up."""
+        return next((s for s in app.sheets if isinstance(s, VideoSheet) and s.url == self.url),
+                    None)
+
     def done(self, app, job) -> None:
         self.yt.probing.pop(self.url, None)
-        sheet = next((s for s in app.sheets if isinstance(s, VideoSheet) and s.url == self.url), None)
+        sheet = self._waiting(app)
         if job.error is not None:
             if sheet is not None:
                 app.close(sheet)
@@ -195,7 +225,7 @@ class ProbeOwner(Screen):
     def cancelled(self, app, job) -> None:
         """Stopped: the sheet waiting for it closes, and says so."""
         self.yt.probing.pop(self.url, None)
-        sheet = next((s for s in app.sheets if isinstance(s, VideoSheet) and s.url == self.url), None)
+        sheet = self._waiting(app)
         if sheet is not None:
             app.close(sheet)
             app.say("stopped asking for its formats")
@@ -278,6 +308,8 @@ class SearchTab(Screen):
         self.key_shown: str | None = None
         self.job: tui.Job | None = None
         self.recents = ListView()
+        #: For :attr:`typing`, which the loop asks of the screen alone.
+        self._app = app
 
     @property
     def typing(self) -> bool:  # type: ignore[override]
@@ -303,8 +335,7 @@ class SearchTab(Screen):
         self.value = key if not key.startswith(":") else ""
         self.focus = False
 
-    def search(self, query: str) -> None:
-        app = self._app
+    def search(self, app, query: str) -> None:
         yt = app.yt
         self.value = query
         self.focus = False
@@ -325,9 +356,6 @@ class SearchTab(Screen):
             tui.Job(lambda q=query: ytq.search(q), f"searching for {query}", key=query,
                     fetch=True), self
         )
-
-    def shown(self, app) -> None:
-        self._app = app
 
     def done(self, app, job) -> None:
         if job is not self.job:
@@ -353,7 +381,6 @@ class SearchTab(Screen):
     # Drawing --------------------------------------------------------------
 
     def draw(self, app, s: Surface, height: int) -> None:
-        self._app = app
         W = s.width
         yt = app.yt
         hits = yt.searched.get(self.key_shown or "", None) if self.key_shown else None
@@ -390,7 +417,7 @@ class SearchTab(Screen):
         yt = app.yt
         feed = ytq.FEEDS.get(key)
         count = len(yt.searched.get(key, []))
-        title = {ytq.SUBS_KEY: "subscriptions", ytq.WL_KEY: "watch later"}.get(key, key)
+        title = FEED_NOUNS.get(key, key)
         noun = "videos" if feed else "results"
         sub = f"{count} {noun} · {shell.ago(time.time() - yt.stamps.get(key, time.time()))}"
 
@@ -427,7 +454,7 @@ class SearchTab(Screen):
         elif hit.id == "row-recent":
             key = self.recents.entries[hit.data].key
             if key in ytq.FEEDS:
-                app.switch(1 if key == ytq.SUBS_KEY else 2)
+                app.switch(feed_tab(ytq.FEEDS[key]))
             else:
                 yt.landed(key, yt.searched[key])
                 self.show(key)
@@ -436,10 +463,7 @@ class SearchTab(Screen):
 
     def scroll(self, app, event) -> None:
         view = app.yt.view(self.key_shown) if self.key_shown else self.recents
-        if view.in_bar(event.x, event.y):
-            view.bar_drag(event.dy)
-        else:
-            view.view(event.dy)
+        view.wheel(event)
 
     def paste(self, app, text: str) -> None:
         """A paste (``tui.Paste``) goes into the field, focused, and does no
@@ -469,11 +493,7 @@ class SearchTab(Screen):
             return True
         if self.key_shown:
             view = yt.view(self.key_shown)
-            steps = {"up": -1, "down": 1, "pgup": -max(1, view.visible() - 1),
-                     "pgdn": max(1, view.visible() - 1), "left": -max(1, view.visible() - 1),
-                     "right": max(1, view.visible() - 1)}
-            if key in steps:
-                view.move(steps[key])
+            if view.press(key, sideways=True):
                 return True
             if key == "enter" and view.cursor >= 0:
                 open_row(app, self.key_shown, view.cursor)
@@ -499,13 +519,17 @@ class SearchTab(Screen):
 
 class FeedTab(Screen):
     """One signed-in list (the subscription feed, or Watch Later), read on
-    first opening the tab in a session."""
+    first opening the tab in a session: at once on a tap, and after
+    :data:`DWELL` when the keys step onto it."""
 
     def __init__(self, app, feed: ytq.Feed) -> None:
         self.feed = feed
         self.job: tui.Job | None = None
         self.problem: list[str] = []
         self.read_once = False
+        #: When the first read starts, if the tab was stepped onto and the
+        #: keys have not yet rested here (:meth:`tick`).
+        self.due: float | None = None
         self.last_scroll = 0.0
         self.bump = False
         #: A failure not yet said: it came back while something else was up.
@@ -518,10 +542,24 @@ class FeedTab(Screen):
 
     def shown(self, app) -> None:
         if not self.read_once:
-            self.read_once = True
-            self.read(app)
+            if app.stepped:
+                # Tab passing on its way to another tab is no ask: the read
+                # waits until the keys have stopped here.
+                self.due = time.monotonic() + DWELL
+            else:
+                self.read(app)
         elif self.unsaid:
             self.say_problem(app)
+
+    def tick(self, app, now: float | None = None) -> None:
+        """The first read, once the keys have stopped here for :data:`DWELL`.
+        Asked only of the tab on top, and every arrival sets :attr:`due`
+        afresh, so a tab left before then has spent nothing."""
+        if self.due is None:
+            return
+        if (time.monotonic() if now is None else now) >= self.due:
+            self.due = None
+            self.read(app)
 
     def failed(self, app, lines: list[str], error: bool) -> None:
         """A read that did not bring a list: *lines* say why.
@@ -540,8 +578,8 @@ class FeedTab(Screen):
 
     def say_problem(self, app) -> None:
         self.unsaid = False
-        title = {ytq.SUBS_KEY: "Feed", ytq.WL_KEY: "Later"}[self.key_]
-        app.open(Notice(title, self.problem, border=T.error if self.error else None))
+        app.open(Notice(w.TABS[feed_tab(self.feed)], self.problem,
+                        border=T.error if self.error else None))
 
     def read(self, app, deeper: bool = False) -> None:
         """Read the list at the depth wanted, after the cookie is asked
@@ -550,6 +588,10 @@ class FeedTab(Screen):
         yt = app.yt
         if self.job is not None and not self.job.finished:
             return
+        # Any read, Re-read too, is the first one done: nothing is left to
+        # wait for.
+        self.read_once = True
+        self.due = None
         state, detail = ytq.cookie_state()
         if state in ("none", "missing"):
             yt.want[self.key_] = yt.asked[self.key_]
@@ -611,7 +653,7 @@ class FeedTab(Screen):
         W = s.width
         yt = app.yt
         hits = yt.searched.get(self.key_)
-        noun = {ytq.SUBS_KEY: "subscriptions", ytq.WL_KEY: "watch later"}[self.key_]
+        noun = FEED_NOUNS[self.key_]
         details = [noun] + ([str(len(hits))] if hits is not None else [])
         s.put(w.header(APP_NAME, details, W), 0, 0)
         reading = self.job is not None and not self.job.finished
@@ -667,12 +709,17 @@ class FeedTab(Screen):
 
     # Events ---------------------------------------------------------------
 
+    def reread(self, app) -> None:
+        """Re-read: the list again, as deep as it was read, unless a read is
+        going already."""
+        if self.job is None or self.job.finished:
+            app.yt.want[self.key_] = app.yt.asked[self.key_]
+            self.read(app)
+
     def tap(self, app, hit, event) -> None:
         yt = app.yt
         if hit.id == "reread":
-            if self.job is None or self.job.finished:
-                yt.want[self.key_] = yt.asked[self.key_]
-                self.read(app)
+            self.reread(app)
         elif hit.id == "pull":
             self.more(app)
         elif hit.id == "row":
@@ -689,37 +736,40 @@ class FeedTab(Screen):
         rested = now - self.last_scroll >= REST
         self.last_scroll = now
         view = yt.view(self.key_)
-        if view.in_bar(event.x, event.y):
-            view.bar_drag(event.dy)
-            return
-        was_end = view.at_end()
-        view.view(event.dy)
-        if event.dy > 0 and was_end and rested and view.entries:
+        # A pull is a drag down on the list, never on its bar, from an end
+        # the list was already resting at.
+        pull = (event.dy > 0 and rested and bool(view.entries) and view.at_end()
+                and not view.in_bar(event.x, event.y))
+        view.wheel(event)
+        if pull:
             self.more(app)
 
     def wake(self, app) -> float | None:
-        return moving(app, self.key_)
+        waits = [moving(app, self.key_)]
+        if self.due is not None:
+            # The dwell, and only until it is over: then it reads, and an
+            # idle screen is back to writing nothing.
+            waits.append(max(0.0, self.due - time.monotonic()))
+        waits = [wait for wait in waits if wait is not None]
+        return min(waits) if waits else None
 
     def key(self, app, key: str) -> bool:
         yt = app.yt
         view = yt.view(self.key_)
         if key == "r":
-            self.tap(app, w.Hit(0, 0, 1, 1, "reread"), None)
+            self.reread(app)
             return True
         if key == "down" and view.entries and view.cursor == len(view.entries) - 1:
             self.more(app, bump=True)
             return True
-        page = max(1, view.visible() - 1)
-        steps = {"up": -1, "down": 1, "pgup": -page, "pgdn": page, "left": -page, "right": page}
-        if key in steps:
-            view.move(steps[key])
+        if view.press(key, sideways=True):
             return True
         if key == "enter" and view.cursor >= 0:
             open_row(app, self.key_, view.cursor)
             return True
         if key == "/":
-            app.switch(0)
-            app.tabs[0].focus = True
+            app.switch(SEARCH)
+            app.tabs[SEARCH].focus = True
             return True
         return False
 
@@ -763,27 +813,30 @@ class VideoSheet(Sheet):
         self.said = ""
         self.copying: tui.Job | None = None
         self._app = app
-        app.yt.probe(url, self)
+        app.yt.probe(url)
 
     def shown(self, app) -> None:
         """On top: if the formats are already in (a probe kept from earlier,
         or a saved dump), the sheet is ready now, and any notice it raises
         opens over it rather than under it."""
-        self._app = app
         if self.url in app.yt.probed and not self.checked:
             self.ready(app)
 
     # State ----------------------------------------------------------------
 
+    def probed(self) -> tuple[dict, list[ytq.Choice], int] | None:
+        """The probe's answer for this video — its info, the formats offered
+        and how many were left unsized — or ``None`` while it is out."""
+        return self._app.yt.probed.get(self.url)
+
     @property
     def info(self) -> dict | None:
-        got = self._app.yt.probed.get(self.url)
+        got = self.probed()
         return got[0] if got else None
 
     def ready(self, app) -> None:
         """The probe is in: the title, the tier the sheet opens on, the
         duplicate check, and the once-a-session notice for a withheld list."""
-        self._app = app
         info, options, _ = app.yt.probed[self.url]
         self.title = info.get("title") or self.title
         if not self.by:
@@ -816,7 +869,7 @@ class VideoSheet(Sheet):
                 app.open(Notice("Only 360p", ytq.withheld_advice(ytq.cookie_state()[1])))
 
     def options(self) -> list[ytq.Choice]:
-        got = self._app.yt.probed.get(self.url)
+        got = self.probed()
         return got[1] if got else []
 
     def tiers(self, mode: str) -> list[tuple[str, int]]:
@@ -863,10 +916,7 @@ class VideoSheet(Sheet):
             return w.vstack(*parts, width=width)
         choice, passed = self.chosen()
         tier_options = ytq.in_tier(self.options(), self.tier) if self.tier else []
-        if self.tier and self.tier[0] == "audio":
-            label = f"{self.tier[1]}k"
-        else:
-            label = f"{self.tier[1]}p" if self.tier else ""
+        label = tier_label(self.tier)
         n = len(tier_options)
         if not (short and self.clash is not None):
             parts.append(w.section("Quality", width, f"{label} · {n} format{'s' if n != 1 else ''}"))
@@ -916,7 +966,7 @@ class VideoSheet(Sheet):
             buttons.append(Btn("← video", "", id="tier-video"))
             have = self.tiers("audio")
             for t in around(have, current, slots - 1):
-                buttons.append(Btn(f"{t[1]}k", "", "primary" if t == current else "normal",
+                buttons.append(Btn(tier_label(t), "", "primary" if t == current else "normal",
                                    id=f"tier:{t[1]}", data=t))
         else:
             have = {t[1] for t in self.tiers("video")}
@@ -931,7 +981,8 @@ class VideoSheet(Sheet):
             heights = around(heights, on, slots - 1)
             for h in heights:
                 kind = "primary" if current == ("video", h) else ("normal" if h in have else "off")
-                buttons.append(Btn(f"{h}p", "", kind, id=f"tier:{h}", data=("video", h)))
+                buttons.append(Btn(tier_label(("video", h)), "", kind, id=f"tier:{h}",
+                                   data=("video", h)))
             buttons.append(Btn("audio", "", "off" if not self.tiers("audio") else "normal",
                                id="tier-audio"))
         return w.dock(buttons, width, app.pressed)
@@ -954,9 +1005,6 @@ class VideoSheet(Sheet):
             return w.button("Start now", "⏎", width, kind, figure, id="go", pressed=app.pressed)
         return w.button(f"Queue for {when}", "⏎", width, "primary", figure, id="go",
                         pressed=app.pressed)
-
-    def wake(self, app) -> float | None:
-        return None
 
     def done(self, app, job) -> None:
         """The copy has come back: said inside the sheet, because the line
@@ -991,9 +1039,19 @@ class VideoSheet(Sheet):
         elif hit.id == "go":
             self.commit(app)
         elif hit.id == "again":
-            app.yt.agreed.add(self.url)
-            self.clash = None
-            self.commit(app)
+            self.again(app)
+
+    def again(self, app) -> None:
+        """``a Queue it again anyway``: agreed to for the session, and queued."""
+        app.yt.agreed.add(self.url)
+        self.clash = None
+        self.commit(app)
+
+    def pick(self, choice: ytq.Choice) -> None:
+        """One format chosen by hand (Formats): it, its tier and its kind."""
+        self.explicit = choice
+        self.tier = ytq.tier_of(choice)
+        self.mode = self.tier[0]
 
     def set_when(self, app, when: int) -> None:
         self.when = when
@@ -1014,19 +1072,14 @@ class VideoSheet(Sheet):
             self.tier = tiers[len(tiers) // 2] if len(tiers) > 2 else tiers[-1]
 
     def key(self, app, key: str) -> bool:
-        if key == "esc":
-            app.close(self)
-            return True
         if self.url not in app.yt.probed:
-            return False
+            return super().key(app, key)
         if key == "enter":
             if self.clash is None:
                 self.commit(app)
             return True
         if key == "a" and self.clash is not None:
-            app.yt.agreed.add(self.url)
-            self.clash = None
-            self.commit(app)
+            self.again(app)
             return True
         if key == "f":
             app.open(FormatsSheet(self))
@@ -1052,7 +1105,7 @@ class VideoSheet(Sheet):
             self.rules[self.mode] = "smallest" if key == "s" else "largest"
             self.explicit = None
             return True
-        return False
+        return super().key(app, key)
 
     # Queueing -------------------------------------------------------------
 
@@ -1121,8 +1174,7 @@ class FormatsSheet(Sheet):
     def __init__(self, video: VideoSheet) -> None:
         super().__init__()
         self.video = video
-        tier = video.tier
-        label = (f"{tier[1]}k" if tier and tier[0] == "audio" else f"{tier[1]}p") if tier else ""
+        label = tier_label(video.tier)
         self.title = f"Formats · {label}" if label else "Formats"
         self._placed = False
 
@@ -1135,7 +1187,7 @@ class FormatsSheet(Sheet):
     def body(self, app, width: int, height: int) -> Piece:
         chosen, _ = self.video.chosen()
         skip = ytq.skip_codecs(self.video.prefs)
-        got = self.video._app.yt.probed.get(self.video.url)
+        got = self.video.probed()
         unsized = got[2] if got else 0
         head = "smallest first · ~ an estimate"
         if unsized:
@@ -1146,8 +1198,7 @@ class FormatsSheet(Sheet):
         for tier, options in self.groups():
             if tier == self.video.tier:
                 anchor = sum(p.height for p in parts)
-            label = f"{tier[1]}k" if tier[0] == "audio" else f"{tier[1]}p"
-            parts.append(w.section(label, width - 1, str(len(options))))
+            parts.append(w.section(tier_label(tier), width - 1, str(len(options))))
             for o in options:
                 sel = o is chosen
                 avoid = bool(set(ytq.codec_families(o)) & set(skip))
@@ -1169,9 +1220,7 @@ class FormatsSheet(Sheet):
 
     def tap(self, app, hit, event) -> None:
         if hit.id == "pick":
-            self.video.explicit = hit.data
-            self.video.tier = ytq.tier_of(hit.data)
-            self.video.mode = self.video.tier[0]
+            self.video.pick(hit.data)
             app.close(self)
 
     def flat(self) -> list[ytq.Choice]:
@@ -1184,10 +1233,7 @@ class FormatsSheet(Sheet):
             flat = self.flat()
             chosen, _ = self.video.chosen()
             at = flat.index(chosen) if chosen in flat else 0
-            pick = flat[max(0, min(len(flat) - 1, at + (1 if key == "down" else -1)))]
-            self.video.explicit = pick
-            self.video.tier = ytq.tier_of(pick)
-            self.video.mode = self.video.tier[0]
+            self.video.pick(flat[max(0, min(len(flat) - 1, at + (1 if key == "down" else -1)))])
             self.offset = max(0, self.offset + (1 if key == "down" else -1) * 2)
             return True
         if key in ("pgup", "pgdn"):

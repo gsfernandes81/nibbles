@@ -37,7 +37,9 @@ if TYPE_CHECKING:
 #: A file to log every event to, for a test chasing a lost tap.
 _DEBUG = os.environ.get("NIBBLES_DEBUG", "")
 
-#: Tab indices, in the order they sit along the bottom.
+#: Tab indices, in the order they sit along the bottom (``widgets.TABS``
+#: names them, and :class:`App` builds them in this order). The screens go
+#: to a tab by these names, never by its number.
 SEARCH, FEED, LATER, QUEUE, MORE = range(5)
 START = {"search": SEARCH, "feed": FEED, "later": LATER, "queue": QUEUE, "more": MORE}
 
@@ -67,6 +69,10 @@ class App:
         self.done = False
         self.hits = w.HitMap()
         self.last_tap: tui.Tap | None = None
+        #: The tab on top was reached by stepping (Tab, Shift-Tab) rather
+        #: than chosen: passed on the way to another, it may be gone again
+        #: before anybody looks at it (:meth:`switch`).
+        self.stepped = False
         self.queue = qs.QueueModel(self)
         self.yt = ys.YouTube(self, dest=dest, now=now)
         self.tabs: list[Screen] = [
@@ -78,8 +84,6 @@ class App:
         ]
         self.tab = start
         self.tabs[self.tab].shown(self)
-        for tab in self.tabs:
-            tab._app = self
         if preloaded is not None or first:
             self.yt.begin(first, preloaded)
 
@@ -93,7 +97,10 @@ class App:
         """Run *job* in the background; *owner* hears when it is done."""
         if self.session is not None:
             self.session.start(job)
-        else:  # tests drive the app without a terminal: run it inline
+        else:
+            # Tests drive the app without a terminal: the job still runs on
+            # its own thread, with no loop to wake, and the test hands its
+            # Done back the way the loop would.
             job.run(lambda: None)
         self.jobs.append((job, owner))
         return job
@@ -144,11 +151,16 @@ class App:
         self.guard.opened_by(self.last_tap)
         self.top.shown(self)
 
-    def switch(self, tab: int) -> None:
+    def switch(self, tab: int, step: bool = False) -> None:
+        """*tab* on top. *step*: reached by Tab or Shift-Tab, which pass
+        every tab between where they start and where they stop; a tab that
+        spends when it is first shown (Feed, Later) waits to be stopped on
+        (``yt_screens.DWELL``) rather than spending on the way past."""
         self.sheets.clear()
         if tab != self.tab:
             self.said = ""
         self.tab = tab
+        self.stepped = step
         self.guard.opened_by(self.last_tap)
         self.tabs[tab].shown(self)
 
@@ -187,7 +199,7 @@ class App:
         tab = self.tabs[self.tab]
         if hasattr(tab, "settle"):
             tab.settle(self)
-        if getattr(tab, "fullscreen", False):
+        if tab.fullscreen:
             tab.draw(self, s, H)
         else:
             said = 1 if self.said else 0
@@ -222,6 +234,13 @@ class App:
             waits.append(got)
         return max(0.0, min(waits)) if waits else None
 
+    def tick(self, now: float | None = None) -> None:
+        """Before each frame: the queue's reading, and whatever the tab on
+        top was waiting on time for (a list stopped on, read once the keys
+        have rested there)."""
+        self.queue.tick()
+        self.tabs[self.tab].tick(self, now)
+
     # Events -------------------------------------------------------------- #
 
     def handle(self, event: tui.Event) -> None:
@@ -234,14 +253,18 @@ class App:
             self.width, self.height = event.width, event.height
         elif isinstance(event, tui.Done):
             for pair in list(self.jobs):
-                if pair[0] is event.job:
-                    self.jobs.remove(pair)
-                    if not event.job.cancelled:
-                        pair[1].done(self, event.job)
-                    elif pair[1] is not None:
-                        cancelled = getattr(pair[1], "cancelled", None)
-                        if cancelled:
-                            cancelled(self, event.job)
+                job, owner = pair
+                if job is not event.job:
+                    continue
+                self.jobs.remove(pair)
+                if not job.cancelled:
+                    owner.done(self, job)
+                else:
+                    # Not every owner is a screen (the queue's model owns its
+                    # readings), so not every owner has a word for a stop.
+                    cancelled = getattr(owner, "cancelled", None)
+                    if cancelled:
+                        cancelled(self, job)
         elif isinstance(event, tui.Tap):
             self._tap(event)
         elif isinstance(event, tui.Scroll):
@@ -302,9 +325,9 @@ class App:
         elif key == "x":
             self.stop_newest()
         elif key == "tab":
-            self.switch((self.tab + 1) % len(self.tabs))
+            self.switch((self.tab + 1) % len(self.tabs), step=True)
         elif key == "btab":
-            self.switch((self.tab - 1) % len(self.tabs))
+            self.switch((self.tab - 1) % len(self.tabs), step=True)
 
     # The loop ------------------------------------------------------------ #
 
@@ -314,7 +337,7 @@ class App:
             # nomut: start — a mutant in the loop does not fail a test, it hangs a
             # terminal until the timeout kills it; the loop is checked on a pty.
             while not self.done:
-                self.queue.tick()
+                self.tick()
                 self.session.show(self.compose())
                 event = self.session.read(self.next_wake(), self.unheard())
                 if event is not None:

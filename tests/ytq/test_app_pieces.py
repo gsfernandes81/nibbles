@@ -126,6 +126,36 @@ def test_a_sheet_opened_by_a_key_guards_no_cell():
     assert guard.allows(tui.Tap(4, 4), at=100.2)
 
 
+def test_a_job_that_outlives_the_session_writes_into_no_file_of_anyones():
+    """A hand-off to Android is left to finish when the app leaves, and wakes
+    the loop when it does — after the wake pipe is closed, and its number
+    perhaps taken by whatever was opened since. Nothing is written then."""
+    import os
+    import threading
+
+    session = tui.Session()
+    release, woke = threading.Event(), threading.Event()
+    job = tui.Job(lambda: release.wait(5), "copying", quiet=True)
+    job.run(lambda: (session.wake(), woke.set()))
+    number = session._wake_w
+    session.__exit__(None, None, None)
+    # The next file opened takes the number the pipe let go of: most likely
+    # it does so by itself, and it is made certain here.
+    read_end, write_end = os.pipe()
+    if number == read_end:
+        read_end = os.dup(read_end)
+    os.dup2(write_end, number)
+    try:
+        release.set()
+        assert woke.wait(5)
+        os.set_blocking(read_end, False)
+        with pytest.raises(BlockingIOError):
+            os.read(read_end, 64)
+    finally:
+        for fd in {number, read_end, write_end}:
+            os.close(fd)
+
+
 # --------------------------------------------------------------------------- #
 # Hits
 # --------------------------------------------------------------------------- #
@@ -575,3 +605,41 @@ def test_a_tap_at_either_end_of_the_bar_shows_that_end(heights, height):
     assert sum(view.thumb()) == height  # and the thumb is at the bottom
     view.bar_tap(0)
     assert view.top == 0 and view.thumb()[0] == 0
+
+
+@given(**shapes)
+def test_no_swipe_scrolls_past_the_last_entry_or_loses_the_cursor(heights, height):
+    """The furthest the view goes is never the end of the list itself. A last
+    entry taller than the whole view (a More row with a problem, three rows,
+    in a view two high) is shown by no top, and the view stops at the last
+    entry that does fit rather than over nothing, the cursor still on a row.
+    Where the last entry fits, it is the last entries, whole, as before."""
+    view = listing(heights, height)
+    far = view.furthest()
+    assert 0 <= far < len(heights)
+    if heights[-1] <= height:
+        assert sum(heights[far:]) <= height
+        assert far == 0 or sum(heights[far - 1:]) > height
+    for _ in range(sum(heights)):  # a fling, all the way down
+        view.view(1)
+    assert view.top == far and view.cursor >= 0
+    s = w.Surface(40, height)
+    view.draw(s, 0, 0, 40, height, "row")
+    assert bool(view.shown) == (heights[far] <= height)
+    if any(h <= height for h in heights):
+        assert heights[far] <= height, "something is drawn at the furthest top"
+
+
+def test_the_arrows_are_one_table_on_every_list():
+    """↑ ↓ and a page are the list's own keys wherever it is drawn; ← and →
+    page only where the screen has no other use for them."""
+    view = shell.ListView(entries=rows(30), height=10, cursor=0)
+    for key in ("left", "right", "enter", "x"):
+        assert not view.press(key) and view.cursor == 0
+    page = view.page()
+    assert page == view.visible() - 1
+    assert view.press("pgdn") and view.cursor == page
+    assert view.press("up") and view.cursor == page - 1
+    page = view.page()
+    assert view.press("right", sideways=True) and view.cursor == 2 * page - 1
+    assert view.press("left", sideways=True) and view.cursor == page - 1

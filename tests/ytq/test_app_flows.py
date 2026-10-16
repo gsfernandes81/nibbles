@@ -13,6 +13,8 @@ import threading
 import time
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from nibbles import app as nibbles
 from nibbles import shell
@@ -474,7 +476,7 @@ def test_the_search_field_does_what_it_is_drawn_as(monkeypatch, state):
                 elif state == "tapped":
                     tap(app, "field")
                 elif state == "searching":
-                    search.search("rust")
+                    search.search(app, "rust")
                 app.compose()
                 label = (state, width, height)
                 assert search.typing == drawn[-1], label
@@ -679,6 +681,109 @@ def test_a_feed_failure_waits_for_its_tab_and_a_good_read_clears_it(monkeypatch)
     app.handle(tui.Key("r"))
     settle(app)
     assert not feed.problem and not app.sheets
+
+
+# --------------------------------------------------------------------------- #
+# Stepping with Tab
+# --------------------------------------------------------------------------- #
+
+#: The dwell, made longer than any test takes between two keys however busy
+#: the machine: a quick run of Tab presses, made certain.
+SLOW_DWELL = 60.0
+
+#: The list each tab reads, for the two that read one.
+LISTS = {nibbles.FEED: ytq.SUBS, nibbles.LATER: ytq.WATCH_LATER}
+
+
+def reading(mp):
+    """A cookie jar on disk, and every feed read recorded: the lists asked
+    for, in the order asked."""
+    asked = []
+    mp.setattr(ytq, "cookie_state", lambda *a: ("file", "cookies.txt, 2d old"))
+    mp.setattr(ytq, "read_feed", lambda feed, count: asked.append(feed) or Feeds.LISTING)
+    mp.setattr(ys, "DWELL", SLOW_DWELL)
+    return asked
+
+
+@settings(max_examples=25, deadline=None)
+@given(keys=st.lists(st.sampled_from(["tab", "btab"]), min_size=1, max_size=7),
+       after=st.lists(st.sampled_from(["tab", "btab"]), max_size=7))
+def test_tab_reads_no_list_it_passes_and_only_the_one_it_stops_on(keys, after):
+    """Any run of Tab and Shift-Tab with no rest between reads nothing —
+    Search to Queue passes Feed and Later. Stopped on, a list reads itself
+    once the keys have rested there; and however the keys go on, resting on
+    every tab, each list stopped on is read, and none twice."""
+    with pytest.MonkeyPatch.context() as mp:
+        asked = reading(mp)
+        app = headless()
+        for key in keys:
+            app.handle(tui.Key(key))
+            app.tick()  # the loop goes round between keys
+        settle(app)
+        assert asked == []
+        stopped = {LISTS[app.tab]} if app.tab in LISTS else set()
+        app.tick(time.monotonic() + SLOW_DWELL)
+        settle(app)
+        assert asked == list(stopped)
+        for key in after:
+            app.handle(tui.Key(key))
+            app.tick(time.monotonic() + SLOW_DWELL)
+            settle(app)
+            stopped |= {LISTS[app.tab]} if app.tab in LISTS else set()
+        assert sorted(asked, key=id) == sorted(stopped, key=id)
+
+
+def test_a_tap_on_a_list_reads_it_at_once_and_so_does_r(monkeypatch):
+    """A tap on its tab is the deliberate act, with no rest to wait out; so
+    is ``r`` on a list the keys are passing, and the rest that follows reads
+    nothing more."""
+    asked = reading(monkeypatch)
+    app = headless()
+    app.compose()
+    hit = next(h for h in app.hits.hits if h.id == "tab" and h.data == nibbles.FEED)
+    app.handle(tui.Tap(hit.x + 1, hit.y + 1))
+    settle(app)
+    assert asked == [ytq.SUBS]
+    app.handle(tui.Key("tab"))
+    assert app.tab == nibbles.LATER and asked == [ytq.SUBS]
+    app.handle(tui.Key("r"))
+    settle(app)
+    app.tick(time.monotonic() + SLOW_DWELL)
+    settle(app)
+    assert asked == [ytq.SUBS, ytq.WATCH_LATER]
+
+
+def test_the_rest_on_a_list_is_a_wake_that_ends(monkeypatch):
+    """The tab wakes the loop for the end of the rest and for nothing after
+    it: once the list is read and in, a screen of short titles sleeps until
+    something happens. (The status bar's countdown is the queue's wake, and
+    stands either way.)"""
+    asked = reading(monkeypatch)
+    app = headless()
+    feed = app.tabs[nibbles.FEED]
+    assert feed.wake(app) is None
+    app.handle(tui.Key("tab"))
+    wait = feed.wake(app)
+    assert wait is not None and 0 < wait <= SLOW_DWELL
+    assert app.next_wake() <= wait
+    app.tick(time.monotonic() + SLOW_DWELL)
+    settle(app)
+    assert asked == [ytq.SUBS] and feed.wake(app) is None
+
+
+def test_every_tab_is_where_its_name_says():
+    """One order along the bottom: the labels drawn, the door's words for
+    them and the names the screens go to a tab by agree, so a tab moved is
+    moved everywhere or the suite says so."""
+    app = headless()
+    assert [label.lower() for label in widgets.TABS] == list(nibbles.START)
+    assert list(nibbles.START.values()) == list(range(len(app.tabs)))
+    assert isinstance(app.tabs[nibbles.SEARCH], ys.SearchTab)
+    for feed in ytq.FEEDS.values():
+        assert app.tabs[ys.feed_tab(feed)].feed is feed
+        assert LISTS[ys.feed_tab(feed)] is feed
+    assert type(app.tabs[nibbles.QUEUE]).__name__ == "QueueTab"
+    assert type(app.tabs[nibbles.MORE]).__name__ == "MoreTab"
 
 
 class Loop:

@@ -815,20 +815,13 @@ class QueueTab(Screen):
                 self.hold_acc -= 2 * step
                 self.step_held(app, step)
             return
-        view = self.lists[GROUPS[self.group]]
-        if view.in_bar(event.x, event.y):
-            view.bar_drag(event.dy)
-        else:
-            view.view(event.dy)
+        self.lists[GROUPS[self.group]].wheel(event)
 
     def key(self, app, key: str) -> bool:
         if self.holding is not None:
             return self.key_moving(app, key)
         view = self.lists[GROUPS[self.group]]
-        page = max(1, view.visible() - 1)
-        steps = {"up": -1, "down": 1, "pgup": -page, "pgdn": page}
-        if key in steps:
-            view.move(steps[key])
+        if view.press(key):
             return True
         if key == "enter" and view.cursor >= 0:
             self.open_row(app, view.entries[view.cursor].key)
@@ -1679,20 +1672,14 @@ class MoreTab(Screen):
             self.view.bar_tap(event.y)
 
     def scroll(self, app, event) -> None:
-        if self.view.in_bar(event.x, event.y):
-            self.view.bar_drag(event.dy)
-        else:
-            self.view.view(event.dy)
+        self.view.wheel(event)
 
     def key(self, app, key: str) -> bool:
         for k, _, _, _, _, action, _ in self.items(app):
             if k and key == k:
                 self.act(app, action)
                 return True
-        page = max(1, self.view.visible() - 1)
-        steps = {"up": -1, "down": 1, "pgup": -page, "pgdn": page}
-        if key in steps:
-            self.view.move(steps[key])
+        if self.view.press(key):
             return True
         if key == "enter" and self.view.cursor >= 0:
             self.act(app, self.view.entries[self.view.cursor].key)

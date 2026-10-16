@@ -3,8 +3,8 @@
 The screens are :class:`Screen` objects. Each draws itself onto a
 :class:`widgets.Surface` (pure: it reads state and draws, nothing else) and
 handles the events the app hands it. A tab is a screen; a sheet is a screen
-that sits over a tab, dimming it, and closes. The app (``nibbles.py``) owns
-the loop, the guards and which screen is on top.
+that sits over a tab, dimming it, and closes. The app (``app.py``) owns the
+loop, the guards and which screen is on top.
 """
 
 from __future__ import annotations
@@ -123,6 +123,8 @@ class Screen:
     #: Set by a screen that holds the keyboard (a focused text field): its
     #: keys are typed, and ``q`` is a letter rather than quit.
     typing = False
+    #: Set by a tab that takes the whole screen, the tab bar too (Move).
+    fullscreen = False
 
     def draw(self, app, s: Surface, height: int) -> None:  # pragma: no cover
         raise NotImplementedError
@@ -142,6 +144,10 @@ class Screen:
     def wake(self, app) -> float | None:
         """Seconds until this screen next needs drawing, or ``None``."""
         return None
+
+    def tick(self, app, now: float | None = None) -> None:
+        """Time has passed (the loop goes round): act on whatever was waiting
+        for it. Asked of the tab on top, before each frame."""
 
     def shown(self, app) -> None:
         """Called each time it comes to the top."""
@@ -352,12 +358,22 @@ class ListView:
         return self._rows_from(self.top, self.height)
 
     def furthest(self) -> int:
-        """The highest top that still fills the view."""
+        """The highest top that still fills the view.
+
+        Never the end of the list itself: when the last entry is taller than
+        the whole view (a setting's three rows in a list two rows high), no
+        top shows it, and the furthest the view goes is the last entry that
+        does fit. Counted from the end alone it was past every entry, so a
+        swipe scrolled to an empty list and the cursor went with it.
+        """
         used, top = 0, len(self.entries)
         while top > 0 and used + self.entries[top - 1].height <= self.height:
             top -= 1
             used += self.entries[top].height
-        return top
+        if top < len(self.entries):
+            return top
+        fits = [i for i, e in enumerate(self.entries) if e.height <= self.height]
+        return fits[-1] if fits else 0
 
     def total_rows(self) -> int:
         return sum(e.height for e in self.entries)
@@ -435,6 +451,32 @@ class ListView:
             self.cursor = self._near(last, -1)
         if self.cursor < 0:
             self.cursor = self._near(self.top, 1)
+
+    def page(self) -> int:
+        """How far pgup and pgdn go: what is on screen, less the one entry
+        kept in sight from where the page began."""
+        return max(1, self.visible() - 1)
+
+    def press(self, key: str, sideways: bool = False) -> bool:
+        """↑ ↓ pgup pgdn, and ← → as a page where the screen has no other
+        use for them (*sideways*): the cursor moved, and ``True``. Any other
+        key is the screen's, and ``False``."""
+        page = self.page()
+        steps = {"up": -1, "down": 1, "pgup": -page, "pgdn": page}
+        if sideways:
+            steps.update(left=-page, right=page)
+        if key not in steps:
+            return False
+        self.move(steps[key])
+        return True
+
+    def wheel(self, event: tui.Scroll) -> None:
+        """One row of a drag or a fling: on the bar it carries the thumb, the
+        way the finger goes; anywhere else it moves the view."""
+        if self.in_bar(event.x, event.y):
+            self.bar_drag(event.dy)
+        else:
+            self.view(event.dy)
 
     def move(self, step: int) -> None:
         """↑ / ↓ (step ∓1), pgup / pgdn (∓ a page)."""

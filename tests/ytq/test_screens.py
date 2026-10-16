@@ -26,7 +26,10 @@ import pytest
 from nibbles import widgets as w
 from nibbles import ytq
 from conftest import search_info, video_info
-from termux_pty import DOWN, ENTER, ESC
+from termux_pty import DOWN, ENTER, ESC, TAB
+
+#: Shift-Tab, as a terminal sends it.
+BTAB = b"\x1b[Z"
 
 pytestmark = pytest.mark.tui
 
@@ -134,6 +137,25 @@ def test_watch_later_is_a_word_in_the_field_and_a_tab(tui, tmp_path):
     assert "watch later" in session.header
     assert "Also Saved" in session.text
     assert ytq.WL_URL in asks(stand_in["asked"])[0]
+
+
+def test_tab_reads_no_list_it_passes_and_the_one_it_stops_on(tui, tmp_path):
+    """Search to Queue is three presses of Tab, past Feed and Later: neither
+    is read. Shift-Tab back stops on Later, which reads itself once the keys
+    have rested there — and the screen is idle again once it has."""
+    stand_in = fake_ytdlp(tmp_path, search_info(["Saved For Tonight", "Also Saved"]))
+    session = tui(**stand_in["env"])
+    home_screen(session)
+    session.send(TAB * 3)
+    session.wait_for(lambda lines: "queue" in lines[0])
+    session.settle(1.0)
+    assert asks(stand_in["asked"]) == []
+    session.send(BTAB)
+    session.wait_for(lambda lines: "Saved For Tonight" in joined(lines))
+    assert "watch later" in session.header
+    assert [ytq.WL_URL in argv for argv in asks(stand_in["asked"])] == [True]
+    session.settle(1.0)
+    assert session.pump(2.0) == 0
 
 
 def test_a_paste_is_typed_into_the_field_and_never_submits(tui, tmp_path):
