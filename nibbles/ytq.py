@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import importlib.util
 import json
 import math
@@ -76,10 +77,14 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 import time
+import tomllib
 import unicodedata
+import urllib.parse
+import zipfile
 from pathlib import Path
 
 from nibbles import home, ytdl_item
@@ -259,20 +264,40 @@ def ask(argv: list[str], timeout: int) -> dict:
     return info
 
 
+def probe_argv(url: str) -> list[str]:
+    """The command a probe runs, kept separate so it can be checked.
+
+    ``-J`` downloads no media, but on its own it is not one request: handed a
+    playlist, a channel or a page of embeds it extracts *every entry in full*
+    — a watch page and player calls each, following every continuation — and
+    only then answers with a list this refuses. ``--no-playlist`` does not
+    stop that; it only settles a ``watch?v=…&list=…`` link in the video's
+    favour. ``--flat-playlist`` and ``--playlist-end 1`` are the same whole
+    cost argument :func:`search_argv` and :func:`feed_argv` make: a list
+    answers from its first page, and is refused there. A video at the top is
+    still extracted whole — yt-dlp flattens only what sits inside a list.
+    """
+    return [
+        *ytdl_item.ytdl_argv(),
+        "-J",
+        "--no-playlist",
+        "--flat-playlist",
+        "--playlist-end",
+        "1",
+        "--no-colors",
+        "--no-warnings",
+        url,
+    ]
+
+
 def probe(url: str, timeout: int = 180) -> dict:
-    """Metadata only — ``-J`` downloads no media."""
-    info = ask(
-        [
-            *ytdl_item.ytdl_argv(),
-            "-J",
-            "--no-playlist",
-            "--no-colors",
-            "--no-warnings",
-            url,
-        ],
-        timeout,
-    )
-    if info.get("_type") == "playlist":
+    """Metadata only, for one video: anything holding several is refused.
+
+    ``multi_video`` (one page, several parts) is refused beside ``playlist``:
+    neither has formats of its own to pick from.
+    """
+    info = ask(probe_argv(url), timeout)
+    if info.get("_type") in ("playlist", "multi_video"):
         raise ProbeError("that URL is a playlist; queue one video at a time")
     return cleaned(info)
 
@@ -568,10 +593,14 @@ def config_paths() -> list[Path]:
 
     Read rather than assumed, because the ``--cookies`` line is somebody's
     hand edit and the whole point of looking is to name the file it is missing
-    from. Deliberately not exhaustive of yt-dlp's search (there is a portable
-    config and a per-directory one) — those are not shapes this phone has, and
-    a path listed here that nobody uses would be a path named in an error
-    message that sends somebody to the wrong file.
+    from. All seven of yt-dlp's user candidates (``get_user_config_dirs``,
+    each directory's ``yt-dlp.conf``, ``config`` and ``config.txt``, and the
+    home one's ``yt-dlp.conf.txt``), because yt-dlp reads only the first of
+    them it can open (:func:`user_config`), and a list missing one is a list
+    that gets wrong which file that is. Deliberately not the portable,
+    ``--paths home`` and system configs, read *beside* this one — those are
+    not shapes this phone has, and a path listed here that nobody uses would
+    be a path named in an error message that sends somebody to the wrong file.
     """
     home = Path.home()
     xdg = Path(os.environ.get("XDG_CONFIG_HOME") or (home / ".config"))
@@ -580,8 +609,28 @@ def config_paths() -> list[Path]:
         xdg / "yt-dlp" / "config",
         xdg / "yt-dlp" / "config.txt",
         home / "yt-dlp.conf",
+        home / "yt-dlp.conf.txt",
         home / ".yt-dlp" / "config",
+        home / ".yt-dlp" / "config.txt",
     ]
+
+
+def user_config(paths: list[Path] | None = None) -> Path | None:
+    """The one user config yt-dlp reads: the first in its order that opens.
+
+    yt-dlp takes the first candidate it can open and stops there (an empty
+    file counts, and hides every file after it), so a ``--cookies`` line in
+    any later one is never read. Asked the way yt-dlp asks — an ``open`` —
+    rather than ``is_file``, so a directory or an unreadable file is passed
+    over here exactly as it is there.
+    """
+    for path in config_paths() if paths is None else paths:
+        try:
+            with open(path, "rb"):
+                return path
+        except OSError:
+            continue
+    return None
 
 
 #: The two ways a config can say where the signed-in session comes from. Both
@@ -591,33 +640,42 @@ COOKIE_FLAGS = ("--cookies", "--cookies-from-browser")
 
 
 def declared_cookies(paths: list[Path] | None = None) -> tuple[str, str, Path] | None:
-    """``(flag, value, the config that said so)`` for the first one found.
+    """``(flag, value, the config that said so)`` for the first one found in
+    the one config yt-dlp reads (:func:`user_config`).
 
+    Only that one: a ``--cookies`` line in a file yt-dlp never opens is not a
+    session, and calling it one spends a feed read to be told to sign in.
     Parsed with :mod:`shlex` per line the way yt-dlp parses these files, so a
     quoted path with a space in it reads the same here as it does there, and a
     ``#`` comment holding the word ``--cookies`` is a comment in both. Reading
     it any more loosely would mean this screen and yt-dlp disagreeing about
     whether cookies are configured, which is a worse answer than not looking.
     """
-    for path in config_paths() if paths is None else paths:
+    path = user_config(paths)
+    found = None if path is None else _cookies_in(path)
+    return None if found is None else (*found, path)
+
+
+def _cookies_in(path: Path) -> tuple[str, str] | None:
+    """``(flag, value)`` for the first cookie line in the config at *path*."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            tokens = shlex.split(line, comments=True)
+        except ValueError:
             continue
-        for line in text.splitlines():
-            try:
-                tokens = shlex.split(line, comments=True)
-            except ValueError:
+        for index, token in enumerate(tokens):
+            flag, _, inline = token.partition("=")
+            if flag not in COOKIE_FLAGS:
                 continue
-            for index, token in enumerate(tokens):
-                flag, _, inline = token.partition("=")
-                if flag not in COOKIE_FLAGS:
-                    continue
-                value = inline or (
-                    tokens[index + 1] if index + 1 < len(tokens) else ""
-                )
-                if value:
-                    return flag, value, path
+            value = inline or (
+                tokens[index + 1] if index + 1 < len(tokens) else ""
+            )
+            if value:
+                return flag, value
     return None
 
 
@@ -652,14 +710,17 @@ def cookie_state(paths: list[Path] | None = None) -> tuple[str, str]:
     """
     declared = declared_cookies(paths)
     if declared is None:
-        looked = [
-            path for path in (config_paths() if paths is None else paths)
-            if path.is_file()
-        ]
-        if looked:
-            return "none", "no --cookies line in " + ", ".join(
-                tilde(path) for path in looked
-            )
+        candidates = config_paths() if paths is None else paths
+        read = user_config(candidates)
+        if read is not None:
+            detail = f"no --cookies line in {tilde(read)}"
+            # The setup that looks right and is not: the line is there, in a
+            # file yt-dlp never opens because this one comes first.
+            later = candidates[candidates.index(read) + 1:]
+            hidden = next((path for path in later if _cookies_in(path)), None)
+            if hidden is not None:
+                detail += f", the one yt-dlp reads; {tilde(hidden)} has one it never sees"
+            return "none", detail
         # Named from the constant rather than by indexing the list: the list
         # is where yt-dlp looks and this is where the docs say to write, and
         # only one of those is a sentence to put in front of somebody.
@@ -667,7 +728,9 @@ def cookie_state(paths: list[Path] | None = None) -> tuple[str, str]:
     flag, value, config = declared
     if flag == "--cookies-from-browser":
         return "browser", f"--cookies-from-browser {value}, from {tilde(config)}"
-    jar = Path(value).expanduser()
+    # Expanded the way yt-dlp's own ``expand_path`` does — the user, then the
+    # variables — so ``$HOME/…`` names the jar here that it names there.
+    jar = Path(os.path.expandvars(os.path.expanduser(value)))
     try:
         stat = jar.stat()
     except OSError:
@@ -1174,47 +1237,100 @@ def uv_receipt(python: str) -> Path | None:
     return receipt if receipt.is_file() else None
 
 
-def uv_requirements(receipt: Path) -> list[str]:
-    """The packages a uv tool was installed with, in uv's own order.
+def uv_requirements(receipt: Path) -> list[dict]:
+    """The requirements a uv tool was installed with, as uv recorded them —
+    ``{"name": "yt-dlp", "extras": ["default"]}``, ``{"name": "six",
+    "specifier": ">=1.10"}`` — in uv's own order.
 
     Read rather than remembered, because the failure this exists to prevent is
     a reinstall that silently drops a ``--with`` package — and a hard-coded
-    list is that same failure with extra steps. Scoped to the ``requirements``
-    block: ``entrypoints`` below it carries the tool's own name again.
+    list is that same failure with extra steps. Read as TOML, never by
+    scanning for brackets: uv writes ``extras = ["default"]`` *inside* an
+    entry, and the ``]`` that closes it once ended the list there, so a
+    ``yt-dlp[default]`` install lost every ``--with`` after it and its own
+    extras too — which is how following the line uninstalled ``yt-dlp-ejs``.
+    ``[tool]`` is where uv keeps the list; a receipt with the list at its top
+    is read the same.
     """
     try:
-        text = receipt.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        with open(receipt, "rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
         return []
-    start = text.find("requirements")
-    opened = text.find("[", start) if start >= 0 else -1
-    closed = text.find("]", opened) if opened >= 0 else -1
-    if closed < 0:
+    table = data.get("tool") if isinstance(data.get("tool"), dict) else data
+    found = table.get("requirements")
+    if not isinstance(found, list):
         return []
-    return re.findall(r'name\s*=\s*"([^"]+)"', text[opened:closed])
+    return [
+        entry for entry in found
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str) and entry["name"]
+    ]
+
+
+def requirement_spec(entry: dict, pinned: bool = True) -> str:
+    """One requirement spelled back the way it was asked for, ready for a
+    shell: ``'yt-dlp[default]'``, ``'six>=1.10'``.
+
+    *pinned* ``False`` drops the version constraint — and only that: it is how
+    the tool's own entry is spelled, since moving past whatever was pinned is
+    the whole point of the line (:func:`upgrade_command`), while its extras
+    are what pulls in the pieces the tool needs. Quoted, because ``[`` is a
+    glob to the shell somebody pastes it into.
+    """
+    extras = [str(e) for e in entry.get("extras") or [] if str(e)]
+    text = str(entry["name"]) + (f"[{','.join(extras)}]" if extras else "")
+    if pinned and isinstance(entry.get("specifier"), str):
+        text += entry["specifier"]
+    if isinstance(entry.get("marker"), str) and entry["marker"]:
+        text += f"; {entry['marker']}"
+    return shlex.quote(text)
+
+
+def _same_package(one: str, other: str) -> bool:
+    """Whether two names are one package, the way pip and uv compare them."""
+    return re.sub(r"[-_.]+", "-", one).lower() == re.sub(r"[-_.]+", "-", other).lower()
 
 
 def shebang_of(binary: str) -> str:
     """The interpreter a console script names, or ``""`` if it names none."""
+    words = _shebang_words(binary)
+    return words[0] if words else ""
+
+
+def _shebang_words(binary: str) -> list[str]:
+    """Every word of a script's ``#!`` line, or ``[]`` if it has none."""
     try:
         with open(binary, "rb") as handle:
             first = handle.readline(4096).decode("utf-8", "replace")
     except OSError:
-        return ""
-    return first[2:].strip().split()[0] if first.startswith("#!") else ""
+        return []
+    return first[2:].split() if first.startswith("#!") else []
 
 
 def install_of(command: str) -> tuple[str, str]:
     """``(how it was installed, the interpreter behind it)``.
 
-    ``uv-tool``, ``pip`` or ``absent``. The question matters because the two
-    have different upgrade commands and neither works on the other, and the
+    ``uv-tool``, ``pip``, ``self`` or ``absent``. The question matters because
+    each has its own upgrade command and none works on another, and the
     obvious place to look — the tool's own version banner — cannot answer it.
+
+    ``self`` is yt-dlp's own release, which updates itself: the single-file
+    zipapp (``#!/usr/bin/env python3`` in front of a zip archive) and the
+    built binary with no ``#!`` at all — the interpreter there is the file
+    itself. Told by the archive rather than the ``env``: an ``env`` script
+    that is not one is asked of the interpreter it names, as
+    :func:`yt_dlp_takes` does, and never written up as ``env -m pip``.
     """
     binary = shutil.which(command)
     if not binary:
         return "absent", ""
-    python = shebang_of(binary)
+    words = _shebang_words(binary)
+    if not words or zipfile.is_zipfile(binary):
+        return "self", binary
+    python = words[0]
+    if Path(python).name == "env":
+        named = next((word for word in words[1:] if not word.startswith("-")), "")
+        python = (shutil.which(named) or named) if named else ""
     return ("uv-tool" if uv_receipt(python) else "pip"), python
 
 
@@ -1245,17 +1361,24 @@ def upgrade_command(command: str) -> str:
     at all, silently (measured 2026-08-28). ``install --force`` moves it
     whatever the original requirement said — and re-asserts the ``--with``
     packages, which a plain reinstall drops, trading one silent failure for
-    the other one.
+    the other one. The tool's own extras are re-asserted too
+    (``'yt-dlp[default]'``, which is what brings in ``yt-dlp-ejs``); only its
+    own version pin is left behind. A release that updates itself is told to.
     """
     kind, python = install_of(command)
     if kind == "absent":
         return f"{command} is not on PATH"
+    if kind == "self":
+        return f"{command} -U"
     receipt = uv_receipt(python)
     if receipt is not None:
+        wanted = uv_requirements(receipt)
+        own = next((e for e in wanted if _same_package(e["name"], command)), None)
         withs = "".join(
-            f" --with {name}" for name in uv_requirements(receipt) if name != command
+            f" --with {requirement_spec(entry)}" for entry in wanted if entry is not own
         )
-        return f"uv tool install {command}{withs} --force"
+        tool = requirement_spec(own or {"name": command}, pinned=False)
+        return f"uv tool install {tool}{withs} --force"
     return f"{short_python(python)} -m pip install -U {command}"
 
 
@@ -2168,23 +2291,302 @@ def delivered_file(name: str) -> Path | None:
     return max(found)[1] if found else None
 
 
+# --------------------------------------------------------------------------- #
+# Handing a file to Android
+# --------------------------------------------------------------------------- #
+#
+# termux-open is a broadcast and nothing more: it runs `am broadcast … -d FILE`
+# and exits 0 once the broadcast is sent, whatever happens next. What happens
+# next is Termux's TermuxOpenReceiver, which reads FILE with Android's
+# Uri.parse, checks the file, and hands an app a content:// URI that Termux's
+# own provider then serves — and every way that road fails is a line in logcat
+# and nothing else. So everything that can be known beforehand is asked here,
+# before the broadcast, and said on the screen instead.
+
+#: The setting without which Termux serves no file to any other app (since
+#: termux-app 0.118.0, its provider's ``checkIfAllowExternalAppsPolicyIsViolated``),
+#: and the line that sets it, spelled once.
+SHARE_PROPERTY = "allow-external-apps"
+SHARE_LINE = f"{SHARE_PROPERTY} = true"
+
+#: What ``Uri.parse`` makes something else of in a path — ``%`` starts an
+#: escape, ``#`` a fragment, ``?`` a query — and the full-width lookalike each
+#: becomes in the name of a link (:func:`uri_safe`), which parses as itself and
+#: reads the same in the player's title.
+URI_SPECIAL = {"%": "％", "#": "＃", "?": "？"}
+
+
+def termux_properties_paths() -> list[Path]:
+    """Where Termux reads its settings, in its own order.
+
+    Termux takes the first that *exists* and nothing else
+    (``TermuxPropertyConstants.getPropertiesFile``): a primary file that is
+    there hides the secondary even when it is not a file Termux can read.
+    """
+    home = Path.home()
+    return [home / ".termux" / "termux.properties",
+            home / ".config" / "termux" / "termux.properties"]
+
+
+def java_properties(text: str) -> dict[str, str] | None:
+    """*text* read the way ``java.util.Properties.load`` reads it — which is
+    how Termux reads ``termux.properties`` — or ``None`` where that load would
+    throw (a malformed ``\\uXXXX``), which Termux answers with every default.
+
+    A line runs on into the next while it ends in an odd number of
+    backslashes (the last one dropped, the next line's leading blanks
+    skipped); a comment is a line whose first character past the blanks is
+    ``#`` or ``!`` *while the line being built is still empty* — so one after
+    a lone ``\\`` is a comment too, and a comment never runs on; an empty line
+    is no entry. The key ends at the first unescaped ``=``, ``:`` or blank,
+    and one ``=`` or ``:`` and the blanks around it are skipped. What is left
+    is the value, *trailing blanks included* — Java keeps them, so ``true `` is
+    not ``true`` to Termux, and must not be here. The last of a key wins.
+    Checked, when it was written, against JDK 21's own ``Properties.load``
+    over 80,000 random files of blanks, line ends, backslashes, separators,
+    comment marks and escapes: not one answer differed.
+    """
+    blanks = " \t\f"
+    logical: list[str] = []
+    naturals = re.split(r"\r\n|\r|\n", text)
+    if len(naturals) > 1 and not naturals[-1]:
+        naturals.pop()  # what follows the last line's end is not a line
+    line, running_on = "", False
+    for natural in naturals:
+        natural = natural.lstrip(blanks)
+        if not line and natural[:1] in ("#", "!"):
+            running_on = False
+            continue
+        line += natural
+        running_on = bool((len(line) - len(line.rstrip("\\"))) % 2)
+        if running_on:
+            line = line[:-1]
+            continue
+        if line:
+            logical.append(line)
+        line = ""
+    if running_on and (line or not text.endswith("\r\n")):
+        # The end of the file ends it, empty or not — unless the last ``\r\n``
+        # was read as a line end first, which is how Java's reader does it.
+        logical.append(line)
+    out: dict[str, str] = {}
+    for line in logical:
+        key_end = value_start = len(line)
+        has_sep = escaped = False
+        for pos, ch in enumerate(line):
+            if not escaped and ch in "=:":
+                key_end, value_start, has_sep = pos, pos + 1, True
+                break
+            if not escaped and ch in blanks:
+                key_end, value_start = pos, pos + 1
+                break
+            escaped = ch == "\\" and not escaped
+        while value_start < len(line):
+            ch = line[value_start]
+            if ch not in blanks:
+                if has_sep or ch not in "=:":
+                    break
+                has_sep = True
+            value_start += 1
+        try:
+            out[_java_unescape(line[:key_end])] = _java_unescape(line[value_start:])
+        except ValueError:
+            return None
+    return out
+
+
+def _java_unescape(text: str) -> str:
+    """``Properties.loadConvert``: ``\\t \\n \\r \\f``, ``\\uXXXX``, and a
+    backslash before anything else is that thing."""
+    out, index = [], 0
+    while index < len(text):
+        ch = text[index]
+        index += 1
+        if ch != "\\" or index >= len(text):
+            out.append("" if ch == "\\" else ch)
+            continue
+        ch = text[index]
+        index += 1
+        if ch == "u":
+            digits = text[index:index + 4]
+            if len(digits) < 4 or any(d not in "0123456789abcdefABCDEF" for d in digits):
+                raise ValueError("malformed \\uxxxx encoding")
+            out.append(chr(int(digits, 16)))
+            index += 4
+        else:
+            out.append({"t": "\t", "n": "\n", "r": "\r", "f": "\f"}.get(ch, ch))
+    return "".join(out)
+
+
+def termux_shares() -> str | None:
+    """``None`` when Termux will serve a file to another app; otherwise why
+    not, and the fix.
+
+    Termux reads the setting once, when it starts and on
+    ``termux-reload-settings``, so a line added to the file and never reloaded
+    reads as set here and still fails there — which is why the fix names both.
+    """
+    paths = termux_properties_paths()
+    found = next((path for path in paths if path.exists()), None)
+    where = tilde(found or paths[0])
+    then = "then run termux-reload-settings"
+    unset = (f"Termux shares no file with another app until {where} has {SHARE_LINE}: "
+             f"add it, {then}")
+    if found is None:
+        return unset
+    try:
+        props = (
+            java_properties(found.read_text(encoding="utf-8", errors="replace"))
+            if found.is_file() else None
+        )
+    except OSError:
+        props = None
+    if props is None:
+        return (f"Termux cannot load {where}, so it shares no file with another app: "
+                f"make it a readable file with {SHARE_LINE}, {then}")
+    value = props.get(SHARE_PROPERTY)
+    if value is None:
+        return unset
+    if value.lower() == "true":
+        return None
+    shown = value if value and value == value.strip() else repr(value)
+    return (f"{where} has {SHARE_PROPERTY} = {shown}, and Termux shares files only when it "
+            f"is true: make it {SHARE_LINE}, {then}")
+
+
+def termux_serves(real: str) -> bool:
+    """Whether Termux's provider serves the file whose canonical path is *real*.
+
+    Its own test, a string prefix: Termux's files (``$PREFIX``'s parent) or
+    the primary shared storage, canonical. An SD card is neither, and is
+    refused ("Invalid path") where only logcat hears it.
+    """
+    prefix = os.environ.get("PREFIX")
+    files = str(Path(prefix).parent) if prefix else "/data/data/com.termux/files"
+    storage = os.path.realpath(os.environ.get("EXTERNAL_STORAGE") or "/storage/emulated/0")
+    return real.startswith(files) or real.startswith(storage)
+
+
+def uri_safe(real: str) -> str:
+    """A path to the file at *real* that survives being parsed as a URI again.
+
+    termux-app 0.118 — the stable release — builds the content:// URI it
+    hands an app by pasting the file's path into ``Uri.parse``, and its
+    provider reads the path back *decoded*: the ``%`` of ``100% Raw`` decodes
+    into garbage, the ``#`` of ``C# in 100 Seconds #shorts`` cuts the path
+    short, and the app is handed a file that is not there. Nothing in the URI
+    sent here can mend a parse made of a path it never sees. A link can: one
+    in Termux's own temp folder, named with lookalikes that parse as
+    themselves, which the provider follows to the real file — its check is on
+    the canonical path, so a link changes nothing about what it will serve.
+    A path that needs none comes back as it is, and so does one whose link
+    cannot be made: 0.119 and later build that URI properly and open it anyway.
+    """
+    if not any(ch in real for ch in URI_SPECIAL):
+        return real
+    try:
+        base = Path(os.environ.get("TMPDIR") or tempfile.gettempdir()) / "nibbles-open"
+        folder = base / hashlib.sha256(os.fsencode(real)).hexdigest()[:16]
+        link = folder / "".join(URI_SPECIAL.get(ch, ch) for ch in Path(real).name)
+        if any(ch in str(link) for ch in URI_SPECIAL):
+            return real
+        # The links of files that have gone since go with them; the rest stay,
+        # because an app may open its URI again long after it was handed one.
+        with contextlib.suppress(OSError):
+            for old in base.iterdir() if base.is_dir() else ():
+                if old.is_dir() and not old.is_symlink():
+                    for stale in old.iterdir():
+                        if stale.is_symlink() and not stale.exists():
+                            stale.unlink()
+                    with contextlib.suppress(OSError):
+                        old.rmdir()
+        folder.mkdir(parents=True, exist_ok=True)
+        if not (link.is_symlink() and os.readlink(link) == real):
+            link.unlink(missing_ok=True)
+            os.symlink(real, link)
+        return str(link)
+    except OSError:
+        return real
+
+
+def file_uri(path: str) -> str:
+    """``file://`` and *path* with every byte ``Uri.parse`` would read as
+    syntax escaped, which its ``getPath`` decodes back exactly.
+
+    Handed to termux-open in place of a bare path, which ``am`` parses as a
+    URI too: a ``:`` made everything before it a scheme, a ``#`` a fragment
+    and a ``%`` an escape. termux-open's own ``[ -f ]`` is false for it, so
+    nothing on the way rewrites it, and the receiver takes ``file`` as a file.
+    """
+    return "file://" + urllib.parse.quote(os.fsencode(path))
+
+
+def _unopenable(real: str, termux: bool) -> str | None:
+    """Why the file at *real* cannot be handed to anything, or ``None``.
+
+    Asked at the moment of opening, never of a listing read a poll ago: a
+    file deleted since is broadcast all the same, and the receiver says "not
+    a readable file" to logcat alone.
+    """
+    try:
+        os.stat(real)
+    except FileNotFoundError:
+        return f"it is not in {tilde(os.path.dirname(real))} any more"
+    except PermissionError:
+        return "Termux may not read it: run termux-setup-storage" if termux else "it cannot be read"
+    if not os.path.isfile(real):
+        return "it is not a file"
+    if not os.access(real, os.R_OK):
+        return "it cannot be read: run termux-setup-storage" if termux else "it cannot be read"
+    return None
+
+
 def open_file(path: Path) -> str:
     """Hand *path* to Android (or a desktop) to open, and say how it went.
+
+    The one opener: Open it on a download's sheet and Open it when done both
+    come here, so the two cannot disagree about a file. Everything Termux
+    would refuse in silence is refused here aloud, before anything is sent —
+    a file not there or not readable, a file outside what Termux serves, and
+    a Termux that serves nothing until it is told to (:func:`termux_shares`)
+    — each with what to do about it. What is sent is a ``file://`` URI
+    (:func:`file_uri`) of the canonical path, or of a link to it when the name
+    would not survive Termux's own parse (:func:`uri_safe`). ``xdg-open`` on a
+    desktop keeps the plain path.
+
+    "opened" is the most that can be said after that: termux-open's 0 means
+    the broadcast went out, and whatever the app then made of it is not told.
 
     Never raises and never writes to the terminal: it runs off a thread while
     the app owns the terminal, after a download that has already succeeded.
     """
-    for opener in ("termux-open", "xdg-open"):
-        if shutil.which(opener) is None:
-            continue
-        try:
-            code = subprocess.run(
-                [opener, str(path)], timeout=60, capture_output=True
-            ).returncode
-        except (OSError, subprocess.SubprocessError) as exc:
-            return f"could not open {path.name}: {exc}"
-        return f"opened {path.name}" if code == 0 else f"could not open {path.name}"
-    return f"no termux-open to open {path.name}"
+    path = Path(path)
+    name = path.name
+    opener = next((o for o in ("termux-open", "xdg-open") if shutil.which(o)), None)
+    termux = opener == "termux-open"
+    try:
+        real = os.path.realpath(path)
+        problem = _unopenable(real, termux)
+        if problem is None and termux and not termux_serves(real):
+            problem = (
+                f"Termux shares only files in its own folders or internal storage, and "
+                f"this is in {tilde(os.path.dirname(real))}: move it to internal storage, "
+                f"or set its destination there in More"
+            )
+        if problem is None and termux:
+            problem = termux_shares()
+        if problem:
+            return f"could not open {name}: {problem}"
+        if opener is None:
+            return f"no termux-open to open {name}"
+        target = file_uri(uri_safe(real)) if termux else str(path)
+    except (OSError, ValueError) as exc:
+        return f"could not open {name}: {exc}"
+    try:
+        code = subprocess.run([opener, target], timeout=60, capture_output=True).returncode
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"could not open {name}: {exc}"
+    return f"opened {name}" if code == 0 else f"could not open {name}"
 
 
 class Running:
@@ -2628,16 +3030,12 @@ def remember_format(choice: Choice) -> None:
     Kept in the queue's ``config.json`` beside the destinations rather than in
     a file of its own: it is the same kind of setting, it already has an atomic
     writer, and a second place to look for preferences is how two of them end
-    up disagreeing.
+    up disagreeing. Written through :func:`save_prefs`, the one guarded write,
+    so a ``config.json`` that will not parse is left as it is rather than
+    replaced by a file holding this alone — which took the destinations, the
+    reserve and the budget with it, and the line saying the file was broken.
     """
-    try:
-        from nibbles import expire_runner
-
-        config = expire_runner.load_config()
-        config["ytq_last_format"] = {"label": choice.label, "kind": choice.kind}
-        expire_runner.save_config(config)
-    except Exception:  # noqa: BLE001 - a convenience, never a blocker
-        pass
+    save_prefs({}, last=choice)
 
 
 #: The characters Android's shared storage refuses in a file name.
@@ -2755,10 +3153,12 @@ def prefs() -> dict:
     return found if isinstance(found, dict) else {}
 
 
-def save_prefs(changes: dict) -> str | None:
-    """Merge *changes* into the remembered choices. Refused (with the reason)
-    when ``config.json`` will not parse, because writing over a file that
-    could not be read is how the destinations get lost."""
+def save_prefs(changes: dict, last: Choice | None = None) -> str | None:
+    """Merge *changes* into the remembered choices, and with *last* record it
+    as the format chosen last (:func:`recalled_format`) — in one write.
+    Refused (with the reason) when ``config.json`` will not parse, because
+    writing over a file that could not be read is how the destinations get
+    lost: every write the YouTube half makes to that file comes through here."""
     try:
         from nibbles import expire_runner
 
@@ -2766,10 +3166,13 @@ def save_prefs(changes: dict) -> str | None:
         if problem:
             return problem
         config = expire_runner.load_config()
-        current = config.get("ytq_prefs")
-        current = dict(current) if isinstance(current, dict) else {}
-        current.update(changes)
-        config["ytq_prefs"] = current
+        if changes:
+            current = config.get("ytq_prefs")
+            current = dict(current) if isinstance(current, dict) else {}
+            current.update(changes)
+            config["ytq_prefs"] = current
+        if last is not None:
+            config["ytq_last_format"] = {"label": last.label, "kind": last.kind}
         expire_runner.save_config(config)
     except Exception as exc:  # noqa: BLE001 - a convenience, never a blocker
         return str(exc)
@@ -2813,7 +3216,8 @@ def skip_codecs(remembered: dict | None = None) -> list[str]:
 
 def learn(choice: Choice, rule: str) -> None:
     """Remember a choice that was queued: its height counted, its rule kept
-    for its kind, and :func:`remember_format`'s last format."""
+    for its kind, and :func:`remember_format`'s last format — one guarded
+    write, so a broken ``config.json`` is refused once and not written over."""
     got = prefs()
     rules = dict(got.get("rule") or {}) if isinstance(got.get("rule"), dict) else {}
     rules["audio" if choice.kind == "audio" else "video"] = rule
@@ -2823,8 +3227,7 @@ def learn(choice: Choice, rule: str) -> None:
         counts = dict(got.get("heights") or {}) if isinstance(got.get("heights"), dict) else {}
         counts[str(height)] = int(counts.get(str(height), 0) or 0) + 1
         changes["heights"] = counts
-    save_prefs(changes)
-    remember_format(choice)
+    save_prefs(changes, last=choice)
 
 
 

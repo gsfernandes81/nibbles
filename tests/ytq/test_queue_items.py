@@ -21,7 +21,7 @@ import sys
 import types
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from nibbles import ytq
@@ -513,6 +513,43 @@ def test_a_config_that_will_not_parse_is_never_a_blocker(clean_queue):
     ytq.remember_format(a_choice())  # says nothing, breaks nothing
 
 
+@pytest.mark.parametrize("broken", [
+    '{"video_dir": "/sdcard/Movies", "reserve": 300, "budget": "manual",}',
+    "{not json",
+    "[1, 2]",
+    '{"reserve": 300}x',
+])
+def test_queueing_never_writes_over_a_config_that_will_not_parse(clean_queue, broken):
+    """``learn`` runs on every queue. A file that will not parse reads as
+    nothing, and writing nothing-plus-the-last-format over it took the
+    destinations, the reserve and the budget — and with them the line on More
+    saying the file was broken, so the loss was silent as well."""
+    from nibbles import expire_runner
+
+    config = clean_queue / "config.json"
+    config.write_text(broken)
+    before, problem = config.read_bytes(), expire_runner.config_problem()
+    assert problem
+    ytq.learn(a_choice(), "smallest")
+    ytq.remember_format(a_choice())
+    assert config.read_bytes() == before
+    assert expire_runner.config_problem() == problem
+
+
+def test_queueing_keeps_every_setting_it_does_not_own(clean_queue):
+    """A good file comes back with everything it held, plus the two things
+    the YouTube half remembers — and nothing else changed."""
+    config = clean_queue / "config.json"
+    held = {"video_dir": "/sdcard/Movies", "reserve": 300, "budget": "manual"}
+    config.write_text(json.dumps(held))
+    ytq.learn(a_choice(), "largest")
+    after = json.loads(config.read_text())
+    assert {k: after[k] for k in held} == held
+    assert set(after) - set(held) == {"ytq_prefs", "ytq_last_format"}
+    assert ytq.recalled_format() == {"label": "1080p mp4", "kind": "merge"}
+    assert ytq.rule_for("merge") == "largest"
+
+
 def test_where_a_file_lands_is_asked_of_the_runner():
     """A line printed at queue time that disagrees with where the file turns
     up is worse than no line."""
@@ -699,3 +736,347 @@ def test_opening_never_raises(monkeypatch, tmp_path):
         lambda *a, **kw: (_ for _ in ()).throw(OSError("no such opener")),
     )
     assert "talk.mp4" in ytq.open_file(target)
+    # And past every check, with the opener itself the thing that fails.
+    target.write_bytes(b"x")
+    monkeypatch.setattr(ytq.shutil, "which",
+                        lambda name: "/bin/false" if name == "xdg-open" else None)
+    assert "talk.mp4" in ytq.open_file(target)
+
+
+# --------------------------------------------------------------------------- #
+# Handing a file to Android: refused aloud, or sent so that it arrives
+# --------------------------------------------------------------------------- #
+#
+# termux-open exits 0 once its broadcast is sent, so nothing that goes wrong
+# after it reaches the screen. These pin the two halves of the answer: every
+# refusal Termux would make in silence is made here, before any opener runs;
+# and what is sent names the same file at every step Android takes with it,
+# read through a model of Android's own Uri.parse below.
+
+
+_HEX = "0123456789abcdefABCDEF"
+
+
+def _uri_decode(text: str) -> str:
+    """``UriCodec.decode(s, false, UTF_8, false)``, failures and all: a ``%``
+    not followed by two hex digits is U+FFFD, the character after it eaten,
+    and the half-read byte still put — which is how ``100% Raw`` becomes
+    ``100\\ufffd\\x00Raw``."""
+    out: list[str] = []
+    pending = bytearray()
+
+    def flush():
+        if pending:
+            out.append(pending.decode("utf-8", "replace"))
+            pending.clear()
+
+    index = 0
+    while index < len(text):
+        ch = text[index]
+        index += 1
+        if ch != "%":
+            flush()
+            out.append(ch)
+            continue
+        value = 0
+        for _ in range(2):
+            if index >= len(text):
+                flush()
+                out.append("\ufffd")
+                return "".join(out)
+            digit = text[index]
+            index += 1
+            if digit not in _HEX:
+                flush()
+                out.append("\ufffd")
+                break
+            value = value * 16 + int(digit, 16)
+        pending.append(value)
+    flush()
+    return "".join(out)
+
+
+def _uri_scheme(uri: str) -> str | None:
+    """``Uri.parse(uri).getScheme()``: everything before the first ``:``."""
+    colon = uri.find(":")
+    return None if colon < 0 else uri[:colon]
+
+
+def _uri_path(uri: str) -> str | None:
+    """``Uri.parse(uri).getPath()`` (``StringUri.parsePath``): past the
+    authority, up to the first ``?`` or ``#``, decoded."""
+    colon = uri.find(":")
+    if colon > -1 and (colon + 1 == len(uri) or uri[colon + 1] != "/"):
+        return None  # opaque
+    if len(uri) > colon + 2 and uri[colon + 1] == "/" and uri[colon + 2] == "/":
+        start = colon + 3
+        while start < len(uri):
+            if uri[start] in "?#":
+                return ""
+            if uri[start] in "/\\":
+                break
+            start += 1
+    else:
+        start = colon + 1
+    end = start
+    while end < len(uri) and uri[end] not in "?#":
+        end += 1
+    return _uri_decode(uri[start:end])
+
+
+def _uri_fragment(uri: str) -> str | None:
+    cut = uri.find("#", max(uri.find(":"), 0))
+    return None if cut < 0 else _uri_decode(uri[cut + 1:])
+
+
+def _provider_paths(sent: str) -> dict[str, str | None]:
+    """Where each Termux's provider ends up looking, for what termux-open was
+    handed — ``None`` where its receiver gives up first.
+
+    0.118 (the stable release): the receiver takes ``getPath()``, and the URI
+    it hands the app is ``Uri.parse("content://com.termux.files" + path)``,
+    read back by the provider with ``getPath()`` again. 0.119 and later: the
+    path with its fragment put back, and a URI built with ``Uri.Builder``,
+    which gives the provider the path exactly."""
+    scheme = _uri_scheme(sent)
+    if scheme not in (None, "file"):
+        return {"0.118": None, "0.119": None}  # taken for a web address
+    stable = _uri_path(sent)
+    fragment = _uri_fragment(sent)
+    later = (stable or "") + (f"#{fragment}" if fragment else "")
+    found = {}
+    for version, path in (("0.118", stable), ("0.119", later)):
+        if not path or not os.path.isfile(path):
+            found[version] = None  # "Not a readable file", to logcat
+        elif version == "0.118":
+            found[version] = _uri_path("content://com.termux.files" + os.path.abspath(path))
+        else:
+            found[version] = path
+    return found
+
+
+def test_the_model_of_android_is_not_the_identity():
+    """The round trip below means something only if a raw path fails it."""
+    assert _uri_path("/x/I Tried 100% Raw Food.mp4") == "/x/I Tried 100\ufffd\x00Raw Food.mp4"
+    assert _uri_path("/x/C# in 100 Seconds #shorts.mp4") == "/x/C"
+    assert _uri_scheme("/x/Rust 2024: what changed.mp4") == "/x/Rust 2024"
+    assert _uri_path("file:///x/a%20b%25.mp4") == "/x/a b%.mp4"
+
+
+class _Termux:
+    """A phone, as far as the opener can tell: Termux's files and the shared
+    storage as two folders, the setting on, and a termux-open that records
+    what it was handed and exits 0 the way the real one does."""
+
+    def __init__(self, root, monkeypatch):
+        self.files = root / "data" / "com.termux" / "files"
+        self.storage = root / "storage" / "emulated" / "0"
+        self.sd = root / "storage" / "1234-ABCD"
+        for folder in (self.files / "usr" / "tmp", self.storage, self.sd):
+            folder.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("PREFIX", str(self.files / "usr"))
+        monkeypatch.setenv("TMPDIR", str(self.files / "usr" / "tmp"))
+        monkeypatch.setenv("EXTERNAL_STORAGE", str(self.storage))
+        self.properties("allow-external-apps = true\n")
+        self.sent: list[list[str]] = []
+        monkeypatch.setattr(ytq.shutil, "which", lambda name: (
+            "/data/data/com.termux/files/usr/bin/termux-open" if name == "termux-open" else None))
+        monkeypatch.setattr(ytq.subprocess, "run", lambda argv, **kw: (
+            self.sent.append(argv) or subprocess.CompletedProcess(argv, 0, b"", b"")))
+
+    def properties(self, primary=None, secondary=None):
+        for path, body in zip(ytq.termux_properties_paths(), (primary, secondary), strict=True):
+            if path.is_dir():
+                path.rmdir()
+            path.unlink(missing_ok=True)
+            if body is not None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body)
+
+    def film(self, name="film.mp4", where=None):
+        path = (where or self.storage / "Download") / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 10)
+        return path
+
+
+_TRICKY = st.sampled_from([
+    "100%", "% done", "a%20b", "%2", "%%", "C#", "#shorts", "?", "a?b=c&d",
+    "Rust 2024: what changed", " ", "é", "日本語", "+", ";", "'", '"', "\\", "~",
+    "Crust of Rust", ".", "-",
+])
+_NAME = st.one_of(
+    st.lists(_TRICKY, min_size=1, max_size=5).map("".join),
+    st.text(st.characters(blacklist_categories=("Cs", "Cc"), blacklist_characters="/\x00"),
+            min_size=1, max_size=20),
+).filter(lambda name: name.strip(".") != "")
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(folder=_NAME, stem=_NAME)
+def test_what_termux_open_is_handed_reaches_the_same_file_on_every_termux(
+    tmp_path, monkeypatch, folder, stem
+):
+    """``%``, ``#``, ``?``, ``:``, spaces and anything non-ASCII, in the name
+    or the folder: the receiver finds the file, and the provider of both the
+    stable release and the next one opens that same file and is willing to."""
+    phone = _Termux(tmp_path, monkeypatch)
+    film = phone.film(stem + ".mp4", phone.storage / "Download" / folder)
+    phone.sent.clear()
+    said = ytq.open_file(film)
+    assert said == f"opened {film.name}"
+    [(opener, sent)] = phone.sent
+    assert opener.endswith("termux-open")
+    # termux-open's own `[ -f "$FILE" ]` is false for it, so it is passed on
+    # untouched rather than put through realpath.
+    assert not os.path.exists(sent)
+    for version, path in _provider_paths(sent).items():
+        assert path is not None, version
+        assert os.path.samefile(path, film), version
+        assert ytq.termux_serves(os.path.realpath(path)), version
+
+
+def test_a_plain_name_is_handed_over_with_no_link(tmp_path, monkeypatch):
+    phone = _Termux(tmp_path, monkeypatch)
+    film = phone.film("Crust of Rust - Subtyping and Variance.mp4")
+    assert ytq.open_file(film) == f"opened {film.name}"
+    [(_, sent)] = phone.sent
+    assert _uri_path(sent) == os.path.realpath(film)
+
+
+def test_a_link_made_for_a_name_goes_when_its_file_does(tmp_path, monkeypatch):
+    """Links are kept while their file is there — an app may open its URI
+    again — and the ones whose file has gone are cleared on the next."""
+    phone = _Termux(tmp_path, monkeypatch)
+    first, second = phone.film("100% one.mp4"), phone.film("#two.mp4")
+    ytq.open_file(first)
+    ytq.open_file(first)
+    links = [p for p in (phone.files / "usr" / "tmp").rglob("*") if p.is_symlink()]
+    assert len(links) == 1 and links[0].resolve() == first.resolve()
+    first.unlink()
+    ytq.open_file(second)
+    links = [p for p in (phone.files / "usr" / "tmp").rglob("*") if p.is_symlink()]
+    assert [link.resolve() for link in links] == [second.resolve()]
+
+
+def test_a_desktop_opener_keeps_the_plain_path(tmp_path, monkeypatch):
+    film = tmp_path / "100% #1.mp4"
+    film.write_bytes(b"x")
+    sent = []
+    monkeypatch.setattr(ytq.shutil, "which",
+                        lambda name: "/usr/bin/xdg-open" if name == "xdg-open" else None)
+    monkeypatch.setattr(ytq.subprocess, "run", lambda argv, **kw: (
+        sent.append(argv) or subprocess.CompletedProcess(argv, 0)))
+    assert ytq.open_file(film) == f"opened {film.name}"
+    assert [argv[1:] for argv in sent] == [[str(film)]]
+
+
+def _refusal(phone, case, monkeypatch):
+    """Set up one thing Termux would refuse in silence; the file to open."""
+    film = phone.film()
+    if case == "gone since the listing was read":
+        film.unlink()
+    elif case == "a folder":
+        film.unlink()
+        film.mkdir()
+    elif case == "unreadable":
+        real = os.path.realpath(film)
+        access = os.access
+        monkeypatch.setattr(ytq.os, "access", lambda p, mode, **kw: (
+            False if os.fspath(p) == real else access(p, mode, **kw)))
+    elif case == "on the sd card":
+        film.unlink()
+        film = phone.film(where=phone.sd / "Movies")
+    elif case == "no termux.properties":
+        phone.properties()
+    elif case == "the default, commented":
+        phone.properties("# allow-external-apps = true\n")
+    elif case == "false":
+        phone.properties("allow-external-apps = false\n")
+    elif case == "true with a blank after it":
+        phone.properties("allow-external-apps = true \n")
+    elif case == "set only where Termux does not look":
+        phone.properties("extra-keys = []\n", "allow-external-apps = true\n")
+    elif case == "the first file is no file":
+        phone.properties(None, "allow-external-apps = true\n")
+        ytq.termux_properties_paths()[0].mkdir(parents=True)
+    return film
+
+
+_REFUSALS = [
+    "gone since the listing was read", "a folder", "unreadable", "on the sd card",
+    "no termux.properties", "the default, commented", "false",
+    "true with a blank after it", "set only where Termux does not look",
+    "the first file is no file",
+]
+
+
+@pytest.mark.parametrize("case", _REFUSALS)
+def test_what_termux_would_refuse_in_silence_is_refused_aloud(tmp_path, monkeypatch, case):
+    """Nothing is sent, so nothing can say "opened" over a file no app will
+    ever get; the answer is not the answer a sent file gets, and it names the
+    file it is about."""
+    phone = _Termux(tmp_path, monkeypatch)
+    sent_answer = ytq.open_file(phone.film())
+    assert len(phone.sent) == 1
+    phone.sent.clear()
+    film = _refusal(phone, case, monkeypatch)
+    said = ytq.open_file(film)
+    assert phone.sent == []
+    assert said != sent_answer
+    assert film.name in said
+
+
+@pytest.mark.parametrize("case", [c for c in _REFUSALS if "properties" in c or c in (
+    "the default, commented", "false", "true with a blank after it",
+    "set only where Termux does not look", "the first file is no file")])
+def test_the_setting_s_refusal_says_which_line_in_which_file_and_how_to_apply_it(
+    tmp_path, monkeypatch, case
+):
+    """The fix is the message: the line, the file Termux reads it from — the
+    first that is there, else the primary — and the reload that applies it."""
+    phone = _Termux(tmp_path, monkeypatch)
+    film = _refusal(phone, case, monkeypatch)
+    said = ytq.open_file(film)
+    paths = ytq.termux_properties_paths()
+    read = next((p for p in paths if p.exists()), paths[0])
+    assert ytq.SHARE_PROPERTY in said and "true" in said
+    assert ytq.tilde(read) in said
+    assert "termux-reload-settings" in said
+
+
+@pytest.mark.parametrize("primary, secondary, granted", [
+    (None, None, False),
+    ("# allow-external-apps = true\n", None, False),
+    ("! allow-external-apps = true\n", None, False),
+    ("allow-external-apps = true\n", None, True),
+    ("allow-external-apps=true", None, True),
+    ("allow-external-apps:TRUE\n", None, True),
+    ("allow-external-apps true\n", None, True),
+    ("  allow-external-apps\t=\ttrue\r\n", None, True),
+    ("allow-external-apps = true \n", None, False),
+    ("allow-external-apps = yes\n", None, False),
+    ('allow-external-apps = "true"\n', None, False),
+    ("allow-external-apps==true\n", None, False),
+    ("allow-external-apps = true\nallow-external-apps = false\n", None, False),
+    ("allow-external-apps = false\nallow-external-apps = true\n", None, True),
+    ("allow-external-apps = tr\\\n    ue\n", None, True),
+    ("allow\\-external-apps = \\u0074rue\n", None, True),
+    ("allow-external-apps = \\u00zz\n", None, False),
+    ("# a comment runs on? \\\nallow-external-apps = true\n", None, True),
+    ("extra-keys = [] \\\nallow-external-apps = true\n", None, False),
+    ("bell-character=ignore\rallow-external-apps=true\r", None, True),
+    (None, "allow-external-apps=true\n", True),
+    ("extra-keys = []\n", "allow-external-apps=true\n", False),
+    ("allow-external-apps=true\n", "allow-external-apps=false\n", True),
+])
+def test_the_setting_is_read_the_way_termux_reads_it(
+    tmp_path, monkeypatch, primary, secondary, granted
+):
+    """``java.util.Properties`` (``=``, ``:`` or a blank between the key and
+    the value; ``#`` and ``!`` comments; a trailing backslash runs on; the
+    value's trailing blanks kept; the last of a key wins), ``true`` in any
+    case and nothing else, from the first file that exists."""
+    phone = _Termux(tmp_path, monkeypatch)
+    phone.properties(primary, secondary)
+    assert (ytq.termux_shares() is None) is granted

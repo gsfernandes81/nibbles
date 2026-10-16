@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
+import shutil
 import subprocess
+import zipfile
 
 import pytest
 from hypothesis import given
@@ -123,6 +126,32 @@ def test_a_playlist_url_is_refused_rather_than_queued(monkeypatch):
     )
     with pytest.raises(ytq.ProbeError):
         ytq.probe("https://youtube.com/playlist?list=x")
+
+
+def test_a_probe_answers_a_list_from_its_first_page(monkeypatch):
+    """``-J`` alone extracts every entry of a playlist or a channel in full —
+    a watch page and player calls each — before the refusal arrives; the
+    sheet's ~0.3 MB was a price for one video. Bounded the way the search and
+    the feed are, a list is refused off its first page, and a video still
+    comes back whole."""
+    asked = []
+    answers = iter([
+        {"_type": "playlist", "entries": [{"id": "a"}]},
+        {"_type": "multi_video", "entries": [{"id": "a"}]},
+        {"id": "a", "formats": [{"format_id": "18"}]},
+    ])
+    monkeypatch.setattr(ytq, "ask", lambda argv, timeout: asked.append(argv) or next(answers))
+    for url in ("https://www.youtube.com/playlist?list=PLx", "https://example.org/parts"):
+        with pytest.raises(ytq.ProbeError):
+            ytq.probe(url)
+    video = ytq.probe("https://youtu.be/a")
+    assert video["formats"]
+    for argv in asked:
+        assert "--flat-playlist" in argv
+        assert int(after(argv, "--playlist-end")) <= 1
+        assert "--no-playlist" in argv and "-J" in argv
+        assert argv[: len(ytq.ytdl_item.ytdl_argv())] == ytq.ytdl_item.ytdl_argv()
+        assert not any(token.startswith("--ignore-config") for token in argv)
 
 
 def test_channels_and_playlists_are_dropped_from_a_search(monkeypatch):
@@ -343,6 +372,91 @@ def test_a_browser_jar_is_a_declaration_and_counts(tmp_path):
     state, detail = ytq.cookie_state([config])
     assert state == "browser"
     assert "firefox" in detail
+
+
+@pytest.mark.parametrize("spelled", [
+    "~/my jars/cookies.txt",
+    "$HOME/my jars/cookies.txt",
+    "${HOME}/my jars/cookies.txt",
+    "$JARDIR/cookies.txt",
+    "{absolute}",
+])
+def test_every_spelling_yt_dlp_expands_names_the_same_jar(monkeypatch, tmp_path, spelled):
+    """yt-dlp expands the user and then the variables (``expand_path``) before
+    it loads the jar, so ``$HOME/…`` is a working setup there — and a refusal
+    here, sending somebody to re-export cookies that are fine."""
+    jar = ytq.Path.home() / "my jars" / "cookies.txt"
+    jar.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("JARDIR", str(jar.parent))
+    config = tmp_path / "config"
+    spelled = str(jar) if spelled == "{absolute}" else spelled
+    config.write_text(f"--cookies {shlex.quote(spelled)}\n")
+    jar.write_text("# Netscape HTTP Cookie File\n")
+    assert ytq.cookie_state([config])[0] == "file"
+    jar.unlink()
+    assert ytq.cookie_state([config])[0] == "missing"
+
+
+def test_yt_dlp_s_user_config_candidates_are_all_there_in_its_order():
+    """yt-dlp reads the first of these it can open; a list missing one gets
+    wrong which file that is (``get_user_config_dirs`` and
+    ``_load_from_config_dirs``)."""
+    home = ytq.Path.home()
+    xdg = home / ".config"
+    assert ytq.config_paths() == [
+        xdg / "yt-dlp.conf",
+        xdg / "yt-dlp" / "config",
+        xdg / "yt-dlp" / "config.txt",
+        home / "yt-dlp.conf",
+        home / "yt-dlp.conf.txt",
+        home / ".yt-dlp" / "config",
+        home / ".yt-dlp" / "config.txt",
+    ]
+
+
+#: What one candidate config can be: not there, a directory (which yt-dlp
+#: cannot open, so passes over), empty (which it opens, and stops at), a
+#: config with no cookies, or one with them.
+_CONFIG_STATES = ("absent", "directory", "empty", "other", "cookies")
+
+
+@given(states=st.lists(st.sampled_from(_CONFIG_STATES), min_size=7, max_size=7))
+def test_the_cookies_are_read_from_the_one_config_yt_dlp_reads(states):
+    """yt-dlp opens the first candidate it can and reads no other, so a
+    ``--cookies`` line behind an earlier file — even an empty one — is never
+    read: calling it a go spends a feed read to be told to sign in."""
+    home = ytq.Path.home()
+    for leftover in (home / ".config", home / ".yt-dlp", home / "yt-dlp.conf",
+                     home / "yt-dlp.conf.txt"):
+        if leftover.is_dir():
+            shutil.rmtree(leftover)
+        leftover.unlink(missing_ok=True)
+    jar = home / "jar" / "cookies.txt"
+    jar.parent.mkdir(parents=True, exist_ok=True)
+    jar.write_text("# Netscape HTTP Cookie File\n")
+    paths = ytq.config_paths()
+    for path, state in zip(paths, states, strict=True):
+        if state == "directory":
+            path.mkdir(parents=True, exist_ok=True)
+        elif state != "absent":
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text({"empty": "", "other": "--no-mtime\n",
+                             "cookies": f"--cookies {jar}\n"}[state])
+    opened = [p for p, s in zip(paths, states, strict=True) if s not in ("absent", "directory")]
+    read = opened[0] if opened else None
+    state, detail = ytq.cookie_state()
+    assert ytq.user_config() == read
+    assert (state == "file") == (read is not None and states[paths.index(read)] == "cookies")
+    declared = ytq.declared_cookies()
+    assert (declared[2] if declared else None) == (read if state == "file" else None)
+    if state != "file" and read is not None:
+        # The file that is read is the one named, and a line it hides is
+        # pointed at rather than left for somebody to find.
+        assert ytq.tilde(read) in detail
+        later = paths[paths.index(read) + 1:]
+        hidden = [p for p in later if states[paths.index(p)] == "cookies"]
+        if hidden:
+            assert ytq.tilde(hidden[0]) in detail
 
 
 def test_how_old_a_jar_is_said_in_words():
@@ -638,3 +752,127 @@ def test_a_fetch_that_ignores_its_timeout_still_comes_back():
     with pytest.raises(subprocess.TimeoutExpired):
         tui.run_child([sys.executable, "-c", stubborn], 1)
     assert time.monotonic() - began < 10
+
+
+# --------------------------------------------------------------------------- #
+# The upgrade line, read off the machine
+# --------------------------------------------------------------------------- #
+
+
+def _uv_tool(folder, patch, receipt: str):
+    """A uv tool venv holding *receipt*, and a ``yt-dlp`` on PATH run by it."""
+    venv = folder / "tools" / "yt-dlp"
+    (venv / "bin").mkdir(parents=True, exist_ok=True)
+    python = venv / "bin" / "python"
+    python.write_text("")
+    (venv / ytq.UV_RECEIPT).write_text(receipt)
+    binary = folder / "yt-dlp"
+    binary.write_text(f"#!{python}\n")
+    patch.setattr(ytq.shutil, "which", lambda name: str(binary))
+
+
+def _operands(line: str) -> tuple[str, list[str]]:
+    """``uv tool install TOOL --with A --with B --force`` → ``(TOOL, [A, B])``."""
+    words = shlex.split(line)
+    assert words[:3] == ["uv", "tool", "install"] and words[-1] == "--force"
+    middle = words[4:-1]
+    assert middle[::2] == ["--with"] * (len(middle) // 2)
+    return words[3], middle[1::2]
+
+
+def _spec(entry: dict, pinned: bool = True) -> str:
+    extras = entry.get("extras") or []
+    return (entry["name"] + (f"[{','.join(extras)}]" if extras else "")
+            + (entry.get("specifier", "") if pinned else ""))
+
+
+def test_the_line_for_an_install_with_extras_keeps_them_and_every_with(tmp_path, monkeypatch):
+    """What uv writes for ``uv tool install "yt-dlp[default]" --with yt-dlp-ejs``.
+    The ``]`` closing the extras once ended the list, so the line dropped them
+    and every ``--with`` after them — and following it uninstalled the very
+    solver the same notice says ``yt-dlp -v`` must show."""
+    _uv_tool(tmp_path, monkeypatch, (
+        "[tool]\n"
+        "requirements = [\n"
+        '    { name = "yt-dlp", extras = ["default"] },\n'
+        '    { name = "yt-dlp-ejs" },\n'
+        "]\n"
+        "entrypoints = [\n"
+        '    { name = "yt-dlp", install-path = "/x/bin/yt-dlp", from = "yt-dlp" },\n'
+        "]\n"
+    ))
+    tool, withs = _operands(ytq.upgrade_command("yt-dlp"))
+    assert tool == "yt-dlp[default]"
+    assert withs == ["yt-dlp-ejs"]
+
+
+_NAMES = st.from_regex(r"[a-z][a-z0-9]{0,5}(-[a-z0-9]{1,3})?", fullmatch=True).filter(
+    lambda name: name != "yt-dlp")
+_EXTRAS = st.lists(st.from_regex(r"[a-z]{1,6}", fullmatch=True), max_size=2, unique=True)
+_PINS = st.sampled_from(["", ">=1.10", "==2026.9.1", ">=1.0,<3", "~=0.3"])
+
+
+def _toml(entry: dict) -> str:
+    parts = [f'name = "{entry["name"]}"']
+    if entry["extras"]:
+        parts.append("extras = [" + ", ".join(f'"{e}"' for e in entry["extras"]) + "]")
+    if entry["specifier"]:
+        parts.append(f'specifier = "{entry["specifier"]}"')
+    return "    { " + ", ".join(parts) + " },\n"
+
+
+@given(
+    own=st.fixed_dictionaries({"extras": _EXTRAS, "specifier": _PINS}),
+    withs=st.lists(st.fixed_dictionaries({"name": _NAMES, "extras": _EXTRAS,
+                                          "specifier": _PINS}),
+                   max_size=4, unique_by=lambda e: e["name"]),
+)
+def test_the_upgrade_line_reinstalls_exactly_what_uv_recorded(own, withs):
+    """Every ``--with`` comes back with its extras and its pin, the tool with
+    its extras, and the one thing left behind is the tool's own pin — moving
+    past it is the point of ``install --force``."""
+    import tempfile
+
+    own = {"name": "yt-dlp", **own}
+    receipt = "[tool]\nrequirements = [\n" + "".join(map(_toml, [own, *withs])) + "]\n"
+    with tempfile.TemporaryDirectory() as folder, pytest.MonkeyPatch.context() as patch:
+        _uv_tool(ytq.Path(folder), patch, receipt)
+        tool, said = _operands(ytq.upgrade_command("yt-dlp"))
+    assert tool == _spec(own, pinned=False)
+    assert said == [_spec(entry) for entry in withs]
+
+
+def _zipapp(path) -> None:
+    """yt-dlp's single-file release: an ``env`` shebang in front of a zip."""
+    import io
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("__main__.py", "print('yt-dlp')\n")
+    path.write_bytes(b"#!/usr/bin/env python3\n" + archive.getvalue())
+
+
+@pytest.mark.parametrize("install, first", [
+    ("zipapp", "yt-dlp"),
+    ("built binary", "yt-dlp"),
+    ("pip script", "python3"),
+    ("env script", "python3"),
+])
+def test_the_upgrade_line_is_one_that_runs(tmp_path, monkeypatch, install, first):
+    """The release updates itself; a pip install is upgraded by the python it
+    names — and the ``env`` in front of either is never that python."""
+    binary = tmp_path / "yt-dlp"
+    if install == "zipapp":
+        _zipapp(binary)
+    elif install == "built binary":
+        binary.write_bytes(b"\x7fELF\x02\x01\x01" + bytes(64))
+    elif install == "pip script":
+        binary.write_text("#!/usr/bin/python3\nimport yt_dlp\n")
+    else:
+        binary.write_text("#!/usr/bin/env python3\nimport yt_dlp\n")
+    found = {"yt-dlp": str(binary), "python3": "/usr/bin/python3"}
+    monkeypatch.setattr(ytq.shutil, "which", found.get)
+    words = ytq.upgrade_command("yt-dlp").split()
+    assert words[0] == first
+    assert ytq.Path(words[0]).name != "env"
+    assert ("-m pip" in " ".join(words)) == (first == "python3")
