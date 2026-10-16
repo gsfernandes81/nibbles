@@ -1221,7 +1221,7 @@ def _short(path: Path) -> str:
     return text
 
 
-def _running_now(names: list[str], exited: int | None = None) -> str:
+def _running_now(names: list[str], exited: int | list[int] | None = None) -> str:
     """The item being downloaded at this second, or ``""``.
 
     Measured from the freshness of the item's own progress file, so it catches
@@ -1232,13 +1232,15 @@ def _running_now(names: list[str], exited: int | None = None) -> str:
 
     - one whose last word is an ending (complete, declined, fatal);
     - one written by a run already known to have exited: *exited* is the pid
-      of a ``nibbles now`` this process watched end, and its run id carries
-      that pid. A run stopped short says ``progress`` on its way out, so the
-      word alone cannot tell it from one still going.
+      (or the pids) of a run this process watched end — a ``nibbles now``, or
+      the runner Run now started — and its run id carries that pid. A run
+      stopped short says ``progress`` on its way out, so the word alone
+      cannot tell it from one still going.
 
     Of the rest, the freshest: in a firing the item before this one may
     have stopped a moment ago, and the one downloading is the one writing.
     """
+    gone = [exited] if isinstance(exited, int) else list(exited or ())
     found: list[tuple[float, str]] = []
     for name in names:
         status = WORK / name / ".status.json"
@@ -1255,7 +1257,7 @@ def _running_now(names: list[str], exited: int | None = None) -> str:
         if isinstance(report, dict):
             if report.get("state") in _ENDED:
                 continue
-            if exited is not None and str(report.get("run_id", "")).endswith(f"-{exited}"):
+            if any(str(report.get("run_id", "")).endswith(f"-{pid}") for pid in gone):
                 continue
         found.append((age, name))
     return min(found)[1] if found else ""

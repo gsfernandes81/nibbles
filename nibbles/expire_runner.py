@@ -871,6 +871,19 @@ def stamp(epoch: float | None = None) -> str:
     )
 
 
+def unstamp(text: object) -> float | None:
+    """The instant :func:`stamp` wrote as *text*, or ``None`` if it is not one.
+
+    Beside it so the form has one owner: a screen reads a log stamp back to
+    say it on the phone's clock, never draws it as it is in UTC.
+    """
+    try:
+        parsed = dt.datetime.strptime(str(text), "%Y-%m-%d %H:%M:%SZ")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=dt.UTC).timestamp()
+
+
 def clock(epoch: float) -> str:
     """``23:00Z`` — the same instant, to the minute, for a line read by a human.
 

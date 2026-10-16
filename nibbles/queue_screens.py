@@ -20,6 +20,7 @@ import re
 import time
 from pathlib import Path
 
+from nibbles import expire_dl
 from nibbles import expire_sched as sched
 from nibbles import expire_ui as ui
 from nibbles import shell
@@ -35,6 +36,10 @@ APP_NAME = "nibbles"
 #: and while nothing does (to notice a nightly firing starting).
 LIVE_POLL = 1.0
 IDLE_POLL = 15.0
+
+#: How long a download's figure may stand still before it is read as not
+#: moving: three of the reports it writes at least this often while it is.
+STILL = 3 * expire_dl.STATUS_EVERY_SECONDS
 
 
 def runner():
@@ -67,6 +72,10 @@ STATUS = {
     "downloading": ("↓", "warn"),
 }
 
+#: The verdicts that count down to something, on the status bar and the card:
+#: to the stop time while the window is open, else to when the next opens.
+TIMED = ("early", "go", "late", "spent")
+
 
 class QueueModel:
     """Every download, what the window would do, and what is downloading.
@@ -95,7 +104,7 @@ class QueueModel:
         self.reach_job: tui.Job | None = None
         self.samples: dict[str, list[tuple[float, int]]] = {}
         #: :meth:`_seeing` at the last tick.
-        self.seen: tuple[bool, str] = (False, "")
+        self.seen: tuple[bool, bool, str] = (False, False, "")
         self.read()
         self.refresh()
 
@@ -110,10 +119,12 @@ class QueueModel:
                 self.app.receipt(f"forgot {name}: its file had been deleted")
             self.app.say(f"forgot {', '.join(display(n) for n in forgotten)}: the file had gone")
         # Only the queued: a finished item has left the queue, and its status
-        # file, still fresh, is not a download going on. Nor is what our own
-        # ``nibbles now`` wrote once it has exited (its pid is in the run id).
-        r = self.running
-        exited = r.child.pid if r.child is not None and not r.alive else None
+        # file, still fresh, is not a download going on. Nor is what a run of
+        # our own wrote once it has exited — a ``nibbles now``, or the runner
+        # Run now started, whose pid is in the run id either way: a paused
+        # Run now said "downloading" for a minute and refused to run again.
+        exited = [run.child.pid for run in (self.running, self.firing)
+                  if run.child is not None and not run.alive]
         self.live = sched._running_now([row["name"] for row in self.rows
                                         if row["where"] == "queued"], exited)
         self.read_at = time.monotonic()
@@ -168,26 +179,64 @@ class QueueModel:
         self.read()
         self.refresh()
 
+    def _due(self) -> float:
+        """How often the queue is read: each second while something
+        downloads or a run of ours is alive (Run now starting, or between
+        two items, is about to change it), else the idle poll."""
+        return LIVE_POLL if self.downloading_name() or self.mine() else IDLE_POLL
+
     def tick(self) -> None:
-        due = LIVE_POLL if self.downloading_name() else IDLE_POLL
+        due = self._due()
         # A download starting or ending is read at once: the rows say where
         # it went (done, still queued, failed), and waiting the idle poll out
         # left its sheet a quarter of a minute behind.
         if time.monotonic() - self.read_at >= due or self.seen != self._seeing():
             self.read()
-        self.seen = self._seeing()
+        seeing = self._seeing()
+        # The reading outlives what it read in two ways, and each is asked
+        # again once, on the edge, never on a timer: the moment it counted to
+        # has come (the window opening, its stop time), or a download has
+        # ended and spent what the card still offers. Left alone, the status
+        # bar said the old verdict at "0s" all night and the card kept the
+        # figures a firing had already spent.
+        if self._expired() or self._ended(self.seen, seeing):
+            self.refresh()
+        self.seen = seeing
 
-    def _seeing(self) -> tuple[bool, str]:
-        """What a start or an end changes: our own run's life, and the name
-        downloading."""
-        return self.running.alive, self.downloading_name()
+    def _seeing(self) -> tuple[bool, bool, str]:
+        """What a start or an end changes: our own runs' lives (a ``nibbles
+        now`` and Run now's), and the name downloading."""
+        return self.running.alive, self.firing.alive, self.downloading_name()
+
+    @staticmethod
+    def _ended(was: tuple, now: tuple) -> bool:
+        """Whether something downloading at *was* is not at *now*."""
+        stopped = any(before and not after
+                      for before, after in zip(was[:-1], now[:-1], strict=True))
+        return stopped or bool(was[-1]) and was[-1] != now[-1]
+
+    def _expired(self) -> bool:
+        """Whether the moment the reading counted to has come since it was
+        taken, with nothing asked since — or, what was asked having failed,
+        nothing for :attr:`STALE`, so a portal that is down is not asked on
+        every keypress."""
+        f = self.facts
+        if not f:
+            return False
+        at = f["stop_by"] if f["verdict"] == "go" else self.next_open()
+        now = time.time()
+        if at is None or math.isinf(at) or not f["now"] < at <= now:
+            return False
+        since = time.monotonic() - self.taken  # since the last answer, read or failed
+        return since > now - at or since >= self.STALE
 
     def wake(self) -> float | None:
-        """When the queue next needs a look: the poll, and the countdown."""
-        due = LIVE_POLL if self.downloading_name() else IDLE_POLL
+        """When the queue next needs a look: the poll, and each second of
+        the last two minutes of a countdown — never one already over."""
+        due = self._due()
         waits = [max(0.05, due - (time.monotonic() - self.read_at))]
         seconds = self.countdown()
-        if seconds is not None and seconds < 120:
+        if seconds is not None and 0 < seconds < 120:
             waits.append(1.0)
         return min(waits)
 
@@ -213,12 +262,19 @@ class QueueModel:
             total = row.get("stated") or 0
         now = time.monotonic()
         seen = self.samples.setdefault(name, [])
+        if seen and seen[-1][1] != have and now - seen[-1][0] > STILL:
+            # Moving again after a stall: measured afresh, never against a
+            # figure from before it.
+            seen.clear()
         if not seen or seen[-1][1] != have:
             seen.append((now, have))
         while len(seen) > 2 and now - seen[0][0] > 20:
             seen.pop(0)
         rate = 0.0
-        if len(seen) >= 2 and seen[-1][0] > seen[0][0]:
+        # Nothing new for STILL is nothing moving: the last two figures kept
+        # their speed, and the time left with it, for as long as a stalled
+        # download went on saying it was alive.
+        if len(seen) >= 2 and seen[-1][0] > seen[0][0] and now - seen[-1][0] <= STILL:
             rate = max(0.0, (seen[-1][1] - seen[0][1]) / (seen[-1][0] - seen[0][0]))
         return have, total, rate
 
@@ -231,13 +287,17 @@ class QueueModel:
     # The window --------------------------------------------------------------
 
     def next_open(self) -> float | None:
+        """When the window that can next spend opens: this one while it is
+        open — what is queued now still goes in it — unless the reading says
+        it will spend nothing more, and then tomorrow's. "spent" once said
+        ``opens 21:57`` of a moment already past, all through the window."""
         f = self.facts
         if not f:
             return None
         if f["now"] < f["window_open"]:
             return f["window_open"]
         stop = f["stop_by"]
-        if math.isinf(stop) or f["now"] < stop:
+        if f["verdict"] != "spent" and (math.isinf(stop) or f["now"] < stop):
             return f["window_open"]
         return f["window_open"] + 86400
 
@@ -262,14 +322,19 @@ class QueueModel:
         return self.facts.get("portal") is not None
 
     def countdown(self) -> float | None:
+        """Seconds to what the status bar counts to — the stop time while
+        the window is open, else the next opening — or ``None``: a verdict
+        that counts to nothing, or a moment already past. That reading is
+        asked again (:meth:`tick`) rather than counted below nought, which
+        said ``0s`` and woke the loop every second for as long as it stood."""
         f = self.facts
-        if not f:
+        if not f or f["verdict"] not in TIMED:
             return None
+        at = f["stop_by"] if f["verdict"] == "go" else self.next_open()
         now = time.time()
-        if f["verdict"] == "go" and not math.isinf(f["stop_by"]):
-            return f["stop_by"] - now
-        at = self.next_open()
-        return None if at is None else at - now
+        if at is None or math.isinf(at) or at <= now:
+            return None
+        return at - now
 
     def status(self, width: int) -> tuple[str, str, str, str]:
         """The status bar: a label word, the detail, the quiet right segment."""
@@ -298,8 +363,7 @@ class QueueModel:
             "late": opens,
             "spent": f"nothing to spend · {opens}",
         }.get(verdict, ui.VERDICT_WORDS.get(verdict, f["detail"]))
-        timed = verdict in ("early", "go", "late", "spent")
-        return (label, kind, detail, when if timed else "")
+        return (label, kind, detail, when)
 
     # Starting things -------------------------------------------------------
 
@@ -333,23 +397,22 @@ def verdict_line(model: QueueModel, room: int) -> list[tuple]:
     word = ui.VERDICT_WORDS.get(f["verdict"], f["detail"])
     seconds = model.countdown()
     tails = []
-    if f["verdict"] not in ("empty", "unset", "off", "no-portal", "stale", "blind"):
+    if seconds is not None:
         at = f["stop_by"] if f["verdict"] == "go" else model.next_open()
-        if at is not None and not math.isinf(at):
-            tails = [f" · {shell.clock(at)} ({shell.left(seconds)})", f" · {shell.left(seconds)}"]
+        tails = [f" · {shell.clock(at)} ({shell.left(seconds)})", f" · {shell.left(seconds)}"]
     for tail in [*tails, ""]:
         if len(word) + len(tail) <= room:
             return [(word, T.fg_base, True), (tail, T.fg_more_subtle)]
     return [(word, T.fg_base, True)]
 
 
-def figures(model: QueueModel, room: int) -> tuple[float, str]:
-    """``(how full the bar is, 480/763 MiB to spend)``: what the next window
-    may spend against what expires."""
+def against(model: QueueModel) -> tuple[int, int] | str:
+    """``(what the next window may spend, what that is against)``, or the
+    line said where those figures would be."""
     f = model.facts
     if not f:
         # A reading that failed says so where its figures would be.
-        return 0.0, model.note
+        return model.note
     spend = max(0, f["spendable"])
     if f.get("source") == "manual":
         # A manual allowance: spent against what is left of it, never against
@@ -358,31 +421,56 @@ def figures(model: QueueModel, room: int) -> tuple[float, str]:
         # The spec's own shape, spendable/left (approved 2026-10-10).
         allowance = f.get("allowance") or {}
         if not allowance.get("allowance_bytes"):
-            return 0.0, "set it under More"
-        left = max(0, allowance.get("left_bytes") or 0)
-        return (spend / left if left else 0.0), pair_of(spend, left, room)
+            return "set it under More"
+        return spend, max(0, allowance.get("left_bytes") or 0)
     doc = f.get("portal")
     if doc is None:
         if f.get("blind"):
-            return 0.0, f"≤{shell.size(spend)} declared"
-        return 0.0, "no reading, nothing to spend"
+            return f"≤{shell.size(spend)} declared"
+        return "no reading, nothing to spend"
     expires = f.get("expiring")
     if expires is None:
         expires = (doc.get("free") or {}).get("left_bytes") or 0
-    expires = max(0, expires)
-    frac = spend / expires if expires else 0.0
-    return frac, pair_of(spend, expires, room)
+    return spend, max(0, expires)
+
+
+def figures(model: QueueModel, room: int) -> tuple[float, str]:
+    """``(how full the bar is, 480/763 MiB to spend)``: what the next window
+    may spend against what expires."""
+    got = against(model)
+    if isinstance(got, str):
+        return 0.0, got
+    spend, of = got
+    return (spend / of if of else 0.0), pair_of(spend, of, room)
+
+
+def spend_figure(model: QueueModel) -> str:
+    """``480 MiB``: what the next window may spend, alone, in the unit its
+    pair is said in — the tiny header's figure; ``""`` where there is no pair.
+    It once cut the drawn pair at its ``/`` and wrote ``MiB`` after whatever
+    was left, a GiB figure or a path in a failed reading's note included."""
+    got = against(model)
+    if isinstance(got, str):
+        return ""
+    spend, _, unit = in_one_unit(*got)
+    return f"{spend} {unit}"
+
+
+def in_one_unit(spend: int, of: int) -> tuple[str, str, str]:
+    """``("480", "763", "MiB")``: both figures in the one unit they are said
+    in — MiB below 10 GiB, whole; GiB to a tenth above."""
+    MiB = 1024 * 1024
+    if max(spend, of) < 10 * 1024 * MiB:
+        return f"{round(spend / MiB)}", f"{round(of / MiB)}", "MiB"
+    return f"{spend / (1024 * MiB):.1f}", f"{of / (1024 * MiB):.1f}", "GiB"
 
 
 def pair_of(spend: int, of: int, room: int) -> str:
     """``480/763 MiB to spend``, ``1017/1144 MiB to spend``: one unit said
     once, MiB below 10 GiB (the spec's own shape, approved for the manual
     card too), whole figures, so the pair fits the 22 columns beside Run now."""
-    MiB = 1024 * 1024
-    if max(spend, of) < 10 * 1024 * MiB:
-        pair = f"{round(spend / MiB)}/{round(of / MiB)} MiB"
-    else:
-        pair = f"{spend / (1024 * MiB):.1f}/{of / (1024 * MiB):.1f} GiB"
+    a, b, unit = in_one_unit(spend, of)
+    pair = f"{a}/{b} {unit}"
     return next((text for text in (f"{pair} to spend", pair) if len(text) <= room), pair)
 
 
@@ -433,6 +521,17 @@ def amount(row: dict, have: int | None = None) -> str:
     return f"{got} of ≤{shell.size(row.get('cap') or 0)}"
 
 
+def failed_line(row: dict) -> str:
+    """A failed download's second line: why, where anything says, else when
+    it gave up. ``last`` is the runner's UTC log stamp of its last try, and
+    is said as how long ago — on no clock at all — never drawn as it is
+    (design §6); text that is not a stamp is somebody's word, and is said."""
+    at = runner().unstamp(row["last"])
+    if row["error"] or at is None:
+        return row["error"] or row["last"] or "gave up"
+    return f"gave up {shell.ago(time.time() - at)}"
+
+
 def row_entry(row: dict, got: int, at: str, live: str = "", progress=None,
               held: bool = False) -> Entry:
     """One download as a two-line row: its name, then its figures (``↓ 18%``
@@ -456,7 +555,7 @@ def row_entry(row: dict, got: int, at: str, live: str = "", progress=None,
             if part:
                 sub.append(w.Span(f" · {part}", w.Pen(fg=T.info)))
         elif row["where"] == "failed":
-            sub = [w.Span(row["last"] or row["error"] or "gave up", w.Pen(fg=T.fg_more_subtle))]
+            sub = [w.Span(failed_line(row), w.Pen(fg=T.fg_more_subtle))]
         else:
             got_file = row["files"][0].name if row["files"] else ""
             where = "deleted" if row.get("lost") == "gone" else got_file
@@ -524,6 +623,22 @@ class QueueTab(Screen):
     def fullscreen(self) -> bool:
         return self.holding is not None
 
+    def settle(self, app) -> None:
+        """Let go of a held download that has left the queue meanwhile —
+        finished, failed or removed while it was held — before the frame
+        decides it is Move's: there is no place left to put it, and drawing
+        one raised out of the loop and took the app down with it."""
+        if self.holding is None:
+            return
+        name = self.holding[0]
+        row = next((r for r in app.queue.rows if r["name"] == name), None)
+        if row is not None and row["where"] == "queued":
+            return
+        self.holding = None
+        went = {"done": "finished", "failed": "failed"}.get(row["where"] if row else "",
+                                                             "left the queue")
+        app.say(f"{display(name)} {went} while it was held")
+
     def shown(self, app) -> None:
         app.queue.read()
         app.queue.refresh(force=False)
@@ -575,16 +690,15 @@ class QueueTab(Screen):
         return w.button("Run now", "n", width, "spend", id="run", pressed=app.pressed)
 
     def draw(self, app, s: Surface, height: int) -> None:
-        if self.holding is not None:
-            self.draw_moving(app, s, height)
+        if self.holding is not None and self.draw_moving(app, s, height):
             return
         W = s.width
         model = app.queue
         tiny = W < 36 and app.height < 13
         if tiny:
             word = verdict_line(model, 0)[0][0]
-            _, fig = figures(model, 20)
-            details = [f"{word} · {fig.split('/')[0]} MiB" if "/" in fig else word]
+            fig = spend_figure(model)
+            details = [f"{word} · {fig}" if fig else word]
         else:
             details = ["queue", time.strftime("%H:%M")] if W >= 36 else ["queue"]
         s.put(w.header(APP_NAME, details, W), 0, 0)
@@ -628,9 +742,19 @@ class QueueTab(Screen):
         fits = view.total_rows() <= room
         view.draw(s, 0, y, W, max(0, room), "row", bar=not fits)
 
-    def draw_moving(self, app, s: Surface, height: int) -> None:
+    def draw_moving(self, app, s: Surface, height: int) -> bool:
+        """Move's screen, or ``False`` (drawing nothing) when the held
+        download is not queued any more and there is no place to show."""
         W = s.width
         name, pos = self.holding
+        order = ui.preview(app.queue.rows, name, pos)
+        queued = [r for r in order if r["where"] == "queued"]
+        view = ListView()
+        view.entries = self.entries(app, "queued", queued, held=name)
+        held_index = next((i for i, e in enumerate(view.entries) if e.key == name), None)
+        if held_index is None:
+            self.settle(app)
+            return False
         s.put(w.header(APP_NAME, [f"moving {display(name)}"], W), 0, 0)
         short = app.height < SHORT
         if short:
@@ -639,11 +763,6 @@ class QueueTab(Screen):
         else:
             s.put(self.card(app, W, False), 0, 1)
             y = 6
-        order = ui.preview(app.queue.rows, name, pos)
-        queued = [r for r in order if r["where"] == "queued"]
-        view = ListView()
-        view.entries = self.entries(app, "queued", queued, held=name)
-        held_index = next(i for i, e in enumerate(view.entries) if e.key == name)
         view.cursor = held_index
         top = y + (0 if short else 1)
         bottom = height - 3 - (0 if short else 1)
@@ -658,6 +777,7 @@ class QueueTab(Screen):
             w.button("Cancel", "esc", 14, id="cancel", pressed=s.pressed),
         ), 0, height - 3)
         self._place_view = view
+        return True
 
     # Events ---------------------------------------------------------------
 
@@ -726,7 +846,7 @@ class QueueTab(Screen):
             open_runner_log(app)
             return True
         if key in ("x",) and app.queue.mine():
-            app.open(DownloadSheet(app.queue.downloading_name() or ""))
+            app.open(DownloadSheet(app.queue.downloading_name(), follow=True))
             return True
         return False
 
@@ -765,13 +885,15 @@ class QueueTab(Screen):
         elif hit.id == "cancel":
             self.holding = None
         elif hit.id == "row-place":
+            # The tapped row's place in the order as it is drawn, the held
+            # row in it: the held download takes exactly that place. Counted
+            # without it, a row below put it one place too high — the next
+            # row down did nothing and the last place could not be tapped.
             view = self._place_view
+            order = [e.key for e in view.entries if e.key]
             target = view.entries[hit.data].key
-            name, _ = self.holding
-            others = [r["name"] for r in app.queue.rows
-                      if r["where"] == "queued" and r["name"] != name]
-            if target in others:
-                self.holding = (name, others.index(target))
+            if target in order:
+                self.holding = (self.holding[0], order.index(target))
             self.drop(app)
 
     def key_moving(self, app, key: str) -> bool:
@@ -953,10 +1075,10 @@ class ItemSheet(Sheet):
             self.act(app, hit.data)
 
     def done(self, app, job) -> None:
-        """Open it has come back from Android."""
+        """Open it has come back from Android: the one opener's own sentence
+        (``ytq.open_file``, which Open it when done says too)."""
         self.opening = None
-        code = job.result if job.error is None else 1
-        app.say("nothing here would open it" if code else f"opened {job.key.name}")
+        app.say(job.result if job.error is None else f"could not open {job.key.name}")
 
     def key(self, app, key: str) -> bool:
         row = self.row(app)
@@ -984,6 +1106,13 @@ class ItemSheet(Sheet):
             else:
                 app.open(LogSheet(display(row["name"]), log))
         elif key == "o":
+            # The file as the queue has it now, not as the row had it at the
+            # last poll: that is up to a quarter of a minute old, and in it
+            # the file can be delivered somewhere else or deleted.
+            model.read()
+            row = self.row(app)
+            if row is None:
+                return
             if not row["files"]:
                 app.say("there is no file yet")
             else:
@@ -992,7 +1121,7 @@ class ItemSheet(Sheet):
                 target = row["files"][0]
                 if self.opening is None or self.opening.finished:
                     self.opening = app.start(
-                        tui.Job(lambda t=target: sched._open(t, quiet=True), "opening it",
+                        tui.Job(lambda t=target: ytq.open_file(t), "opening it",
                                 key=target, quiet=True), self)
         elif key in ("t", "u"):
             said = ui.do_clear_tries(row) if key == "t" else ui.do_requeue(row)
@@ -1097,12 +1226,38 @@ def remove_sheet(app, row: dict, item: ItemSheet) -> Confirm:
 
 
 class DownloadSheet(Sheet):
-    """One reading per draw, so the words and the bar cannot disagree."""
+    """One reading per draw, so the words and the bar cannot disagree.
 
-    def __init__(self, name: str) -> None:
+    Opened from a row it is that download's. Opened by ``x`` it *follows* our
+    own run: Run now downloads one item after another and none at all while
+    it starts, so the sheet takes up each item the run starts. Bound to what
+    was downloading the moment it opened — nothing, often — it was a sheet
+    with no name that said "downloading" over nothing and "stopped" over the
+    item the run then fetched.
+    """
+
+    def __init__(self, name: str, follow: bool = False) -> None:
         super().__init__()
+        self.follow = follow
         self.name = name
-        self.title = display(name)
+        self.title = display(name) if name else "Run now"
+
+    def keep_up(self, app) -> None:
+        """While following our own run, take up the item it is downloading;
+        between two items, and once it ends, stay on the last one."""
+        model = app.queue
+        name = model.downloading_name()
+        if self.follow and model.mine() and name and name != self.name:
+            self.name, self.title = name, display(name)
+
+    def live(self, app) -> bool:
+        """Whether this sheet's download is the one downloading: never while
+        it has none, or a sheet with no name read as live over nothing."""
+        return bool(self.name) and app.queue.downloading_name() == self.name
+
+    def draw(self, app, s: Surface, height: int) -> None:
+        self.keep_up(app)
+        super().draw(app, s, height)
 
     def mine(self, app) -> bool:
         r = app.queue.running
@@ -1116,9 +1271,15 @@ class DownloadSheet(Sheet):
 
     def body(self, app, width: int, height: int) -> Piece:
         model = app.queue
+        if not self.name:
+            # Following a run that has not started an item: the status bar's
+            # own words for it, and Pause while there is a run to pause.
+            said = "starting the queue" if model.mine() else "the run has ended"
+            return w.vstack(w.text(said, width, T.fg_base), w.gap(width),
+                            self.buttons(app, width), width=width)
         have, total, rate = model.progress(self.name)
         short = height < SHORT
-        live = model.downloading_name() == self.name
+        live = self.live(app)
         where = self.where(app)
         ended = not live and where in ("done", "failed")
         when = "now" if self.mine(app) or model.firing.alive else "in the window"
@@ -1152,22 +1313,25 @@ class DownloadSheet(Sheet):
             # Where the checkbox was: what opening it came to.
             parts.append(w.text(r.opened or "opening it…", width,
                                 T.fg_more_subtle if r.opened else T.info))
-        if model.mine():
-            parts.append(w.dock([Btn("Pause", "x", id="pause"), Btn("Back", "esc", id="back")],
-                                width, app.pressed))
-        else:
-            parts.append(w.button("Back", "esc", width, id="back", pressed=app.pressed))
+        parts.append(self.buttons(app, width))
         return w.vstack(*parts, width=width)
+
+    def buttons(self, app, width: int) -> Piece:
+        if app.queue.mine():
+            return w.dock([Btn("Pause", "x", id="pause"), Btn("Back", "esc", id="back")],
+                          width, app.pressed)
+        return w.button("Back", "esc", width, id="back", pressed=app.pressed)
 
     def asked(self, app) -> bool:
         """Whether this session's run of it was asked to open when done, and
         did not stop short of it."""
         r = app.queue.running
-        return r.name == self.name and r.open_when_done and not r.stopped
+        return bool(self.name) and r.name == self.name and r.open_when_done and not r.stopped
 
     def wake(self, app) -> float | None:
+        self.keep_up(app)
         r = app.queue.running
-        if app.queue.downloading_name() == self.name or (self.asked(app) and not r.settled):
+        if self.live(app) or (self.asked(app) and not r.settled):
             return LIVE_POLL
         return None
 

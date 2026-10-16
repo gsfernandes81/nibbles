@@ -156,6 +156,8 @@ class App:
         pressed = self.pressed if time.monotonic() < self.pressed_until else None
         s = w.Surface(W, H, pressed)
         tab = self.tabs[self.tab]
+        if hasattr(tab, "settle"):
+            tab.settle(self)
         if getattr(tab, "fullscreen", False):
             tab.draw(self, s, H)
         else:
