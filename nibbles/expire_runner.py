@@ -278,12 +278,42 @@ def default_dests() -> dict[str, Path]:
     return {kind: OUT for kind in DEST_KINDS}
 
 
-def load_config() -> dict:
+def _read_config() -> tuple[dict, str | None]:
+    """``config.json`` as ``(settings, None)``, or ``({}, why it cannot be read)``.
+
+    The one reader behind :func:`load_config` and :func:`config_problem`, so
+    the forgiving one and the one that says why cannot disagree about which
+    files are unreadable. They did: a file that was not UTF-8 was declined by
+    the first and raised out of the second, so the More tab and every setter
+    went down over a file a firing had already read as all defaults.
+
+    A file that is not there, and a blank one, are ``({}, None)``: nothing has
+    been set yet, and there is nothing in either to lose.
+    """
     try:
-        found = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        return found if isinstance(found, dict) else {}
-    except (OSError, ValueError):
-        return {}
+        raw = CONFIG_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, None
+    except UnicodeDecodeError:
+        return {}, "config.json is not UTF-8 text"
+    except OSError as exc:
+        return {}, f"config.json cannot be read ({exc.strerror or exc})"
+    if not raw.strip():
+        return {}, None
+    try:
+        found = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        return {}, f"config.json will not parse: {exc}"
+    # Valid JSON that is not an object is the same loss by another route:
+    # load_config declines it exactly as quietly, and a save on top of it
+    # would take the file with it.
+    if not isinstance(found, dict):
+        return {}, f"config.json is a {type(found).__name__}, not a set of settings"
+    return found, None
+
+
+def load_config() -> dict:
+    return _read_config()[0]
 
 
 def config_problem() -> str | None:
@@ -301,32 +331,41 @@ def config_problem() -> str | None:
     A file that is not there is not a problem: nothing has been set yet, and
     that is what an empty config means everywhere else here. Neither is an
     empty one — a shell redirect leaves that, and there is nothing in it to
-    lose.
+    lose. Anything else that cannot be read is, whatever the reason it cannot
+    be: one that is there and cannot be read cannot be written over either.
     """
+    return _read_config()[1]
+
+
+def _write_whole(path: Path, text: str) -> None:
+    """Write *text* over *path* whole or not at all.
+
+    Beside it and renamed into place, so a kill leaves the old file or the new
+    one and never half of either; flushed to the disk before the rename, so a
+    phone that loses power just after it does not come back to a file of
+    nought bytes under the new name, which a rename that reached the disk
+    before the data it names would leave. And named for the process writing
+    it, because the screen and a firing both write ``state.json``: on one
+    shared temporary name, one of them could rename the other's half-written
+    file into place.
+    """
+    ROOT.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
-        raw = CONFIG_FILE.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    if not raw.strip():
-        return None
-    try:
-        found = json.loads(raw)
-    except ValueError as exc:
-        return f"config.json will not parse: {exc}"
-    # Valid JSON that is not an object is the same loss by another route:
-    # load_config declines it exactly as quietly, and a save on top of it
-    # would take the file with it.
-    if not isinstance(found, dict):
-        return f"config.json is a {type(found).__name__}, not a set of settings"
-    return None
+        with temp.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp.replace(path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temp.unlink()
+        raise
 
 
 def save_config(config: dict) -> None:
     """Atomic, like the state file: a kill must not leave it half-written."""
-    ROOT.mkdir(parents=True, exist_ok=True)
-    temp = CONFIG_FILE.with_suffix(".tmp")
-    temp.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
-    temp.replace(CONFIG_FILE)
+    _write_whole(CONFIG_FILE, json.dumps(config, indent=2, sort_keys=True))
 
 
 # --------------------------------------------------------------------------- #
@@ -769,14 +808,50 @@ def notify_blocked_enabled() -> bool:
 # --------------------------------------------------------------------------- #
 
 
+def dest_state(kind: str, config: dict | None = None) -> tuple[Path | None, str | None]:
+    """The folder ``config.json`` sends *kind* to: ``(folder, why it was declined)``.
+
+    ``(folder, None)`` when one is set and is in force; ``(None, None)`` when
+    nothing is set, and the default is in force with nothing to say about it;
+    ``(None, why)`` when what is stored cannot be a folder — a list, a number,
+    ``true``, a ``~name`` belonging to nobody — and the default is in force
+    *because* of it.
+
+    The rule the settings have (:func:`settings`), for the reason they have
+    it: this is read when a finished download is delivered, by a firing
+    nobody is watching, and a stored value that raised there took the firing
+    down after the bytes were spent — the item never archived, nothing behind
+    it walked, and the next firing dying in the same place, for good. Keyed on
+    the key being present, as :func:`setting_state` is, so a front end can say
+    "set" only of a value that is the one in force. *config* is the one
+    already in hand, when there is one.
+    """
+    if config is None:
+        config = load_config()
+    key = f"{kind}_dir"
+    if key not in config:
+        return None, None
+    set_to = config[key]
+    if not isinstance(set_to, str) or not set_to.strip():
+        return None, f"{key} is {json.dumps(set_to)}, not a folder"
+    try:
+        return Path(set_to).expanduser(), None
+    except RuntimeError as exc:  # "~nobody/Movies": no such home to expand
+        return None, f"{key} is {set_to!r}: {exc}"
+
+
 def dests() -> dict[str, Path]:
-    """The configured destination per kind, falling back to the defaults."""
+    """The configured destination per kind, falling back to the defaults.
+
+    Falling back too for a stored value that cannot be a folder
+    (:func:`dest_state`), rather than raising wherever it is read.
+    """
     config = load_config()
     out = default_dests()
     for kind in DEST_KINDS:
-        set_to = config.get(f"{kind}_dir")
-        if set_to:
-            out[kind] = Path(set_to).expanduser()
+        where, _ = dest_state(kind, config)
+        if where is not None:
+            out[kind] = where
     return out
 
 
@@ -967,20 +1042,62 @@ def log(message: str) -> None:
     print(line)
 
 
-def load_state() -> dict:
-    """Runner state that has to survive between firings."""
+#: The key a ``state.json`` that could not be read leaves in the state written
+#: over it: when it was found that way. See :func:`load_state`.
+LEDGER_LOST = "ledger_lost"
+
+
+def _read_state() -> tuple[dict, str | None]:
+    """``state.json`` as ``(state, None)``, or ``({}, why it cannot be read)``.
+
+    Not there is a fresh queue, not a problem. A blank one is a problem,
+    unlike a blank ``config.json``: :func:`save_state` never writes one, so a
+    blank state file is a write that never reached the disk.
+    """
     try:
-        return json.loads(STATE_FILE.read_text())
-    except (OSError, ValueError):
-        return {}
+        raw = STATE_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, None
+    except (OSError, ValueError):  # ValueError: not UTF-8
+        return {}, "state.json cannot be read"
+    try:
+        found = json.loads(raw)
+    except (ValueError, RecursionError):
+        return {}, "state.json will not parse"
+    if not isinstance(found, dict):
+        return {}, f"state.json is a {type(found).__name__}, not the runner's record"
+    return found, None
+
+
+def load_state() -> dict:
+    """Runner state that has to survive between firings.
+
+    A ``state.json`` that cannot be read comes back as a state that says so —
+    :data:`LEDGER_LOST`, stamped now — and never as an empty one. Empty is a
+    fresh queue, and every writer here loads, changes and saves: an empty
+    state saved over the bad file was a valid one with no ledger in it, and
+    the manual budget, which spends against that ledger and nothing else,
+    read the day's spending as an allowance nobody had touched and spent it
+    again. Carried in the state itself, "a day that cannot be read reads as
+    spent" (:func:`ledger_problem`) outlives the first write over the file,
+    whoever makes it — a firing, Put it back, ``nibbles now`` — and lapses at
+    the next reset like any other day's spending.
+    """
+    found, problem = _read_state()
+    return {LEDGER_LOST: now()} if problem else found
 
 
 def save_state(state: dict) -> None:
-    """Persist state by atomic rename, so a kill cannot truncate it."""
-    ROOT.mkdir(parents=True, exist_ok=True)
-    temp = STATE_FILE.with_suffix(".tmp")
-    temp.write_text(json.dumps(state, indent=2, sort_keys=True))
-    temp.replace(STATE_FILE)
+    """Persist state whole (:func:`_write_whole`), so a kill cannot truncate it.
+
+    A file that cannot be read is copied aside to ``state.json.unreadable``
+    before it is written over: what was in it is lost to the runner either
+    way, and the copy is all that is left to tell what it was.
+    """
+    if _read_state()[1]:
+        with contextlib.suppress(OSError):
+            shutil.copyfile(STATE_FILE, STATE_FILE.with_name("state.json.unreadable"))
+    _write_whole(STATE_FILE, json.dumps(state, indent=2, sort_keys=True))
 
 
 def iface_bytes() -> int:
@@ -1145,6 +1262,19 @@ def portal_now() -> tuple[dict | None, str]:
     portal is unreachable" is not a useful answer on its own — "no credentials"
     and "no route to the portal" want different things done about them, and
     only the exception says which.
+
+    **Every way the asking can fail is a missing reading**, never an exception
+    out of here. The portal client turns a refused connection into a
+    ``PortalError`` and lets the rest through: a portal that takes the request
+    and then says nothing for thirty seconds is a bare ``TimeoutError``, one
+    that hangs up is ``RemoteDisconnected``, a captive page is
+    ``BadStatusLine``, and an answer of the wrong shape is whatever reading
+    it raises. Polled from inside :func:`watch`, any of those unwound through
+    the running download — killed as "runner interrupted" — and out of the
+    firing with nothing logged, so the five minutes a portal is allowed to be
+    dark for never ran. Read as ``None``, each is the dark timer in flight and
+    the ``no-portal`` fault at the top of a firing, said where they are said.
+    Only ``Exception``: ctrl-c is still ctrl-c.
     """
     try:
         qw = _qw()
@@ -1154,10 +1284,13 @@ def portal_now() -> tuple[dict | None, str]:
         return None, f"zwana-quota cannot be imported ({exc}); clone it or set ZWANA_HOME"
     try:
         data = qw.gather(qw.stale())
-        qw.store(data)
+        # The cache is the widget's. A write to it that fails — the disk this
+        # queue is filling — is no reason to throw away a live reading.
+        with contextlib.suppress(OSError):
+            qw.store(data)
         return qw.derive(data, 0.0, True), ""
-    except qw.z.PortalError as exc:
-        return None, str(exc)
+    except Exception as exc:
+        return None, str(exc) or type(exc).__name__
 
 
 #: How long to wait for the portal to answer a bare connection. Short on
@@ -1348,6 +1481,10 @@ def note_spent(state: dict, spent: int, when: float | None = None) -> None:
     if spent <= 0:
         return
     when = now() if when is None else when
+    if "spent" in state and not isinstance(state["spent"], list):
+        # Written over below with this one spend, and what it held is not
+        # known: that has to outlive it, the way an unreadable file's does.
+        state[LEDGER_LOST] = now()
     kept = [
         entry
         for entry in _ledger(state)
@@ -1369,24 +1506,31 @@ def _ledger(state: dict) -> list[list]:
     return entries
 
 
-def ledger_problem(state: dict) -> str | None:
+def ledger_problem(state: dict, since: float | None = None) -> str | None:
     """Why the runner's record of its spending cannot be trusted, or ``None``.
 
     Asked because the manual source spends against that record and nothing
-    else: a ``state.json`` that will not parse, or a ledger that is not a list
+    else: a ``state.json`` that cannot be read, or a ledger that is not a list
     of spends, is a day's spending forgotten, and forgetting it reads as an
     allowance nobody has touched. So the manual reading treats it as spent —
     the direction that cannot overspend — and this is the line that says why.
+
+    And for the rest of that day, not only while the file is still bad: the
+    first save writes a good one over it, and *state* then carries
+    :data:`LEDGER_LOST` instead, which counts until the reset after it —
+    *since*, the last reset, which the manual reading has already worked out.
     """
-    try:
-        raw = STATE_FILE.read_text(encoding="utf-8")
-    except OSError:
-        raw = ""
-    if raw.strip():
-        try:
-            json.loads(raw)
-        except ValueError:
-            return "state.json will not parse, so what was spent today is not known"
+    problem = _read_state()[1]
+    if problem:
+        return f"{problem}, so what was spent today is not known"
+    if since is None:
+        since = manual_resets(now())[0]
+    lost = state.get(LEDGER_LOST)
+    if isinstance(lost, (int, float)) and lost >= since:
+        return (
+            "state.json could not be read earlier today, so what was spent "
+            "before then is not known"
+        )
     if "spent" in state and not isinstance(state["spent"], list):
         return "state.json's record of what was spent is not a list"
     return None
@@ -1411,7 +1555,7 @@ def manual_reading(state: dict | None = None, current: float | None = None) -> d
     current = now() if current is None else current
     since, resets = manual_resets(current)
     allowance = allowance_bytes()
-    problem = ledger_problem(state)
+    problem = ledger_problem(state, since)
     spent = (
         allowance
         if problem
@@ -1603,6 +1747,32 @@ def working_rate(ewma: float) -> float:
     return max(0.5 * ewma, 100 * 1024)
 
 
+def disk_needed(item: dict, done_already: int) -> int:
+    """The free disk *item* needs to be finished from where it has got to.
+
+    Three things, all of them on the queue root's own disk:
+
+    * **what is left to fetch** — its cap, less what it already has, which is
+      on the disk already and so is not asked for twice;
+    * **a second copy of the whole file, for an item that is delivered.**
+      Finishing one writes it twice: yt-dlp merges a video's two streams into
+      a new file beside them before it deletes them, and delivery into the
+      item's ``DEST`` is a copy before it is a delete — shared storage is
+      another filesystem, so the move cannot be a rename, and on a phone it is
+      the same flash under another mount, drawing on the same free space. An
+      item with no ``DEST`` stays where it lands, and is written once;
+    * :data:`DISK_SPARE`, for the phone.
+
+    Asked before the first byte because otherwise it is found out after the
+    last: a merge or a copy with no room for it fails once the data is spent,
+    leaves its half-written file taking what room there was, and the item sits
+    behind a disk-full refusal every night after.
+    """
+    rest = max(0, item["cap"] - max(0, done_already))
+    second = item["cap"] if (item.get("dest") or "").strip() else 0
+    return rest + second + DISK_SPARE
+
+
 def admit(
     item: dict,
     record: dict,
@@ -1629,14 +1799,17 @@ def admit(
     measured, because both callers have already made that conversion.
     *flying* is a blind run, where the budget is the items' own
     payload declarations and so must not be derated for wire overhead a second
-    time. *free_disk* is optional because a projection has one reading for the
-    whole night while a firing takes a fresh one per item: ``None`` means the
-    disk was not asked about, which is not a reason to refuse an item.
+    time. *free_disk* is optional because a projection works its one reading
+    down the night while a firing takes a fresh one per item: ``None`` means
+    the disk was not asked about, which is not a reason to refuse an item.
+    What it is asked against is :func:`disk_needed`.
     """
     if remaining_time < 45:
         return 0, NO_TIME
-    if free_disk is not None and free_disk < item["cap"] + DISK_SPARE:
-        return 0, f"only {human(free_disk)} disk free"
+    if free_disk is not None:
+        needed = disk_needed(item, int(record.get("part_bytes") or 0))
+        if free_disk < needed:
+            return 0, f"only {human(free_disk)} disk free, {human(needed)} needed"
 
     slice_min = item.get("slice_min")
     if slice_min is None:
@@ -1814,6 +1987,12 @@ def plan(
             taken[name] += got
             left = max(0, left - got)
             part[name] += got
+            if free_disk is not None:
+                # What it fetches stays on this disk — in out/, or delivered
+                # to a folder on the same flash — so the next item is asked
+                # against what is left, as fire() asks the disk afresh before
+                # each one rather than promising every item the same room.
+                free_disk = max(0, free_disk - got)
             if not item.get("partial"):
                 finished.add(name)
             if not endless:
@@ -2226,6 +2405,7 @@ def hand_over(item: dict, state: dict) -> list[Path]:
         notify(
             "Download queue: cannot reach the download folder",
             f"{item['name']} is in out/, not {where}: {problem}",
+            f"{NOTICE}-dest:{item['name']}",
         )
         return files
 
@@ -2278,17 +2458,38 @@ def give_up(item: dict, state: dict) -> None:
     notify(
         "Download queue: item failed",
         f"{item['name']} failed {MAX_ATTEMPTS} nights; moved to failed/",
+        f"{NOTICE}-failed:{item['name']}",
     )
 
 
-def notify(title: str, content: str) -> None:
-    """Best-effort notification; never allowed to break a run."""
+#: The notification id a firing's own word on how it went is posted under —
+#: "ran", or "blocked" — and the stem of every other one's. Kept from before
+#: there was more than one id, so the first post after an update replaces
+#: what the last build left on the phone.
+NOTICE = "expire-queue"
+
+
+def notify(title: str, content: str, tag: str) -> None:
+    """Best-effort notification; never allowed to break a run.
+
+    *tag* is the notification's id, and a post replaces whatever is showing
+    under the same one — so it is one per thing a person has to be told, and
+    never shared between two of them. They all used to share one, and the
+    summary at the end of a firing replaced, within the same second, the
+    warning that the file it had just finished could not reach its folder: the
+    phone said "1 finished" about a file sitting in ``out/`` with nothing left
+    saying why. So the firing's own word — ran, or blocked — is :data:`NOTICE`,
+    where the newest is the one that is true; and each thing that happens once
+    — a malformed item, an item set aside, a file that could not be delivered,
+    per item where it is about one — has its own, which nothing a later firing
+    says can take off the phone before it has been read.
+    """
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         subprocess.run(
             [
                 "termux-notification",
                 "--id",
-                "expire-queue",
+                tag,
                 "--title",
                 title,
                 "--content",
@@ -2311,6 +2512,7 @@ def say_blocked() -> None:
     notify(
         "Download queue blocked",
         "the runner could not proceed; see expire/logs/runner.log",
+        NOTICE,
     )
 
 
@@ -2531,6 +2733,10 @@ def snapshot(force: bool = False, blind: bool = False) -> dict:
                 # plan() in any order it likes, without a second reading of
                 # state.json to find what each one already has.
                 "slice_min": item["slice_min"],
+                # And whether it is delivered, which is what the disk it needs
+                # turns on (disk_needed): a line drawn without it would admit
+                # on a tight disk an item the firing then refuses.
+                "dest": item["dest"],
                 "part_bytes": int(
                     records.get(item["name"], {}).get("part_bytes") or 0
                 ),
@@ -2611,6 +2817,7 @@ def fire(force: bool = False, blind: bool = False) -> int:
         notify(
             "Download queue: malformed item",
             f"{len(rejected)} item(s) lack a valid header and were skipped",
+            f"{NOTICE}-malformed",
         )
 
     # A firing is stopped by the platform after ~10 minutes, so this run gets a
@@ -2760,6 +2967,7 @@ def fire(force: bool = False, blind: bool = False) -> int:
         notify(
             "Download queue ran",
             f"{done_count} finished, {human(spent_total)} spent{left}",
+            NOTICE,
         )
     return 0
 

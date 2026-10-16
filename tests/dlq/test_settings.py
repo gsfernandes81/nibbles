@@ -112,6 +112,54 @@ def test_a_missing_file_is_not_a_problem(dlq):
     assert dlq.runner.load_config() == {}
 
 
+#: Anything at all, and things near enough to a config to be worth sending:
+#: real settings files, and text that is almost one.
+ANY_FILE = st.one_of(
+    st.binary(max_size=64),
+    st.dictionaries(st.text(max_size=6), st.integers()).map(
+        lambda found: json.dumps(found).encode()
+    ),
+    st.text(max_size=24).map(str.encode),
+    st.binary(max_size=8).map(lambda junk: b'{"video_dir": "/sdcard/V' + junk + b'"}'),
+)
+
+
+@given(raw=ANY_FILE)
+def test_whatever_is_in_the_file_is_read_or_said_and_never_raised(dlq, raw):
+    """The forgiving reader and the one that says why agree, on any bytes.
+
+    A file that is no problem is read as exactly what it holds. One that is a
+    problem reads as nothing, and nothing is written over it: both setters
+    refuse with the line that says why, and the bytes are what they were. The
+    case this was written for is a config saved in Latin-1 —
+    ``/sdcard/Vídeos`` as one byte — which the reader declined and the line
+    raised on, taking the More tab and every setter down with it.
+    """
+    path = dlq.root / "config.json"
+    path.write_bytes(raw)
+    problem = dlq.runner.config_problem()
+    if problem is None:
+        assert dlq.runner.load_config() == json.loads(raw.decode().strip() or "{}")
+        return
+    assert problem.strip()
+    assert dlq.runner.load_config() == {}
+    for worked, said in (
+        dlq.sched.set_setting("window", "45"),
+        dlq.sched.set_dest("video", "default"),
+    ):
+        assert not worked and said == [problem]
+    assert path.read_bytes() == raw
+
+
+def test_a_file_that_is_not_text_is_said_on_the_settings_page(dlq):
+    """Drawn rather than raised: the page the problem has to be read on."""
+    dlq.config("{}")
+    (dlq.root / "config.json").write_bytes(b'{"video_dir": "/sdcard/V\xeddeos"}')
+    assert dlq.runner.config_problem()
+    app = dlq.app.App(None, 4, size=(40, 24))
+    app.compose()
+
+
 # --------------------------------------------------------------------------- #
 # Writing over one is refused
 # --------------------------------------------------------------------------- #
@@ -196,6 +244,47 @@ def test_a_destination_is_created_one_level_and_never_a_tree(dlq):
     assert not deep.exists() and not deep.parent.exists()
     # And the one that did take is still the one in force.
     assert dlq.runner.dests()["video"] == one
+
+
+#: What a hand-edited ``*_dir`` can hold that is not a folder.
+NOT_A_FOLDER = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats(allow_nan=False) | st.text(),
+    lambda inner: st.lists(inner, max_size=3)
+    | st.dictionaries(st.text(max_size=4), inner, max_size=3),
+    max_leaves=6,
+).filter(lambda value: not (isinstance(value, str) and value.strip()))
+
+
+@given(kind=st.sampled_from(["video", "audio", "file"]), stored=NOT_A_FOLDER)
+def test_a_destination_that_is_not_a_folder_reads_as_the_default(dlq, kind, stored):
+    """The rule the settings have, for the reason they have it.
+
+    Read when a finished download is delivered, by a firing nobody is
+    watching: a stored list or number that raised there took the firing down
+    after the bytes were spent, and the next one died in the same place. So
+    it reads as the default, says why, and is never "set".
+    """
+    dlq.config({f"{kind}_dir": stored})
+    assert dlq.runner.dests() == dlq.runner.default_dests()
+    where, why = dlq.runner.dest_state(kind)
+    assert where is None and why.strip()
+
+
+def test_a_home_that_is_nobodys_reads_as_the_default(dlq):
+    """``~somebody`` with no such somebody cannot be expanded, and is said."""
+    dlq.config({"video_dir": "~nobody-on-this-phone/Movies"})
+    assert dlq.runner.dests()["video"] == dlq.runner.default_dests()["video"]
+    assert dlq.runner.dest_state("video")[1]
+    assert dlq.runner.dest_state("audio") == (None, None)
+
+
+def test_a_destination_that_is_not_a_folder_opens_its_own_screens(dlq):
+    """The More tab and the destinations sheet, which is where it is mended."""
+    dlq.config({"video_dir": ["/sdcard/Movies"], "file_dir": True})
+    app = dlq.app.App(None, 4, size=(40, 24))
+    app.compose()
+    app.sheets[:] = [dlq.qs.DestSheet()]
+    app.compose()
 
 
 # --------------------------------------------------------------------------- #
@@ -476,7 +565,9 @@ def test_notify_blocked_covers_the_blocked_firing_and_no_other(dlq, monkeypatch)
     somebody.
     """
     posted = []
-    monkeypatch.setattr(dlq.runner, "notify", lambda title, body: posted.append(title))
+    monkeypatch.setattr(
+        dlq.runner, "notify", lambda title, body, tag: posted.append(title)
+    )
 
     dlq.runner.say_blocked()
     assert len(posted) == 1

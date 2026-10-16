@@ -382,6 +382,58 @@ def test_three_failed_nights_set_an_item_aside(firing, monkeypatch):
     assert firing.runner.load_state()["items"]["10-one.py"]["retired"] == "failed"
 
 
+def test_nothing_a_firing_says_once_is_replaced_before_it_is_read(firing, monkeypatch):
+    """A notification replaces whatever is showing under its id.
+
+    So one firing that has five things to say — a malformed item, two files
+    that could not reach their folder, an item set aside, and how the night
+    went — says them under five ids, one per thing and per item; and a later
+    firing's "blocked", which repeats every quarter of an hour off the
+    vessel's wifi, replaces at most the last firing's own word on how it went.
+    All of them used to share one id, and the summary replaced the warning
+    about the file it had just finished within the same second.
+    """
+    posted: list[str] = []
+    monkeypatch.setattr(
+        firing.runner, "notify", lambda title, content, tag: posted.append(tag)
+    )
+    blocker = firing.root / "a-file"
+    blocker.write_text("not a folder")
+    nowhere = str(blocker / "deeper")
+    firing.item("10-one.py", cap=MiB, dest=nowhere)
+    firing.item("15-also.py", cap=MiB, dest=nowhere)
+    firing.item("20-two.py", cap=MiB)
+    (firing.root / "queue" / "30-bad.py").write_text("nothing declared\n")
+    firing.state({"20-two.py": {"attempts": firing.runner.MAX_ATTEMPTS - 1}})
+
+    def run_item(item, cap, stop_by, doc, state):
+        if item["name"] == "20-two.py":
+            return 1, 2 * MiB, None
+        out = firing.root / "out" / item["name"]
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "thing.iso").write_bytes(b"x" * 1024)
+        return 0, 5 * MiB, None
+
+    monkeypatch.setattr(firing.runner, "run_item", run_item)
+    monkeypatch.setattr(firing.runner, "admit", lambda *a, **kw: (MiB, ""))
+    assert firing.runner.fire(force=True) == 0
+    assert (firing.root / "failed" / "20-two.py").is_file()
+    assert (firing.root / "out" / "10-one.py" / "thing.iso").is_file()
+
+    night = list(posted)
+    assert len(night) == 5
+    assert len(set(night)) == len(night)
+
+    # And a firing blocked after it: the summary, posted last, is the one post
+    # of that night it may take the place of.
+    firing.item("40-later.py", cap=MiB)
+    monkeypatch.setattr(firing.runner, "read_portal", lambda: None)
+    assert firing.runner.main(["--force"]) == 1
+    blocked = posted[len(night):]
+    assert len(blocked) == 1
+    assert blocked[0] not in night[:-1]
+
+
 def test_not_tonight_is_a_legitimate_answer_and_costs_no_attempt(firing, monkeypatch):
     """Exit 75 with progress: left queued, and its three nights intact."""
     firing.item("10-one.py", cap=100 * MiB)

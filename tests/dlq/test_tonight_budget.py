@@ -224,6 +224,139 @@ def test_an_item_bigger_than_the_disk_is_refused(dlq):
     assert admit(dlq, row, free_disk=None)[0] > 0
 
 
+def delivered(name, cap, partial=True, part=None):
+    """An item with a ``DEST``: finished, it is written a second time."""
+    return {**item(name, cap, partial=partial, part=part), "dest": "video"}
+
+
+@given(
+    cap=st.integers(1, 4 * GiB),
+    done=st.integers(0, 4 * GiB),
+    slack=st.integers(-GiB, 5 * GiB),
+    has_dest=st.booleans(),
+    partial=st.booleans(),
+    budget=st.integers(0, 8 * GiB),
+    rate=st.floats(50_000, 50 * MiB),
+    endless=st.booleans(),
+    flying=st.booleans(),
+)
+def test_an_admitted_item_leaves_room_to_be_finished(
+    dlq, cap, done, slack, has_dest, partial, budget, rate, endless, flying
+):
+    """After the slice, the disk still has the rest, a second copy, and the spare.
+
+    The second copy is what finishing costs an item that is delivered: a
+    merge writes the whole video beside its parts before deleting them, and
+    delivery onto shared storage — the same flash, under another mount — is a
+    copy before it is a delete. Asked for after the bytes were spent, it was a
+    merge that failed with the data paid for, a half-written file taking what
+    room was left, and the item behind a disk-full refusal every night after.
+    """
+    done = min(done, cap)
+    # Drawn around what the download alone needs, which is where the
+    # second copy is either asked for or not.
+    free = max(0, cap - done + dlq.runner.DISK_SPARE + slack)
+    row = (delivered if has_dest else item)("10-a.py", cap, partial=partial, part=done)
+    got, why = admit(
+        dlq,
+        row,
+        free_disk=free,
+        budget=budget,
+        rate=rate,
+        flying=flying,
+        remaining_time=dlq.runner.NO_DEADLINE if endless else 600.0,
+    )
+    if not got:
+        assert why.strip()
+        return
+    second = cap if has_dest else 0
+    assert free - got >= (cap - done - got) + second + dlq.runner.DISK_SPARE
+
+
+def test_a_delivered_item_is_asked_for_its_second_copy_and_no_more(dlq):
+    """Room for the download and the spare was enough before; it is not now.
+
+    And the second copy is the whole of what is asked on top: an item with no
+    ``DEST`` stays where it lands and is written once, so a small download is
+    never turned away for a copy that will not be made.
+    """
+    cap = 100 * MiB
+    spare = dlq.runner.DISK_SPARE
+    fresh = delivered("10-a.py", cap, partial=False)
+    got, why = admit(dlq, fresh, free_disk=cap + spare)
+    assert got == 0 and why.strip()
+    assert admit(dlq, fresh, free_disk=2 * cap + spare)[0] == cap
+    assert admit(dlq, item("10-a.py", cap, partial=False), free_disk=cap + spare)[0]
+
+
+def test_a_download_is_never_refused_half_way_for_the_room_it_has_used(dlq):
+    """What it already has is on the disk, so it is not asked for twice.
+
+    A resumable download that had room when it started is asked each firing
+    for what is left, not for its whole size again on a disk it has partly
+    filled — which turned it away half-way, with what it had bought stranded.
+    The night is walked with the disk worked down by each slice, as the
+    firings see it, and the whole of it still comes.
+    """
+    cap = 400 * MiB
+    room = 2 * cap + dlq.runner.DISK_SPARE
+    rate = MiB  # a firing takes about a quarter of it, so it takes several
+    planned = dlq.runner.plan(
+        [delivered("10-a.py", cap)], {}, 10 * GiB, rate, 6 * 3600, False, room
+    )
+    assert total(planned) == cap
+
+
+def test_what_one_item_puts_on_the_disk_is_not_promised_to_the_next(dlq):
+    """The projection works its one reading of the disk down the night.
+
+    A firing asks the disk afresh before each item, and finds what the item
+    before it fetched still there — in ``out/``, or delivered onto the same
+    flash. A line drawn against the same free figure for every item promised
+    the second one a room the first had already taken.
+    """
+    cap = 100 * MiB
+    room = 2 * cap + dlq.runner.DISK_SPARE + cap // 2
+    planned = dlq.runner.plan(
+        [delivered("10-a.py", cap, partial=False), delivered("20-b.py", cap, partial=False)],
+        {},
+        GiB,
+        FAST,
+        3600,
+        False,
+        room,
+    )
+    got = {entry["name"]: entry["bytes"] for entry in planned}
+    assert got == {"10-a.py": cap, "20-b.py": 0}
+    assert next(e for e in planned if e["name"] == "20-b.py")["reason"].strip()
+
+
+def test_the_line_and_the_firing_ask_the_disk_the_same_question(dlq, monkeypatch):
+    """The snapshot carries whether an item is delivered, so the screen's
+    projection and the firing both ask for its second copy — and on a disk
+    with room for the download but not for finishing it, neither starts it."""
+    cap = 100 * MiB
+    tight = cap + dlq.runner.DISK_SPARE
+    dlq.item("10-a.py", cap=cap, partial=False, dest="video")
+
+    facts = dlq.facts(portal=dlq.reading(free=600 * MiB), force=True, free_disk=tight)
+    planned = dlq.ui.tonight_plan(["10-a.py"], facts)
+    assert planned[0]["bytes"] == 0 and planned[0]["reason"].strip()
+
+    started = []
+    usage = type(dlq.runner.shutil.disk_usage("/"))
+    monkeypatch.setattr(
+        dlq.runner.shutil, "disk_usage", lambda path: usage(tight, 0, tight)
+    )
+    monkeypatch.setattr(dlq.runner, "read_portal", lambda: dlq.reading(free=600 * MiB))
+    monkeypatch.setattr(dlq.runner, "notify", lambda *args: None)
+    monkeypatch.setattr(
+        dlq.runner, "run_item", lambda *a: started.append(a) or (0, 0, None)
+    )
+    assert dlq.runner.fire(force=True) == 0
+    assert started == []
+
+
 def test_a_whole_item_is_all_or_nothing_and_a_partial_one_is_sliced(dlq):
     """The difference the ``PARTIAL`` header makes, said as behaviour."""
     budget = 60 * MiB

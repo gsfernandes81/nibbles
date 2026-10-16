@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import itertools
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -144,6 +145,122 @@ def test_a_ledger_that_cannot_be_read_reads_as_spent(dlq, broken):
     reading = dlq.runner.manual_reading()
     assert reading["problem"]
     assert dlq.runner.spendable_bytes(reading) == 0
+
+
+def spent_today(dlq, spent: int) -> float:
+    """A ledger with *spent* bytes moved since the last reset; the next reset."""
+    current = time.time()
+    since, resets = dlq.runner.manual_resets(current)
+    dlq.state(spent=[[(since + current) / 2, spent]])
+    return resets
+
+
+def nothing_to_spend(dlq, current=None) -> bool:
+    reading = dlq.runner.manual_reading(current=current)
+    return dlq.runner.spendable_bytes(reading) == 0 and bool(reading["problem"])
+
+
+def writes(dlq, writer: str) -> None:
+    """What a firing, ``nibbles now`` and every screen do to ``state.json``."""
+    state = dlq.runner.load_state()
+    if writer == "spent":
+        dlq.runner.note_spent(state, 30 * MB)
+    dlq.runner.save_state(state)
+
+
+@given(cut=st.integers(0, 10_000), writer=st.sampled_from(["saved", "spent"]))
+def test_a_day_that_could_not_be_read_stays_spent_through_the_next_write(
+    dlq, cut, writer
+):
+    """Until the reset, whoever writes over the file first.
+
+    The rule that a ledger nobody can read reads as spent held only while the
+    bad file was still there, and every writer here loads, changes and saves:
+    the first save after a torn write put a good file over it with an empty
+    ledger in it, and the next firing spent the allowance a second time. Any
+    cut of a real ``state.json`` short of its end, then each kind of write,
+    and the day is still spent — and the next one is not.
+    """
+    manual(dlq, 1000)
+    resets = spent_today(dlq, 800 * MB)
+    whole = (dlq.root / "state.json").read_bytes()
+    (dlq.root / "state.json").write_bytes(whole[: cut % len(whole)])
+    assert nothing_to_spend(dlq)
+
+    writes(dlq, writer)
+    assert nothing_to_spend(dlq)
+    assert nothing_to_spend(dlq, current=resets - 1)
+    after = dlq.runner.manual_reading(current=resets + 1)
+    assert dlq.runner.spendable_bytes(after) > 0
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [b"", b"[]", b"null", b'"a string"', b'{"spent": [[1, 2]], "x": "\xff"}'],
+)
+def test_every_state_file_that_is_not_the_runners_record_reads_as_spent(dlq, broken):
+    """Blank, valid JSON that is not a record, and not UTF-8 at all.
+
+    A blank file is the write that never reached the disk, never a fresh
+    queue — the runner writes ``{}`` at the least — and the others used to
+    raise out of every caller that asked the state for anything. The file is
+    kept beside the one written over it, which is all that is left of it.
+    """
+    manual(dlq, 1000)
+    (dlq.root / "state.json").write_bytes(broken)
+    assert isinstance(dlq.runner.load_state(), dict)
+    assert nothing_to_spend(dlq)
+    writes(dlq, "spent")
+    assert nothing_to_spend(dlq)
+    assert (dlq.root / "state.json.unreadable").read_bytes() == broken
+
+
+@pytest.mark.parametrize("writer", ["put it back", "a zwana firing"])
+def test_nothing_that_writes_the_state_forgets_a_day_it_could_not_read(
+    dlq, monkeypatch, writer
+):
+    """The two writers that are not the runner's own load-and-save.
+
+    Put it back on a failed download, and a firing under the portal — which
+    spends against its own reading and writes the state all the same — and
+    afterwards a manual budget is still told the day is spent.
+    """
+    manual(dlq, 1000)
+    spent_today(dlq, 800 * MB)
+    (dlq.root / "state.json").write_text('{"spent": [[1', encoding="utf-8")
+
+    if writer == "put it back":
+        dlq.item("10-b.py", where="failed")
+        row = next(row for row in dlq.sched.items() if row["name"] == "10-b.py")
+        dlq.ui.do_requeue(row)
+        assert (dlq.root / "queue" / "10-b.py").is_file()
+    else:
+        dlq.config({"budget": "zwana", "allowance_mb": 1000})
+        dlq.item("10-b.py")
+        monkeypatch.setattr(dlq.runner, "read_portal", lambda: dlq.reading())
+        monkeypatch.setattr(dlq.runner, "notify", lambda *args: None)
+        monkeypatch.setattr(dlq.runner, "admit", lambda *a, **kw: (MiB, ""))
+        monkeypatch.setattr(
+            dlq.runner, "run_item", lambda *a: (dlq.runner.EX_TEMPFAIL, MiB, None)
+        )
+        assert dlq.runner.fire(force=True) == 0
+        manual(dlq, 1000)
+
+    assert dlq.runner.load_state().get("items", {}).get("10-b.py") is not None
+    assert nothing_to_spend(dlq)
+
+
+def test_a_ledger_written_over_by_a_spend_is_not_forgotten(dlq):
+    """``spent`` that is not a list is replaced by the next spend's list.
+
+    It reads as spent while it is there, and has to go on reading that way
+    once the next run's ledger entry is written in its place.
+    """
+    manual(dlq, 1000)
+    dlq.state(spent="lots")
+    writes(dlq, "spent")
+    assert isinstance(dlq.runner.load_state()["spent"], list)
+    assert nothing_to_spend(dlq)
 
 
 # --------------------------------------------------------------------------- #

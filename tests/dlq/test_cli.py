@@ -873,7 +873,7 @@ def test_a_state_file_that_will_not_parse_is_not_a_crash(dlq):
     (dlq.root / "state.json").write_text("{ not json")
     dlq.item("10-thing.py")
     assert [row["name"] for row in dlq.sched.items()] == ["10-thing.py"]
-    assert dlq.runner.load_state() == {}
+    assert dlq.runner.load_state().get("items", {}) == {}
     (dlq.root / "state.json").write_text(json.dumps(["a", "list"]))
     assert dlq.sched._state_items() == {}
 

@@ -19,6 +19,12 @@ it never approached buys the same bytes again tomorrow night.
 
 from __future__ import annotations
 
+import contextlib
+import http.client
+import socket
+import struct
+import threading
+
 import pytest
 
 MiB = 1024**2
@@ -356,6 +362,153 @@ def test_a_portal_that_answers_again_is_not_a_dark_portal(dlq, monkeypatch):
     run.run(cap=ROOMY, doc=good)
     assert answers.count(None) > 2
     assert not run.stopped
+
+
+#: Every way asking the portal fails that its client does not turn into a
+#: ``PortalError`` of its own, beside one that it does: a request accepted and
+#: never answered, a hang-up, a reset, a captive page, and an answer of the
+#: wrong shape.
+POLL_FAILURES = [
+    lambda dlq: dlq.qw.z.PortalError("cannot reach portal"),
+    lambda dlq: TimeoutError("timed out"),
+    lambda dlq: http.client.RemoteDisconnected("closed without a response"),
+    lambda dlq: ConnectionResetError(104, "Connection reset by peer"),
+    lambda dlq: http.client.BadStatusLine("<html>"),
+    lambda dlq: ValueError("cannot convert float NaN to integer"),
+    lambda dlq: KeyError("Remainder"),
+]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    POLL_FAILURES,
+    ids=["refused", "stall", "hangup", "reset", "captive", "nan", "shape"],
+)
+def test_every_way_a_poll_can_fail_is_the_portal_going_quiet(
+    dlq, monkeypatch, failure
+):
+    """Not an exception through the running download.
+
+    The real :func:`expire_runner.read_portal` is asked, over a portal client
+    that fails each way it can: a moment of it is carried on through, and five
+    minutes of it is the dark timer — the two runs above, with a portal that
+    raises rather than one that answers ``None``. Raised, it unwound through
+    the supervisor, killed the download as "runner interrupted", and took the
+    firing down with nothing logged.
+    """
+
+    def gather(previous=None):
+        raise failure(dlq)
+
+    monkeypatch.setattr(dlq.qw, "gather", gather)
+    asking = dlq.runner.read_portal  # the real one, before a treadmill swaps it
+
+    brief = supervised(dlq, monkeypatch, [0] * 4, portal=asking)
+    brief.run(cap=ROOMY, doc=dlq.reading(free=700 * MiB))
+    assert brief.polled and not brief.stopped
+
+    dark_for_long = supervised(dlq, monkeypatch, [0] * 3, portal=asking, step=_slow(dlq))
+    dark_for_long.run(cap=ROOMY, doc=dlq.reading(free=700 * MiB))
+    assert dark_for_long.polled and dark_for_long.stopped
+
+
+class Misbehaving:
+    """A loopback "portal" that takes a request and then fails to answer it.
+
+    In the manner a test names — ``stall``: never a byte back; ``hangup``:
+    closed without a response; ``reset``: closed with a reset; ``garbage``:
+    something that is not HTTP, as a captive page in front of it might be.
+    """
+
+    def __init__(self, manner: str) -> None:
+        self.manner = manner
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen()
+        self.sock.settimeout(0.05)
+        self.port = self.sock.getsockname()[1]
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self) -> None:
+        held = []
+        while not self.done.is_set():
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                continue
+            conn.settimeout(1)
+            with contextlib.suppress(OSError):
+                conn.recv(65536)
+            if self.manner == "stall":
+                held.append(conn)
+                continue
+            with contextlib.suppress(OSError):
+                if self.manner == "garbage":
+                    conn.sendall(b"NOT HTTP AT ALL\r\n\r\n")
+                elif self.manner == "reset":
+                    conn.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+                    )
+            conn.close()
+        for conn in held:
+            conn.close()
+
+    def close(self) -> None:
+        self.done.set()
+        self.thread.join(timeout=5)
+        self.sock.close()
+
+
+@pytest.mark.parametrize("manner", ["stall", "hangup", "reset", "garbage"])
+def test_a_portal_that_fails_mid_request_is_a_missing_reading(dlq, monkeypatch, manner):
+    """Over a real socket, through the real portal client: never a raise.
+
+    The portal client wraps a connection refused and lets the rest through;
+    each of these is one of the rest. What comes back is no reading and a
+    reason, which is what the status screen shows and a firing logs.
+    """
+    portal = Misbehaving(manner)
+    try:
+        monkeypatch.setattr(dlq.qw.z, "BASE_URL", f"http://127.0.0.1:{portal.port}/")
+        monkeypatch.setattr(dlq.qw.z, "TIMEOUT_SECONDS", 0.3)
+        # A session already there, so the first thing asked of the portal is a
+        # reading rather than a log-in with credentials this suite has not got.
+        monkeypatch.setattr(dlq.qw.z, "load_session", lambda: True)
+        doc, why = dlq.runner.portal_now()
+    finally:
+        portal.close()
+    assert doc is None
+    assert why.strip()
+
+
+def test_a_portal_that_fails_at_the_top_of_a_firing_is_a_fault_said_out_loud(
+    dlq, monkeypatch
+):
+    """The ``no-portal`` fault: nothing started, a line in the log naming why,
+    the blocked notice, and the status screen saying the same rather than a
+    traceback."""
+    dlq.item("10-one.py")
+
+    def gather(previous=None):
+        raise TimeoutError("timed out")
+
+    started, posted = [], []
+    monkeypatch.setattr(dlq.qw, "gather", gather)
+    monkeypatch.setattr(
+        dlq.runner, "run_item", lambda *a: started.append(a) or (0, 0, None)
+    )
+    monkeypatch.setattr(dlq.runner, "notify", lambda *a: posted.append(a))
+
+    assert dlq.runner.main(["--force"]) == 1
+    assert not started
+    assert "timed out" in (dlq.root / "logs" / "runner.log").read_text()
+    assert posted
+
+    facts = dlq.runner.snapshot(force=True)
+    assert facts["verdict"] == "no-portal"
+    assert facts["portal_problem"].strip()
 
 
 # --------------------------------------------------------------------------- #
