@@ -2103,6 +2103,126 @@ def spawn_plan(stop_by: float) -> tuple[list[str], str, str]:
     )
 
 
+def deafen() -> None:
+    """Point stdout and stderr at ``/dev/null``: the terminal has hung up.
+
+    Closing a Termux session hangs up its terminal, and every write to a
+    terminal that has hung up raises ``EIO`` — :func:`log` echoes every line
+    it writes, so the first line of the unwinding that a hangup asks for would
+    raise out of it, ahead of the kill and the ledger it exists to reach. The
+    log file is still written: only the echo goes nowhere, which is where
+    nobody is reading it.
+    """
+    try:
+        null = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return
+    for fd in (1, 2):
+        with contextlib.suppress(OSError):
+            os.dup2(null, fd)
+    os.close(null)
+
+
+class Interrupts:
+    """ctrl-c and a hangup, noted rather than raised, while a block finishes.
+
+    Some work must not be cut short by a stop, because it *is* the stop being
+    carried out: the bookkeeping after an interrupted download (its tree
+    killed, what it moved charged to the ledger, ``state.json`` saved), a
+    delivery (seconds of copying onto shared storage, which half done is a
+    truncated file under the final name), and a front end waiting for the
+    process it started to finish stopping. A second ctrl-c, or Pause tapped
+    twice, used to land inside them and skip the very writes the first one
+    was waiting on — a manual budget forgot the bytes and spent them again.
+
+    So inside one, SIGINT and SIGHUP only note themselves; the block finishes,
+    and whoever opened it decides what the stop means (the object is true once
+    one has come). A child started inside still meets both at their defaults:
+    exec resets a handler, which is why this is a handler and never
+    ``SIG_IGN``, which would be inherited and leave the download deaf to the
+    very ctrl-c that is meant to stop it. A hangup also :func:`deafen`-s
+    this process, since the terminal it was writing to has gone.
+
+    Only the main thread may install a handler, and signals are only handled
+    there; anywhere else this holds nothing, because there is nothing to hold.
+    """
+
+    SIGNALS = (signal.SIGINT, signal.SIGHUP)
+
+    def __init__(self) -> None:
+        #: The signals that came, in order.
+        self.caught: list[int] = []
+        self._before: dict[int, object] = {}
+
+    def __enter__(self) -> Interrupts:
+        for number in self.SIGNALS:
+            if signal.getsignal(number) == signal.SIG_IGN:
+                continue  # ignored on purpose (nohup), and that stands
+            try:
+                self._before[number] = signal.signal(number, self._note)
+            except ValueError:
+                break
+        return self
+
+    def __exit__(self, *exc) -> None:
+        for number, before in self._before.items():
+            signal.signal(number, signal.SIG_DFL if before is None else before)
+        self._before.clear()
+
+    def __bool__(self) -> bool:
+        return bool(self.caught)
+
+    def _note(self, number: int, frame) -> None:
+        if number == signal.SIGHUP:
+            deafen()
+        self.caught.append(number)
+
+
+#: The runner's lock while this process holds it (:func:`holding`).
+_lock = None
+
+
+@contextlib.contextmanager
+def holding(handle):
+    """Hold the runner's lock, already taken on *handle*, until the block ends.
+
+    The lock is the only thing that says the queue is busy — to the next
+    firing, to ``nibbles now``, and to every Move, Rename and Remove — and it
+    used to last exactly as long as the process that took it. A download does
+    not: it runs in a session of its own, so a runner killed outright (the
+    phone's process killer, a terminal SIGKILLed, an out-of-memory kill) left
+    its item writing into ``work/`` under a free lock, and the next ``nibbles
+    now`` or forced firing opened a second writer on the same ``.part``, which
+    is a corrupt file paid for one and a half times.
+
+    So every item started inside inherits the lock's open file
+    (:func:`lock_fds`), and an ``flock`` belongs to the open file rather than
+    to a process: it is held while anything holding it lives — this process,
+    ``timeout``, the item, a shell item's ``curl`` — and goes when the last of
+    them does. Which is also why it is released by closing and never by
+    ``LOCK_UN``: that would take it from the item too. A run that ends
+    normally ends with its items, so closing is the release it always was.
+
+    What it gives up: a blind run's orphan, which has no stop time, is no
+    longer reaped by the next firing — that firing cannot take the lock —
+    and spends what is left of the slice it was given, and no more. A windowed
+    one is still ended by its ``timeout``, and by the reaper once its stop
+    time is past.
+    """
+    global _lock
+    _lock = handle
+    try:
+        yield handle
+    finally:
+        _lock = None
+        handle.close()
+
+
+def lock_fds() -> tuple[int, ...]:
+    """What an item is started with in ``pass_fds``: the lock, if held here."""
+    return () if _lock is None or _lock.closed else (_lock.fileno(),)
+
+
 def run_item(
     item: dict, cap: int, stop_by: float, doc: dict | None, state: dict
 ) -> tuple[int, int, dict | None]:
@@ -2127,7 +2247,12 @@ def run_item(
     endless = stop_by == NO_DEADLINE
     wrapper, stop_epoch, until = spawn_plan(stop_by)
     run_id = f"{int(now())}-{os.getpid()}"
-    env = dict(os.environ)
+    # With this package first on PYTHONPATH, as `nibbles now` has it: an item
+    # imports `nibbles` through the path it was written with, and an upgrade
+    # that moved the package (a Python bump reinstalls a uv tool somewhere
+    # new) left every queued item naming a directory that is gone — failing
+    # each night with ModuleNotFoundError while Download now still worked.
+    env = home.child_env()
     env.update(
         {
             # BUDGET is kept equal to SLICE for items written against the older
@@ -2180,6 +2305,9 @@ def run_item(
             env=env,
             cwd=str(work),
             start_new_session=True,
+            # The runner's lock, held by the download for as long as it runs,
+            # whatever becomes of this process: see holding().
+            pass_fds=lock_fds(),
         )
 
     # What watch() counts by where the interface cannot be read: carried on
@@ -2204,17 +2332,24 @@ def run_item(
         # download nothing is watching and nothing will stop, spending mobile
         # data until the phone is rebooted. What it leaves behind is what a
         # deadline would have left — a resumable file and a queued item.
-        kill_tree(pgid, "runner interrupted")
-        state.pop("active_pgid", None)
-        state.pop("active_stop_by", None)
-        # What it moved is gone from the allowance whether or not it finished:
-        # a manual budget that forgot an interrupted download would spend the
-        # same bytes again on the next run. fire() records every run that
-        # returns; this is the one that does not.
-        note_spent(
-            state, max(0, iface_bytes() - began_iface) if counted else meter.moved()
-        )
-        save_state(state)
+        #
+        # Under Interrupts, because the stop has already been taken and this
+        # is it being carried out: a second ctrl-c, or Pause tapped again
+        # while the screen still showed the run, used to land in kill_tree's
+        # wait and skip the ledger and the save below.
+        with Interrupts():
+            kill_tree(pgid, "runner interrupted", child)
+            state.pop("active_pgid", None)
+            state.pop("active_stop_by", None)
+            # What it moved is gone from the allowance whether or not it
+            # finished: a manual budget that forgot an interrupted download
+            # would spend the same bytes again on the next run. fire() records
+            # every run that returns; this is the one that does not.
+            note_spent(
+                state,
+                max(0, iface_bytes() - began_iface) if counted else meter.moved(),
+            )
+            save_state(state)
         raise
     report = read_status(work, run_id, spent)
 
@@ -2225,15 +2360,36 @@ def run_item(
     return code, spent, report
 
 
-def kill_tree(pgid: int, why: str) -> None:
-    """Signal the whole process group, escalating if it does not go."""
-    log(f"killing process group {pgid}: {why}")
+def kill_tree(pgid: int, why: str, child: subprocess.Popen | None = None) -> None:
+    """Signal the whole process group, escalating if it does not go.
+
+    *child* is the group's leader, where this runner started it, and it is
+    reaped on every look. A process that has exited is a zombie until its
+    parent reaps it, and a zombie still belongs to its group, so
+    ``killpg(pgid, 0)`` went on answering for a leader that had gone in the
+    first second: every stop waited out the whole ten seconds and ended in a
+    SIGKILL of nothing — ten seconds in which the screen still offered Pause
+    for a run that had stopped. Reaped, the group answers only while something
+    of the tree is really there, and that is still what the escalation is for.
+
+    The signal goes before the line that says so, and the line may fail: after
+    a hangup the log's echo is a write to a terminal that has gone, and the
+    kill must not wait on it.
+    """
     try:
         os.killpg(pgid, signal.SIGTERM)
+        there = True
     except (ProcessLookupError, PermissionError):
+        there = False
+    with contextlib.suppress(OSError):
+        log(f"killing process group {pgid}: {why}")
+    if not there:
         return
-    for _ in range(10):
-        time.sleep(1)
+    # Ten seconds, looked at five times a second.
+    for _ in range(50):
+        time.sleep(0.2)
+        if child is not None:
+            child.poll()
         try:
             os.killpg(pgid, 0)
         except (ProcessLookupError, PermissionError):
@@ -2308,10 +2464,10 @@ def watch(
         spent = moved()
 
         if current >= stop_by:
-            kill_tree(pgid, "deadline reached")
+            kill_tree(pgid, "deadline reached", child)
             break
         if spent > allowance:
-            kill_tree(pgid, f"byte cap exceeded ({human(spent)} > {human(cap)})")
+            kill_tree(pgid, f"byte cap exceeded ({human(spent)} > {human(cap)})", child)
             break
 
         # Between portal polls the remainder is projected downwards using the
@@ -2324,7 +2480,7 @@ def watch(
                 else max(0, iface_bytes() - remainder_iface)
             )
             if projected <= hard_floor:
-                kill_tree(pgid, f"floor reached (projected {human(projected)})")
+                kill_tree(pgid, f"floor reached (projected {human(projected)})", child)
                 break
 
         if (
@@ -2341,18 +2497,18 @@ def watch(
                 remainder_moved = moved() if meter else 0
                 hard_floor = floor_bytes(fresh) + FLOOR_MARGIN
                 if remainder <= hard_floor:
-                    kill_tree(pgid, f"floor reached ({human(remainder)} left)")
+                    kill_tree(pgid, f"floor reached ({human(remainder)} left)", child)
                     break
             else:
                 portal_dark_since = portal_dark_since or current
                 if current - portal_dark_since > 300:
-                    kill_tree(pgid, "portal unreachable for 5 minutes")
+                    kill_tree(pgid, "portal unreachable for 5 minutes", child)
                     break
 
     try:
         child.wait(timeout=30)
     except subprocess.TimeoutExpired:
-        kill_tree(pgid, "did not exit after signal")
+        kill_tree(pgid, "did not exit after signal", child)
     return moved()
 
 
@@ -2905,9 +3061,22 @@ def fire(force: bool = False, blind: bool = False) -> int:
         record["last"] = stamp()
         record["last_exit"] = code
         record["bytes"] = record.get("bytes", 0) + spent
+        # On disk before the delivery. archive() copies onto shared storage,
+        # which is seconds for a large file — exactly when the screen sits at
+        # 100% offering Pause — and a stop, an error or a kill in there used
+        # to take the item's spend with it: a manual budget then spent the
+        # same bytes again on the next item.
+        save_state(state)
 
         if code == 0:
-            archive(item, state)
+            # And a stop asked for during the delivery waits for it: half a
+            # copy is a truncated file under the final name, and the copy
+            # spends nothing. The stop is carried out once it is recorded.
+            with Interrupts() as stop:
+                archive(item, state)
+                save_state(state)
+            if stop:
+                raise KeyboardInterrupt
             done_count += 1
         elif code == EX_TEMPFAIL:
             # "Not tonight" is a legitimate answer, but an item that says it
@@ -3002,6 +3171,21 @@ def report(force: bool = False, blind: bool = False) -> int:
     return 0
 
 
+def _hung_up(number: int, frame) -> None:
+    """A hangup stops the run the way ctrl-c does.
+
+    Closing the Termux session a ``run-now`` was typed into hangs up its
+    terminal, and the default answer to SIGHUP kills the runner where it
+    stands: its download, in a session of its own, never hears of it and goes
+    on spending — a blind one with no stop time at all — and nothing is
+    charged for what it moved. Raised as the interrupt instead, it unwinds
+    through :func:`run_item` like any stop. A firing has no terminal and never
+    gets one.
+    """
+    deafen()
+    raise KeyboardInterrupt
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point, single-instance."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -3033,20 +3217,27 @@ def main(argv: list[str] | None = None) -> int:
     except OSError:
         # A firing is already in progress. Still reap, in case that one died —
         # but by the clock only, and never as an orphan: whatever is recorded
-        # belongs to the runner holding the lock, which is downloading.
+        # belongs to what holds the lock — the runner, or the download it
+        # started, which holds the lock itself (holding()) — and is downloading.
         reap(load_state())
         print("another firing holds the lock")
         return 0
 
+    hangup = signal.getsignal(signal.SIGHUP)
+    if hangup == signal.SIG_DFL:
+        # Not over an inherited SIG_IGN: under nohup, surviving the hangup is
+        # what was asked for.
+        signal.signal(signal.SIGHUP, _hung_up)
     try:
-        code = fire(force=args.force, blind=args.blind)
-        if code:
-            # Worth telling someone: the window closes at 00:00 UTC and a human
-            # may be able to do something about it. The job stays armed either
-            # way and tries again in ~15 minutes — which is also why it is the
-            # one notification ``settings notify-blocked off`` can silence.
-            say_blocked()
-        return code
+        with holding(handle):
+            code = fire(force=args.force, blind=args.blind)
+            if code:
+                # Worth telling someone: the window closes at 00:00 UTC and a human
+                # may be able to do something about it. The job stays armed either
+                # way and tries again in ~15 minutes — which is also why it is the
+                # one notification ``settings notify-blocked off`` can silence.
+                say_blocked()
+            return code
     except KeyboardInterrupt:
         # The way a blind run is stopped, since nothing else will stop it. The
         # download it was on has already been signalled and closed its file by
@@ -3054,8 +3245,8 @@ def main(argv: list[str] | None = None) -> int:
         log("interrupted; what is downloaded is kept and resumes")
         return 130
     finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()
+        if hangup is not None:
+            signal.signal(signal.SIGHUP, hangup)
 
 
 if __name__ == "__main__":

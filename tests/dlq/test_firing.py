@@ -13,14 +13,24 @@ runner can kill its tree without killing itself, which means a signal to the
 runner is *not* a signal to the download: what stops the download is the runner
 unwinding past it. Only an interrupt does that, and that is checked here by
 sending one to a real child and asking it which signal it got.
+
+And stopping is bookkeeping that a second stop must not cut short: what an
+item moved is charged and on disk before anything else can fail, a delivery
+under way finishes before the stop it was interrupted by, and the lock is
+held by the download itself — so a runner killed outright cannot leave the
+queue looking free while its item writes.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import shutil
 import signal
+import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -341,6 +351,77 @@ def test_a_finished_item_leaves_the_queue_by_rename(firing, monkeypatch):
     assert (landing / "thing.iso").is_file()
 
 
+def _finishing(firing, monkeypatch, moved):
+    """One item that finishes having moved *moved*, delivered to a folder."""
+    firing.item("10-one.py", cap=MiB, dest="file")
+    landing = firing.root / "landing"
+    landing.mkdir()
+    firing.config({"file_dir": str(landing)})
+
+    def run_item(item, cap, stop_by, doc, state):
+        out = firing.root / "out" / item["name"]
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "thing.iso").write_bytes(b"x" * 4096)
+        return 0, moved, None
+
+    monkeypatch.setattr(firing.runner, "run_item", run_item)
+    monkeypatch.setattr(firing.runner, "admit", lambda *a, **kw: (MiB, ""))
+    return landing
+
+
+def _ledger(dlq) -> int:
+    return sum(spent for _, spent in dlq.runner.load_state().get("spent", []))
+
+
+@pytest.mark.parametrize("failure", [KeyboardInterrupt, OSError])
+def test_what_an_item_spent_is_on_disk_before_its_delivery(
+    firing, monkeypatch, failure
+):
+    """A delivery that never finishes does not take the spend with it.
+
+    The delivery is a copy onto shared storage — seconds for a large file, and
+    exactly when the screen sits at 100% offering Pause. Whatever stops it, a
+    stop or a failure, the ledger and the item's record were already written:
+    a manual budget that lost them would spend the same bytes again.
+    """
+    _finishing(firing, monkeypatch, 7 * MiB)
+
+    def hand_over(item, state):
+        raise failure("the copy did not finish")
+
+    monkeypatch.setattr(firing.runner, "hand_over", hand_over)
+    with pytest.raises(failure):
+        firing.runner.fire(force=True)
+    assert _ledger(firing) == 7 * MiB
+    assert firing.runner.load_state()["items"]["10-one.py"]["last_exit"] == 0
+
+
+def test_a_stop_asked_for_during_the_delivery_waits_for_it(firing, monkeypatch):
+    """Pause in the middle of a copy: the copy finishes, then the run stops.
+
+    Half a copy is a truncated file under the final name, and the copy spends
+    nothing, so stopping partway gains nothing and costs the file. The stop is
+    still carried out — the runner exits as interrupted — once the item is
+    delivered and recorded as delivered.
+    """
+    landing = _finishing(firing, monkeypatch, 7 * MiB)
+    real = firing.runner.hand_over
+
+    def hand_over(item, state):
+        os.kill(os.getpid(), signal.SIGINT)
+        return real(item, state)
+
+    monkeypatch.setattr(firing.runner, "hand_over", hand_over)
+    assert firing.runner.main(["--force"]) == 130
+    assert (landing / "thing.iso").read_bytes() == b"x" * 4096
+    assert list((firing.root / "done").rglob("10-one.py"))
+    record = firing.runner.load_state()["items"]["10-one.py"]
+    assert record["retired"] == "done"
+    assert record["delivered"] == [str(landing / "thing.iso")]
+    assert _ledger(firing) == 7 * MiB
+    assert not firing.ytq.queue_busy()
+
+
 def test_a_delivery_that_cannot_land_leaves_the_file_where_it_was_paid_for(
     firing, monkeypatch
 ):
@@ -497,6 +578,88 @@ def test_an_item_is_told_what_it_may_spend_and_where_to_put_it(dlq, monkeypatch)
     # And it is run *in* its work directory, so a relative path it writes lands
     # where the runner will look for it.
     assert told["cwd"] == told["EXPIRE_WORK"]
+
+
+def _witness(dlq, said):
+    """An item that says what it was started with, run as the job runs one.
+
+    ``-S`` keeps site-packages, and with it an editable install of the real
+    checkout, out of its reach — the way Termux's own interpreter, which the
+    job starts items with, knows no virtual environment. So the package is
+    found only if whoever started the item handed it over.
+    """
+    lock = str(dlq.root / "runner.lock")
+    body = (
+        "import json, os\n"
+        "told = {}\n"
+        "try:\n"
+        "    import nibbles\n"
+        "    told['package'] = os.path.dirname(os.path.abspath(nibbles.__file__))\n"
+        "except ImportError as exc:\n"
+        "    told['package'] = repr(exc)\n"
+        "held = []\n"
+        "for fd in os.listdir('/proc/self/fd'):\n"
+        "    try:\n"
+        f"        held.append(os.readlink('/proc/self/fd/' + fd) == {lock!r})\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "told['lock'] = any(held)\n"
+        f"json.dump(told, open({str(said)!r}, 'w'))\n"
+        "raise SystemExit(75)\n"
+    )
+    path = dlq.item(
+        "10-witness.py",
+        MiB,
+        header=f"#!{sys.executable} -S\n# EXPIRE: v1\n",
+        body=body,
+    )
+    path.chmod(0o755)
+    return path
+
+
+def _started(firing, monkeypatch, how):
+    """Start the witness the way *how* does: a firing, or ``nibbles now``."""
+    said = firing.root / "told.json"
+    _witness(firing, said)
+    if how == "firing":
+        monkeypatch.setattr(firing.runner, "admit", lambda *a, **kw: (MiB, ""))
+        assert firing.runner.main(["--force"]) == 0
+    else:
+        assert firing.sched.run_one(firing.sched.items()[0], assume_yes=True) == 0
+    return json.loads(said.read_text())
+
+
+@pytest.mark.parametrize("how", ["firing", "now"])
+def test_an_item_is_handed_the_package_wherever_it_was_written_from(
+    firing, monkeypatch, how
+):
+    """Both spawns put this package first on the item's ``PYTHONPATH``.
+
+    An item imports ``nibbles`` through the path it was written with, and a
+    reinstall that moves the package — Termux's Python moving on a minor
+    version rebuilds a uv tool somewhere new — leaves every queued item naming
+    a directory that is gone. Only ``Download now`` used to hand the package
+    over, so the night failed every item with ``ModuleNotFoundError`` while
+    Download now went on working; the two spawns now agree.
+    """
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    told = _started(firing, monkeypatch, how)
+    assert told["package"] == str(firing.root / "nibbles")
+
+
+@pytest.mark.parametrize("how", ["firing", "now"])
+def test_an_item_holds_the_lock_it_was_started_under(firing, monkeypatch, how):
+    """The download holds the runner's lock itself, and it goes when the run does.
+
+    The lock is the only thing that tells a firing, ``nibbles now`` and every
+    Move, Rename and Remove that a download is writing, and the download lives
+    in a session of its own: a lock held only by the process that started it
+    was free the moment that process was killed, with the item still writing.
+    """
+    told = _started(firing, monkeypatch, how)
+    assert told["lock"] is True
+    # Released with the run: nothing is left holding the queue.
+    assert not firing.ytq.queue_busy()
 
 
 def test_the_rate_is_learned_only_from_transfers_big_enough_to_mean_something(
@@ -765,11 +928,276 @@ def test_the_runner_kills_the_item_tree_on_its_way_past(dlq, monkeypatch):
 def _record_kill(dlq):
     calls = []
 
-    def kill_tree(pgid, why):
+    def kill_tree(pgid, why, child=None):
         calls.append(pgid)
 
     kill_tree.calls = calls
     return kill_tree
+
+
+@pytest.mark.parametrize("wrapper", [[], ["timeout", "--kill-after=15", "60"]])
+def test_a_stopped_tree_is_seen_to_have_gone_as_soon_as_it_has(dlq, wrapper):
+    """The group's leader is reaped on every look, so the wait ends with it.
+
+    A process that has exited is a zombie until its parent reaps it, and a
+    zombie still belongs to its group: unreaped, the group answered for a
+    leader that had gone in the first second, and every stop waited out the
+    whole escalation — ten seconds in which the screen still offered Pause.
+    """
+    if wrapper and shutil.which("timeout") is None:
+        pytest.skip("no timeout(1) here")
+    child = subprocess.Popen(
+        [*wrapper, sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+    )
+    began = time.monotonic()
+    dlq.runner.kill_tree(child.pid, "test", child)
+    assert time.monotonic() - began < 5
+    # It went at the polite signal, not at the escalation.
+    assert child.returncode is not None and child.returncode != -signal.SIGKILL
+    with pytest.raises(ProcessLookupError):
+        os.killpg(child.pid, 0)
+
+
+def test_a_tree_that_will_not_go_is_still_killed(dlq, tmp_path, monkeypatch):
+    """Reaping the leader ends the wait early; it does not end the escalation."""
+    up = tmp_path / "up.txt"
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            f"open({str(up)!r}, 'w').write('up')\n"
+            "time.sleep(60)\n",
+        ],
+        start_new_session=True,
+    )
+    assert _wait_for(up) == "up"
+    with monkeypatch.context() as patched:
+        # The escalation's ten seconds are this test's wall clock, not its point.
+        patched.setattr(dlq.runner.time, "sleep", lambda seconds: None)
+        dlq.runner.kill_tree(child.pid, "test", child)
+    assert child.wait(timeout=10) == -signal.SIGKILL
+
+
+@pytest.mark.parametrize("again", [1, 3])
+def test_a_second_interrupt_cannot_cut_the_unwinding_short(
+    dlq, monkeypatch, tmp_path, again
+):
+    """Pause tapped again while the run is stopping changes nothing it does.
+
+    The unwinding is the first stop being carried out — the tree killed, what
+    it moved charged, ``state.json`` cleared — and a second interrupt used to
+    land in its wait and skip the ledger: a manual budget then spent the same
+    bytes again. Exactly one interrupt comes out, after all of it.
+    """
+    monkeypatch.setattr(dlq.runner, "iface_readable", lambda: False)
+    marker = tmp_path / "up.txt"
+    item = dlq.script(
+        "10-one.py",
+        "import os, time\n"
+        "with open(os.path.join(os.environ['EXPIRE_WORK'], 'x.part'), 'wb') as f:\n"
+        "    f.write(b'x' * 100000)\n"
+        f"open({str(marker)!r}, 'w').write('up')\n"
+        "while True: time.sleep(0.05)\n",
+    )
+    real = dlq.runner.kill_tree
+
+    def watch(child, pgid, cap, stop_by, doc):
+        assert _wait_for(marker) == "up"
+        raise KeyboardInterrupt
+
+    def kill_tree(pgid, why, child=None):
+        for _ in range(again):
+            os.kill(os.getpid(), signal.SIGINT)
+        real(pgid, why, child)
+        kill_tree.pgid = pgid
+
+    monkeypatch.setattr(dlq.runner, "watch", watch)
+    monkeypatch.setattr(dlq.runner, "kill_tree", kill_tree)
+    with pytest.raises(KeyboardInterrupt):
+        dlq.runner.run_item(
+            dlq.runner.parse_item(item), MiB, dlq.runner.NO_DEADLINE, None, {}
+        )
+    with pytest.raises(ProcessLookupError):
+        os.killpg(kill_tree.pgid, 0)
+    assert "active_pgid" not in dlq.runner.load_state()
+    assert _ledger(dlq) >= 100000
+
+
+#: A runner that takes a moment to stop, as the real one does: its download's
+#: tree killed, the ledger charged, ``state.json`` saved. It says when it has.
+UNWINDS = """\
+import os, signal, sys, time
+from pathlib import Path
+
+here = Path(sys.argv[1])
+
+
+def stopping(number, frame):
+    time.sleep(1.0)
+    (here / "unwound").write_text("yes")
+    raise SystemExit(130)
+
+
+signal.signal(signal.SIGINT, stopping)
+(here / "up").write_text(str(os.getpid()))
+time.sleep(30)
+"""
+
+
+def test_run_now_waits_for_the_runner_to_finish_stopping(dlq, tmp_path, monkeypatch):
+    """ctrl-c at ``nibbles run-now`` reaches both ends; the front end waits.
+
+    ``subprocess.run`` answers a ctrl-c by killing its child a quarter of a
+    second later, and the runner it killed was partway through stopping: its
+    download's ledger entry unwritten, ``state.json`` still saying a run was
+    in progress. What is checked is that the runner got to the end of it.
+    """
+    script = tmp_path / "unwinds.py"
+    script.write_text(UNWINDS)
+    monkeypatch.setattr(
+        dlq.sched,
+        "queue_run_argv",
+        lambda blind: [sys.executable, str(script), str(tmp_path)],
+    )
+    front = threading.main_thread().ident
+
+    def ctrl_c():
+        # The terminal's ctrl-c, which goes to its whole foreground group.
+        os.kill(int(_wait_for(tmp_path / "up")), signal.SIGINT)
+        signal.pthread_kill(front, signal.SIGINT)
+
+    presser = threading.Thread(target=ctrl_c, daemon=True)
+    presser.start()
+    try:
+        code = dlq.sched.run_queue(blind=False)
+    except KeyboardInterrupt:
+        pytest.fail("the front end gave the runner up partway through its stop")
+    presser.join(timeout=10)
+    assert code == 130
+    assert (tmp_path / "unwound").read_text() == "yes"
+
+
+#: A download that goes on until it is let go, writing as it goes, and says
+#: which group it leads. A minute at most, whatever becomes of the test.
+ENDLESS = """\
+import os, time
+from pathlib import Path
+
+here = Path({here!r})
+(here / "pgid").write_text(str(os.getpgrp()))
+with open(os.path.join(os.environ["EXPIRE_WORK"], "x.part"), "ab") as part:
+    for _ in range(600):
+        if (here / "release").exists():
+            break
+        part.write(b"x" * 65536)
+        part.flush()
+        time.sleep(0.1)
+raise SystemExit(75)
+"""
+
+
+def _runner_process(dlq, *argv, **popen) -> subprocess.Popen:
+    """The real runner, in a process of its own, counting as a phone does."""
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(dlq.root)!r})\n"
+        "from nibbles import expire_runner as runner\n"
+        "runner.iface_readable = lambda: False\n"
+        "sys.exit(runner.main(sys.argv[1:]))\n"
+    )
+    return subprocess.Popen(
+        [sys.executable, "-c", code, *argv], cwd=str(dlq.root), **popen
+    )
+
+
+def _let_go(here, pgid, runner) -> None:
+    (here / "release").write_text("go")
+    if pgid:
+        with contextlib.suppress(OSError):
+            os.killpg(pgid, signal.SIGKILL)
+    if runner.poll() is None:
+        runner.kill()
+        runner.wait()
+
+
+def test_a_hangup_stops_the_run_the_way_ctrl_c_does(dlq, tmp_path):
+    """Closing the terminal a ``run-now`` was typed into unwinds the runner.
+
+    Left to SIGHUP's default the runner died where it stood, and its download,
+    in a session of its own, never heard: it went on spending with nothing
+    watching and nothing charged. And the terminal it echoed its log to is
+    gone, so the unwinding must not depend on writing to it — here its output
+    is a pipe nobody reads any more.
+    """
+    dlq.config({"budget": "manual", "allowance_mb": 2000})
+    dlq.script("10-slow.py", ENDLESS.format(here=str(tmp_path)), cap=200 * MiB)
+    runner = _runner_process(
+        dlq, "--force", stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    )
+    pgid = 0
+    try:
+        pgid = int(_wait_for(tmp_path / "pgid", limit=20))
+        time.sleep(0.5)
+        runner.stdout.close()
+        runner.send_signal(signal.SIGHUP)
+        assert runner.wait(timeout=20) == 130
+        with pytest.raises(ProcessLookupError):
+            os.killpg(pgid, 0)
+        assert "active_pgid" not in dlq.runner.load_state()
+        part = dlq.root / "work" / "10-slow.py" / "x.part"
+        assert _ledger(dlq) >= part.stat().st_size > 0
+    finally:
+        _let_go(tmp_path, pgid, runner)
+
+
+@pytest.mark.parametrize("blind", [False, True])
+def test_a_download_whose_runner_was_killed_still_holds_the_queue(
+    dlq, tmp_path, blind
+):
+    """Busy means a download is alive, not a runner: one writer per ``.part``.
+
+    A runner killed outright — the phone's process killer, an out-of-memory
+    kill — used to take the lock with it while its item, in a session of its
+    own, went on writing. ``nibbles now`` or a forced firing then opened a
+    second writer on the same file, which corrupts it and pays for it one and
+    a half times. Blind and windowed both: a blind item leads its own group,
+    a windowed one runs under ``timeout``.
+    """
+    if not blind:
+        dlq.config({"budget": "manual", "allowance_mb": 2000})
+    dlq.script("10-slow.py", ENDLESS.format(here=str(tmp_path)), cap=200 * MiB)
+    runner = _runner_process(
+        dlq,
+        "--force",
+        *(["--blind"] if blind else []),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pgid = 0
+    try:
+        pgid = int(_wait_for(tmp_path / "pgid", limit=20))
+        runner.kill()
+        runner.wait(timeout=10)
+        os.killpg(pgid, 0)  # the download is still going
+
+        assert dlq.ytq.queue_busy()
+        assert dlq.ui.busy_problem() is not None
+        assert dlq.sched.run_one(dlq.sched.items()[0], assume_yes=True) == 1
+        assert dlq.runner.main(["--force"]) == 0
+        # Nothing else was started on its file.
+        assert (tmp_path / "pgid").read_text() == str(pgid)
+
+        # And the queue is free again once the download has ended.
+        (tmp_path / "release").write_text("go")
+        until = time.monotonic() + 10
+        while dlq.ytq.queue_busy() and time.monotonic() < until:
+            time.sleep(0.05)
+        assert not dlq.ytq.queue_busy()
+    finally:
+        _let_go(tmp_path, pgid, runner)
 
 
 def test_what_is_recorded_while_an_item_runs_is_whether_it_can_be_reaped(

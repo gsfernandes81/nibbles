@@ -93,7 +93,7 @@ class Supervised:
         self.clock += self.step
         return self.clock
 
-    def _kill(self, pgid, why):
+    def _kill(self, pgid, why, child=None):
         self.killed.append(why)
 
     def _read_portal(self):

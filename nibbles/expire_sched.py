@@ -2246,11 +2246,11 @@ def run_one(row: dict, assume_yes: bool = False) -> int:
             file=sys.stderr,
         )
         return 1
-    try:
+    # Held by the item too, for as long as it runs: a `nibbles now` killed
+    # outright must not leave the queue looking free with its download still
+    # writing (expire_runner.holding, which also releases it).
+    with runner.holding(handle):
         return _run_item(runner, row, remaining)
-    finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()
 
 
 def queue_run_argv(blind: bool) -> list[str]:
@@ -2272,6 +2272,22 @@ def queue_run_argv(blind: bool) -> list[str]:
     blind run that finds the portal up is an ordinary run with the floor intact.
     """
     return [sys.executable, str(RUNNER), "--force"] + (["--blind"] if blind else [])
+
+
+def run_queue(blind: bool) -> int:
+    """Run the whole queue in this terminal, and wait until it has stopped.
+
+    ctrl-c reaches the runner through the terminal's process group, and what
+    stops a run is the runner *unwinding*: killing its download's tree,
+    charging the ledger with what it moved, clearing what ``state.json`` says
+    is running, saying so. ``subprocess.run`` on its own answers the same
+    ctrl-c by killing its child a quarter of a second later — partway through
+    all of that, so the bytes went uncounted and a manual budget spent them
+    again. Here an interrupt (or a hangup) is noted rather than raised, and the
+    wait goes on; the runner's own exit says how it ended, 130 when stopped.
+    """
+    with _runner().Interrupts():
+        return subprocess.run(queue_run_argv(blind)).returncode
 
 
 def run_blind(assume_yes: bool = False) -> int:
@@ -2300,7 +2316,7 @@ def run_blind(assume_yes: bool = False) -> int:
         # lose the allowance's guard. The ordinary run is what was meant.
         print("the budget is manual, so there is no portal to do without")
         print("running the queue against the daily allowance instead")
-        return subprocess.run(queue_run_argv(blind=False)).returncode
+        return run_queue(blind=False)
     items, rejected = runner.queued_items()
     if not items:
         print(f"nothing queued in {_short(QUEUE)}")
@@ -2335,23 +2351,32 @@ def run_blind(assume_yes: bool = False) -> int:
             print("nothing downloaded")
             return 0
     print("ctrl-c stops it; what is downloaded is kept and resumes")
-    try:
-        return subprocess.run(queue_run_argv(blind=True)).returncode
-    except KeyboardInterrupt:
-        # The runner got the same ctrl-c through the terminal's process group
-        # and has already stopped its download and said so. Nothing to forward,
-        # and a traceback here would bury the line that matters.
-        return 130
+    return run_queue(blind=True)
 
 
 def _run_item(runner, row: dict, slice_bytes: int) -> int:
-    """Spawn the item, follow it, and dispose of it as the runner would."""
+    """Spawn the item, follow it, and dispose of it as the runner would.
+
+    From the spawn to the last write, ctrl-c and a hangup are noted rather
+    than raised (:class:`expire_runner.Interrupts`). The item gets them
+    itself — it shares this process group, whether that is the terminal's or
+    the one Pause signals — and what has to happen once it stops is the part
+    a second one used to cut short: waiting for it to close its file, charging
+    the ledger, saving its record, delivering it. Cut short, the bytes went
+    uncounted and the lock was let go with the download still writing.
+    """
+    import contextlib
+    import io
+
     work, out = WORK / row["name"], OUT / row["name"]
     for directory in (work, out, LOGS):
         directory.mkdir(parents=True, exist_ok=True)
 
     run_id = f"{int(time.time())}-{os.getpid()}"
-    env = dict(os.environ)
+    # What the nightly runner gives an item, the package first on PYTHONPATH:
+    # the path an item was written with names wherever the package was then,
+    # and an upgrade can have moved it.
+    env = home.child_env()
     env.update(
         {
             "EXPIRE_BUDGET_BYTES": str(slice_bytes),
@@ -2383,62 +2408,71 @@ def _run_item(runner, row: dict, slice_bytes: int) -> int:
         print(f"log          : {log_path}")
         print("ctrl-c stops it; what is downloaded is kept and resumes")
 
-    with log_path.open("a") as sink:
-        sink.write(f"\n===== {stamp()} nibbles now slice={slice_bytes} =====\n")
-        sink.flush()
-        # Deliberately no setsid: the item stays in this terminal's foreground
-        # process group, so ctrl-c reaches it directly and it stops itself the
-        # same cooperative way a deadline would, leaving a resumable file.
-        # The interface counter either side of the run, for the runner's ledger:
-        # a download started now comes out of the same daily allowance a manual
-        # budget spends against, and the night must know it has gone.
-        # On a phone the counters cannot be read at all, and the item's own
-        # report (or its files' growth) is the count instead — the runner's
-        # Meter, the same one a nightly firing charges by.
-        counted = runner.iface_readable()
-        meter = runner.Meter(work, out, run_id)
-        began = runner.iface_bytes()
-        child = subprocess.Popen(
-            launch, stdout=sink, stderr=subprocess.STDOUT, env=env, cwd=str(work)
-        )
-        try:
-            code = _follow(child, work / ".status.json", run_id, row)
-        finally:
-            moved = (
-                max(0, runner.iface_bytes() - began) if counted else meter.moved()
+    with runner.Interrupts() as stop:
+        with log_path.open("a") as sink:
+            sink.write(f"\n===== {stamp()} nibbles now slice={slice_bytes} =====\n")
+            sink.flush()
+            # Deliberately no setsid: the item stays in this terminal's
+            # foreground process group, so ctrl-c reaches it directly and it
+            # stops itself the same cooperative way a deadline would, leaving
+            # a resumable file.
+            # The interface counter either side of the run, for the runner's
+            # ledger: a download started now comes out of the same daily
+            # allowance a manual budget spends against, and the night must
+            # know it has gone. On a phone the counters cannot be read at all,
+            # and the item's own report (or its files' growth) is the count
+            # instead — the runner's Meter, the same one a nightly firing
+            # charges by.
+            counted = runner.iface_readable()
+            meter = runner.Meter(work, out, run_id)
+            began = runner.iface_bytes()
+            child = subprocess.Popen(
+                launch,
+                stdout=sink,
+                stderr=subprocess.STDOUT,
+                env=env,
+                cwd=str(work),
+                # The lock run_one took, held by the download for as long as it
+                # runs (expire_runner.holding).
+                pass_fds=runner.lock_fds(),
             )
+            code = _follow(child, work / ".status.json", run_id, row, stop)
+            moved = max(0, runner.iface_bytes() - began) if counted else meter.moved()
 
-    state = runner.load_state()
-    runner.note_spent(state, moved)
-    record = state.setdefault("items", {}).setdefault(row["name"], {"attempts": 0})
-    report = _report(work / ".status.json", run_id)
-    if report:
-        record["part_bytes"] = int(report.get("part_bytes") or 0)
-    record["last"] = stamp()
-    record["last_exit"] = code
+        state = runner.load_state()
+        runner.note_spent(state, moved)
+        record = state.setdefault("items", {}).setdefault(row["name"], {"attempts": 0})
+        report = _report(work / ".status.json", run_id)
+        if report:
+            record["part_bytes"] = int(report.get("part_bytes") or 0)
+        record["last"] = stamp()
+        record["last_exit"] = code
+        # On disk before the delivery, which is a copy onto shared storage
+        # that can fail or be killed partway: the spend is recorded either way.
+        runner.save_state(state)
 
-    import contextlib
-    import io
+        if code == 0:
+            # archive() reports through the runner's log, which both appends
+            # to runner.log and echoes to the terminal. The append is the
+            # record and is kept; the echo is an 88-column line wrapping three
+            # times on a phone immediately above the line that says the same
+            # thing better.
+            with contextlib.redirect_stdout(io.StringIO()):
+                runner.archive(
+                    {
+                        "path": row["path"],
+                        "name": row["name"],
+                        # archive() hands the file to its destination, which
+                        # it cannot do without knowing what that is.
+                        "dest": row["dest"],
+                    },
+                    state,
+                )
+            runner.save_state(state)
 
     paint = _paint()
     narrow = _width() < WIDE
     if code == 0:
-        # archive() reports through the runner's log, which both appends to
-        # runner.log and echoes to the terminal. The append is the record and
-        # is kept; the echo is an 88-column line wrapping three times on a
-        # phone immediately above the line that says the same thing better.
-        with contextlib.redirect_stdout(io.StringIO()):
-            runner.archive(
-                {
-                    "path": row["path"],
-                    "name": row["name"],
-                    # archive() hands the file to its destination, which it
-                    # cannot do without knowing what that is.
-                    "dest": row["dest"],
-                },
-                state,
-            )
-        runner.save_state(state)
         files = _delivered(row["name"], state.get("items", {}).get(row["name"]))
         landed = files[0] if files else out
         # The path is never clipped and never shuffled along by a label: it is
@@ -2450,7 +2484,6 @@ def _run_item(runner, row: dict, slice_bytes: int) -> int:
             print(paint("complete:", "1;32"), landed)
         return 0
 
-    runner.save_state(state)
     if code == runner.EX_TEMPFAIL:
         # Re-read rather than reusing the row: the run itself is usually the
         # thing that first learned the file's real size.
@@ -2484,8 +2517,24 @@ def _report(path: Path, run_id: str) -> dict | None:
     return report
 
 
-def _follow(child: subprocess.Popen, status: Path, run_id: str, row: dict) -> int:
-    """Draw the item's own progress while it runs, and wait for it."""
+def _follow(
+    child: subprocess.Popen, status: Path, run_id: str, row: dict, stop=()
+) -> int:
+    """Draw the item's own progress while it runs, and wait for it.
+
+    *stop* turns true once a ctrl-c has come (``_run_item`` holds it as an
+    :class:`expire_runner.Interrupts`). The child already got the same one
+    through the process group it shares with this one; there is nothing to
+    forward, only a progress line to stop drawing over whatever it says on its
+    way out, and its exit to wait for — through any further ctrl-c, which used
+    to raise out of this wait and leave the item writing with nothing charged
+    and the lock let go.
+
+    What is drawn may fail to be — a terminal that has just gone, before the
+    hangup that says so — and never stops the wait.
+    """
+    import contextlib
+
     live = sys.stdout.isatty()
     paint = _paint()
     # One column in hand: a line drawn right up to the last cell wraps, and a
@@ -2493,36 +2542,36 @@ def _follow(child: subprocess.Popen, status: Path, run_id: str, row: dict) -> in
     width = _width() - 1
     started = time.time()
     last = 0.0
-    try:
-        while child.poll() is None:
-            time.sleep(1.0)
-            report = _report(status, run_id)
-            moment = time.time()
-            if report is None or (not live and moment - last < 30):
-                continue
-            last = moment
-            have = int(report.get("part_bytes") or 0)
-            total = int(report.get("total_bytes") or 0) or row["total"]
-            taken = int(report.get("payload_bytes_this_slice") or 0)
-            rate = f"{ytq.human(taken / max(1.0, moment - started))}/s"
-            done = f"{have / total * 100:.0f}%" if total else ""
-            of = f" of {ytq.human(total)}" if total and width >= 40 else ""
-            line = f"  {paint(done, '1;33')} {ytq.human(have)}{of}  {rate}"
-            plain = f"  {done} {ytq.human(have)}{of}  {rate}"
-            if len(plain) > width:
-                line = plain = f"  {done} {ytq.human(have)}  {rate}"
+    while child.poll() is None:
+        time.sleep(1.0)
+        if stop:
+            with contextlib.suppress(OSError):
+                print("\ninterrupted; letting it close the file cleanly")
+            break
+        report = _report(status, run_id)
+        moment = time.time()
+        if report is None or (not live and moment - last < 30):
+            continue
+        last = moment
+        have = int(report.get("part_bytes") or 0)
+        total = int(report.get("total_bytes") or 0) or row["total"]
+        taken = int(report.get("payload_bytes_this_slice") or 0)
+        rate = f"{ytq.human(taken / max(1.0, moment - started))}/s"
+        done = f"{have / total * 100:.0f}%" if total else ""
+        of = f" of {ytq.human(total)}" if total and width >= 40 else ""
+        line = f"  {paint(done, '1;33')} {ytq.human(have)}{of}  {rate}"
+        plain = f"  {done} {ytq.human(have)}{of}  {rate}"
+        if len(plain) > width:
+            line = plain = f"  {done} {ytq.human(have)}  {rate}"
+        with contextlib.suppress(OSError):
             print(
                 f"\r{line}{' ' * max(0, width - len(plain))}" if live else plain,
                 end="" if live else "\n",
                 flush=True,
             )
-    except KeyboardInterrupt:
-        # The child already got the same ctrl-c through the terminal's process
-        # group; there is nothing to forward, only a progress line to stop
-        # drawing over whatever it says on its way out.
-        print("\ninterrupted; letting it close the file cleanly")
     if live:
-        print()
+        with contextlib.suppress(OSError):
+            print()
     try:
         return child.wait(timeout=180)
     except subprocess.TimeoutExpired:
@@ -2930,7 +2979,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if "--blind" in rest:
             return run_blind(assume_yes)
-        return subprocess.run(queue_run_argv(blind=False)).returncode
+        return run_queue(blind=False)
     else:
         return usage()
     return 0

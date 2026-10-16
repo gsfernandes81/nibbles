@@ -17,7 +17,11 @@ from __future__ import annotations
 import datetime as dt
 import json
 import itertools
+import os
+import signal
+import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -468,11 +472,72 @@ def test_a_download_stopped_partway_is_still_charged(dlq, monkeypatch):
 
     monkeypatch.setattr(dlq.runner, "iface_bytes", lambda: moved[0])
     monkeypatch.setattr(dlq.runner, "watch", interrupted)
-    monkeypatch.setattr(dlq.runner, "kill_tree", lambda pgid, why: None)
+    monkeypatch.setattr(dlq.runner, "kill_tree", lambda pgid, why, child=None: None)
     state = dlq.runner.load_state()
     with pytest.raises(KeyboardInterrupt):
         dlq.runner.run_item(item, 100 * MiB, dlq.runner.NO_DEADLINE, None, state)
     assert dlq.runner.manual_reading()["spent_bytes"] == 40 * MiB
+
+
+def _until(path: Path, limit: float = 8.0) -> str:
+    end = time.monotonic() + limit
+    while time.monotonic() < end:
+        if path.exists() and path.read_text():
+            return path.read_text()
+        time.sleep(0.02)
+    return ""
+
+
+def test_a_download_now_paused_twice_is_waited_for_and_charged(
+    dlq, monkeypatch, tmp_path
+):
+    """Pause, and Pause again while it is closing its file: still charged.
+
+    An item takes a moment to stop — yt-dlp's gentle stop takes seconds — and
+    the second interrupt used to raise out of ``nibbles now``'s wait for it:
+    nothing charged to the allowance, no record saved, and the lock let go
+    with the download still writing. Now both are the item's to answer, and
+    the run ends when the item has.
+    """
+    manual(dlq, 1000)
+    monkeypatch.setattr(dlq.runner, "iface_readable", lambda: False)
+    body = (
+        "import os, signal, sys, time\n"
+        f"here = {str(tmp_path)!r}\n"
+        "def stopping(number, frame):\n"
+        "    signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "    time.sleep(1.0)\n"
+        "    open(os.path.join(here, 'closed'), 'w').write('yes')\n"
+        "    sys.exit(75)\n"
+        "signal.signal(signal.SIGINT, stopping)\n"
+        "with open(os.path.join(os.environ['EXPIRE_WORK'], 'x.part'), 'wb') as f:\n"
+        "    f.write(b'x' * 300000)\n"
+        "open(os.path.join(here, 'up'), 'w').write(str(os.getpid()))\n"
+        "for _ in range(400):\n"
+        "    time.sleep(0.05)\n"
+    )
+    dlq.script("10-now.py", body, cap=10 * MiB)
+    front = threading.main_thread().ident
+
+    def pause_twice():
+        # What Pause sends: an interrupt to the group `nibbles now` and its
+        # item share.
+        item = int(_until(tmp_path / "up"))
+        for _ in range(2):
+            os.kill(item, signal.SIGINT)
+            signal.pthread_kill(front, signal.SIGINT)
+            time.sleep(0.3)
+
+    presser = threading.Thread(target=pause_twice, daemon=True)
+    presser.start()
+    try:
+        dlq.sched._run_item(dlq.runner, dlq.sched.items()[0], 10 * MiB)
+    except KeyboardInterrupt:
+        pytest.fail("a second Pause cut the run short")
+    presser.join(timeout=10)
+    assert (tmp_path / "closed").read_text() == "yes"
+    assert dlq.runner.manual_reading()["spent_bytes"] >= 300_000
+    assert dlq.runner.load_state()["items"]["10-now.py"]["last_exit"] == 75
 
 
 # --------------------------------------------------------------------------- #
