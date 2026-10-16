@@ -18,10 +18,17 @@ sheet), and every verb in these docs (`nibbles status`, `nibbles settings`,
 in these docs also works as `python3 -m nibbles …` from `~/nibbles`.
 
 The runner reads the portal through the quota widget in a second checkout,
-`~/zwana-quota`, found beside this one or under `~`. `EXPIRE_HOME` and
-`ZWANA_HOME` override where either lives. A phone with no zwana portal sets a
-daily allowance instead and needs no second checkout at all — see [Budget
-sources](#budget-sources).
+`~/zwana-quota`, found beside the queue root or under `~`. `EXPIRE_HOME`
+says where the queue lives. `ZWANA_HOME` points a shell, and the tests, at a
+zwana-quota checkout somewhere else — **but never the nightly job**: the job
+scheduler starts the runner without any shell's environment, so the job
+looks only beside the queue root and then in `~/zwana-quota`. While the only
+checkout is one `ZWANA_HOME` finds, `nibbles arm` refuses and `nibbles status`
+says `BROKEN`, because every screen would show zwana figures while the job
+fell back to a manual budget with nothing set and spent nothing; link the
+checkout to where the job looks (`ln -s <the checkout> ~/zwana-quota`). A
+phone with no zwana portal sets a daily allowance instead and needs no second
+checkout at all — see [Budget sources](#budget-sources).
 
 If you need something before the window rather than during it, see
 [Downloading something now](#downloading-something-now) — that spends data
@@ -53,9 +60,33 @@ nibbles <url> --sha256 <hex>     # verify the file before delivery
 nibbles <url> --probe            # just print size + resume support
 nibbles <url> --expect-bytes N   # server won't state a size: set the
                                  # most you are willing to let it cost
+nibbles <url> --number 20        # its place in the queue, 0 to 99
 nibbles <url> --again            # queue it even though it is already
                                  # queued or already downloaded
 ```
+
+Flags go before the URL or after it, the same either way.
+
+**The file keeps its own name**: what the server calls it (its
+`Content-Disposition`), else the link's last part, or — where that names no
+file, as `/latest/download` or `get.php?id=7` do not — the address the link
+led to. It is cleaned only of what Android's shared storage refuses, the way
+a video's title is, and keeps its suffix; one with no suffix is given one
+from its type, since that is all Android's opener reads. `--name` goes
+through the same cleaning.
+
+**`--sha256` takes a digest however it was pasted**: plain hex in either
+case, a `sha256:` prefix (GitHub's release pages), or a whole `sha256sum`
+line with the file name after the hash. Anything that is not 64 hex digits
+once cleaned — an MD5, a SHA-1, a typo — is refused before anything is
+queued, never found out after the whole file was paid for.
+
+**A server that ignores `Range`** cannot be fetched in slices, so `nibbles
+<url>` says so, and the item is queued `PARTIAL: no`: it waits for a firing whose
+budget can take the whole file at once, rather than buying a slice nothing
+can resume. A link that answers with a **web page** — a sign-in page, an
+expired link's "not found" page — is refused outright, since a page is never
+the file.
 
 A URL that is already in the queue, already downloaded or already given up on
 is refused rather than queued a second time, naming what it already is; the
@@ -64,12 +95,27 @@ same check catches a video queued before, on the id rather than the URL
 
 Nothing downloads when you queue — the item just waits for the nightly window.
 
+When it does run, **a file download is delivered whole, once, or not at
+all.** A web page where the file should be, or an answer that means the link
+has died (403, 404, 410 and the like), is "not tonight" twice and a failed
+attempt from the third in a row on, with what was already downloaded left
+exactly as it was; three failed attempts set the item aside in `failed/`, as
+for any item. A server that is only busy (408, 425, 429, any 5xx) or cannot
+be reached is never held against it. A file whose size no server states is
+delivered where it ends, and one that runs past the whole cap it was queued
+under is a failed attempt, never delivered cut short. When a server answers
+a resumed request with the whole file once, the part is kept and it is asked
+again; only twice in a row is it taken for one that cannot resume. A file
+that was delivered by a firing stopped before it could archive the item is
+never fetched again.
+
 ## Installing the commands
 
 One command, `nibbles`, from PyPI or from the checkout. It depends on
 **blessed**, which owns the terminal, and **bewitch**, the library the screens
 are drawn with; yt-dlp is a separate binary on PATH, and `~/zwana-quota` a
-checkout beside this one (`$ZWANA_HOME`), needed only for the zwana budget.
+checkout beside the queue root (not wherever `$ZWANA_HOME` says — see above),
+needed only for the zwana budget.
 
 **From PyPI** — a copy in the tool's own environment, upgraded by uv:
 
@@ -154,7 +200,25 @@ tab](#settings) (`j`), which says which it currently is — a tap arms it when
 it says not armed, and stops it, after asking (because what follows is
 silence), when it says armed. `arm`
 registers the runner **in the queue root** (`~/nibbles/expire_runner.py`), so
-re-arm after moving `~/nibbles`.
+re-arm after moving `~/nibbles`. Armed means job 2400 starts *this* root's
+runner: one left starting another copy's (`~/dlq`, say) reads as not armed
+here, and arming again takes the job over.
+
+**To open downloads from the app**, Termux has to be told it may share files
+with other apps, once:
+
+```
+mkdir -p ~/.termux
+echo 'allow-external-apps = true' >> ~/.termux/termux.properties
+termux-reload-settings
+```
+
+Since termux-app 0.118 Termux shares no file with another app without that
+line, and `termux-open` reports success all the same, so Open it and Open it
+when done check first and say what is missing — see [Opening a finished
+file](#opening-a-finished-file). (If your Termux settings live in
+`~/.config/termux/termux.properties` instead, put the line there: Termux reads
+the first of the two that exists.)
 
 ## Watching one download
 
@@ -169,7 +233,14 @@ For a download this session started, the sheet has **Pause** (`x`), which
 interrupts it rather than killing it, so every byte is kept and it resumes in
 the next window or with Download now. One started with Download now (or Now on
 a video) also gets **Open it when done** (`o`): ticked, the file is handed to
-Android the moment this run delivers it. `esc Back` leaves it running.
+Android the moment this run delivers it, and the sheet says what that came
+to. `esc Back` leaves it running.
+
+While a Run now this session started is going, `x` on the Queue tab opens
+the running download's sheet and follows the run from one download to the
+next. Before the run has picked its first, the sheet is titled `Run now`,
+says `starting the queue` and offers Pause; if the run ends without one it
+says `the run has ended`.
 
 ## When something fails
 
@@ -180,10 +251,11 @@ the evidence) and the tails of the newest logs. `nibbles dump NAME` narrows it
 to one download. Every section is guarded, so it finishes on broken trees —
 which is when it is needed.
 
-Items queued **before the split** import `ytdl_item` off the queue root;
-the module moved to the ytq checkout, and a shim at the queue root answers
-that import with the real module, so pre-split items keep downloading
-without being edited.
+Items queued **before nibbles was a package** import `ytdl_item` or
+`expire_dl` off the queue root; the doors at a checkout's root answer those
+imports with the package's modules, and the runner and `nibbles now` hand
+every item the package on `PYTHONPATH`, so they keep downloading without
+being edited.
 
 ## Checking on it
 
@@ -389,8 +461,11 @@ the keyboard up the card folds into a one-line strip beside Run now.
 **Queued · Failed · Done** choose which group the list shows (←→ step
 between them); Done is newest first. Each download is two lines: its name,
 then `↓ 18%` on the one downloading, `0 of ≤505 MiB` on one waiting (`≤` as in
-`nibbles list`), the last error on a failed one (`×`), and the size and the file
-it delivered on a done one (`✓`).
+`nibbles list`), on a failed one (`×`) why, where the item itself said, else
+how long ago it was given up on (`gave up 3h ago` — its log says the rest),
+and the size and the file it delivered on a done one (`✓`). A download whose
+figure has not moved for a while shows no speed and no time left rather than
+the last ones it had.
 
 **The cut line is computed, never an item.** Taps and the cursor skip straight
 over it, and it is worked out fresh from wherever the items are, including live
@@ -473,7 +548,7 @@ download being changed is the one named at the top of the sheet:
 | `u` Queue again | put a failed download back, with its three nights again |
 | `t` Clear tries | clear the failed nights counted against it |
 | `r` Rename | rename it; the number in front stays |
-| `o` Open it | open the finished file |
+| `o` Open it | open the finished file — [below](#opening-a-finished-file) |
 | `l` Its log | that item's own log, from its last night |
 | `d` Remove | remove it from the list |
 
@@ -502,7 +577,32 @@ under a download.
 Every change is written into `logs/runner.log`, beside the runner's own
 reasoning — that file is where to look when a download is not where you left
 it. Per-item logs are the exception: `logs/<date>-<item>.log` is the record of
-one particular night and keeps the name the item had then.
+one particular night and keeps the name the item had then. `l Its log` opens
+the newest one written for the download, whatever its title holds.
+
+### Opening a finished file
+
+`o Open it` on a finished download's sheet, and Open it when done on a
+running one, hand the file to Android with `termux-open` — after asking the
+questions Termux would otherwise answer only in its own log, with
+`termux-open` reporting success all the same. Each is said on the line above
+the tabs (or on the running download's sheet) as `could not open film.mp4:`
+and the fix:
+
+- the file is no longer where it was delivered — it is looked for again at
+  the moment you tap, not taken from the last time the list was read;
+- Termux may not read it — run `termux-setup-storage`;
+- it is outside Termux's own folders and internal storage, on an SD card —
+  move it to internal storage, or set its destination there in More;
+- Termux has not been told it may share files — `allow-external-apps = true`
+  in `~/.termux/termux.properties`, then `termux-reload-settings` (see
+  [One-time setup](#one-time-setup)). The value must be exactly `true`.
+
+Otherwise it says `opened film.mp4`, which means Android was handed it; what
+the app it went to made of it is not told. A name holding `%`, `#` or `?` is
+handed over through a link whose name uses lookalikes of those characters,
+because Termux 0.118 would otherwise misread the path; the player shows the
+lookalikes in the title.
 
 ### Moving a download
 
@@ -513,14 +613,22 @@ one particular night and keeps the name the item had then.
 a move thought better of costs nothing. The window card and the cut line are
 re-planned at every step with the held download counted in the place it is
 being moved to, so you can see it take the window's last place off something
-else, or fall below the line itself.
+else, or fall below the line itself. If the held download finishes, fails or
+is removed while you hold it, the hold is let go and the line above the tabs
+says so (`… finished while it was held`); nothing is renamed.
 
 The screens show names and positions ("2nd of 3"); the `NN-` prefix that
 actually carries the order is bookkeeping, and nothing asks you to type it.
 Underneath, dropping one usually renames a single file, and when two
 neighbours have no room between them the whole queue is quietly dealt fresh
 numbers instead. This is the only place an order is chosen: a new download queues last
-and has no place picker.
+and has no place picker. A move never lands a download on a name something
+else still answers to — a finished or failed download of the same title, a
+partial left behind by a Remove that kept the bytes, a record — because
+whatever took the name would inherit that one's bytes or its history; it
+picks other numbers instead. A file in `queue/` that only looks like an item
+(`20-holiday.png`) is listed so it can be explained, and is neither moved nor
+renamed.
 
 ### Downloading one now
 
@@ -541,8 +649,10 @@ its progress; its own sheet pauses it. Everything else is as it always was — i
 downloads into the same place the nightly job would, so pausing it is safe,
 what is downloaded stays, and the nightly window carries on from there. A
 download started this way never counts as one of an item's three nightly
-attempts, and it takes the runner's lock, so it cannot collide with a firing.
-Now on a video's sheet is the same thing with the queueing folded in.
+attempts, and it takes the runner's lock — which the download itself holds
+for as long as it runs, so even if what started it is killed, no firing and
+no second Download now can start another writer on the same file. Now on a
+video's sheet is the same thing with the queueing folded in.
 
 ### Downloads that are no longer there
 
@@ -593,11 +703,16 @@ the audio ones, which is the point of them being a kind rather than a folder
 chosen once. For a one-off, `nibbles <url> --dest DIR` writes an
 absolute path into that item instead, and that wins over the kind.
 
-Finished files land directly in the folder, named as they were downloaded. A
-name already taken gets Android's own suffix — `report (2).pdf` — and nothing
-is ever overwritten. `nibbles path NAME` tells you where one went; the queue keeps
-a record, because once a file is in a folder shared with every other app on the
-phone nothing can work out which one was yours by looking.
+Finished files land directly in the folder under their own names — a video
+as its title, a file as its server or its link names it (see [Queue
+something](#queue-something)). A name already taken gets Android's own suffix
+— `report (2).pdf` — and nothing is ever overwritten. A destination stored
+in `config.json` that cannot be a folder at all (a number, a list, a `~name`
+nobody has) reads as the default, as a bad setting does, rather than
+stopping a delivery whose data is already spent. `nibbles path NAME` tells
+you where one went; the queue keeps a record, because once a file is in a
+folder shared with every other app on the phone nothing can work out which
+one was yours by looking.
 
 If the destination cannot be reached when the moment comes — permission never
 granted, card unmounted, disk full — **the file stays in `out/<item>/`**,
@@ -800,7 +915,11 @@ place, said with the allowance's figures.
 A `state.json` that will not parse, or a ledger that is not a list of spends,
 is a day's spending forgotten — which would read as an allowance nobody had
 touched. A manual budget reads it as spent instead, spends nothing, and `nibbles
-status` and `nibbles dump` say why.
+status` and `nibbles dump` say why. It is never written over as an empty
+state: the first save after it — a firing, Put it back, a Download now —
+copies the unreadable file aside to `state.json.unreadable` and writes a state
+that still says the day could not be read, so the day stays spent until the
+next reset however many writes come between.
 
 `nibbles dump` has a **budget source** section: which source the next reading
 comes from and how that was decided (set, or the default and why), whether
@@ -827,9 +946,10 @@ into the runner's ledger, so the window that night spends only what is left.
 
 Everything else is kept. It downloads into the same place the nightly job
 would, so pausing it is safe: what is downloaded stays, the item stays queued,
-and the nightly window carries on from there. It takes the runner's lock, so it
-cannot collide with a firing that is already going; and if it finishes, the
-item is archived to `done/` exactly as a nightly one would be. A manual run
+and the nightly window carries on from there. It takes the runner's lock, and
+the download holds it while it runs, so it cannot collide with a firing; and
+if it finishes, the item is archived to `done/` exactly as a nightly one would
+be. A manual run
 never counts as one of an item's three nightly attempts.
 
 ## When the portal cannot be reached
@@ -879,9 +999,12 @@ bytes over again, so it works the queue until the queue is done, however long
 that takes and across as many midnights as it needs.
 
 **Ctrl-c is what stops it**, and it leaves exactly what a deadline used to: the
-download stopped cleanly, the file resumable, the item still queued. Everything
-else is untouched too — the per-item caps, the lock, `done/`, and the three
-nightly attempts a manual run still never spends.
+download stopped cleanly, the file resumable, the item still queued. Closing
+the Termux session it was typed in stops it the same way. A second ctrl-c
+while it is stopping waits for the stop to finish — the download's tree
+killed, what it moved written down, the state saved — rather than cutting
+that short. Everything else is untouched too — the per-item caps, the lock,
+`done/`, and the three nightly attempts a manual run still never spends.
 
 The flag only does anything when the portal really is unreachable. If it
 answers, the run is an ordinary one with the floor and the free-allowance cap
@@ -897,6 +1020,11 @@ instead of one.
   stopped; a multi-GB file finishing over several nights is normal.
 - Items run in name order: the `NN-` prefix is the priority, lower first. The
   head of the queue takes what it can and the remainder flows down.
+- An item is only started when the phone has room to finish it: what is left
+  to fetch, a second copy for one with a destination (a video's merge, then
+  the copy onto shared storage, which on a phone is the same flash), and a
+  spare. What it already has on disk is not asked for again, so a download
+  half-way through is never turned away for the room it has used.
 - Guarantees, whatever an item does: the configured reserve is left
   afterwards (100 MB unless changed, waived only if `reserve-when-paid` is
   `no` and paid data is there — see [Settings](#settings)), nothing runs past

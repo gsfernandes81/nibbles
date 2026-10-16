@@ -25,6 +25,26 @@ yt-dlp's own extractors, offline), or `ytsearch:words`, which is the search.
 Anything that is not a page — a plain file URL — is queued as a file download
 instead; which it is comes from the server's headers (~1 KB), never the name.
 
+- **A word on its own is never a video.** YouTube's extractor would take any
+  eleven letters as an id, so `nibbles programming` would have bought a probe
+  of a video that does not exist; anything shaped like a word (letters, lower
+  case after the first, hyphens between) is refused before yt-dlp is asked,
+  and costs nothing. `nibbles search programming` searches for it. The rare
+  real id that looks like a word goes in as `youtu.be/<id>`.
+- **yt-dlp's own words for your lists** work too: `nibbles :ytsubs` opens the
+  Feed tab and `nibbles :ytwatchlater` the Later tab, exactly as typing them
+  in the field does — never a probe of the whole feed as if it were a video.
+- **Flags go anywhere**: `nibbles --dest ~/storage/dcim <url>` and `nibbles
+  <url> --dest ~/storage/dcim` are the same, and a flag's value is never
+  taken for the link. `ytsearch:crust of rust` needs no quotes; its words are
+  searched in the order typed.
+- **`--now` and `--list` are the video's**: `nibbles --now <id>` opens that
+  video's sheet set to start it, and `nibbles --list <id>` prints its formats.
+  Only a bare `nibbles --list` is the queue's own listing (`nibbles list`).
+- A link goes on in one spelling, its scheme added and anything not ASCII
+  escaped, so the headers asked, the item written and the duplicate check all
+  see the same link.
+
 `nibbles` is the one command once installed — see
 [Installing](download-queue.md#installing-the-commands). Uninstalled, it is
 `python3 -m nibbles <url>` from `~/nibbles`, and every `nibbles` line below reads the
@@ -39,7 +59,10 @@ is in [The app](download-queue.md#the-app). What matters here:
 1. **Search** — the field at the top takes words to search for, a pasted
    URL, or `subs` and `wl`, which go to the Feed and Later tabs. It tells
    them apart by looking, so there is one field rather than three. `⏎ Go`
-   searches; what it costs is printed underneath before you spend it.
+   searches; what it costs is printed underneath before you spend it. A
+   paste goes into the field whole, line breaks and all as spaces, and never
+   searches by itself: ⏎ or Go does. Go again on the same words while they
+   are still being fetched buys nothing more.
 2. **Results** — 20 hits under the field (the Feed and Later tabs list 30),
    each a two-line row: the title, then the channel, the age, the length and
    the views. **One tap on a row opens its video sheet** and starts asking
@@ -56,7 +79,9 @@ on it and `queued <name> · 92 MiB` on the line above the tabs — so finding
 three things to download is one search rather than three. A `✓` is also on
 anything the queue *already* holds — queued, downloaded or given up on — so
 most repeats are visible in the list before a single byte is spent asking
-about them.
+about them. If the item cannot be written at all — a full phone — a notice
+says so over the sheet, which stays as it was, so trying again is the same
+tap.
 
 ## It will not queue the same video twice
 
@@ -92,10 +117,18 @@ queued 50-Some Talk.py — 487 MiB (1080p mp4), cap 506 MiB
 ```
 
 **A download is named after its title**, cleaned only of the characters
-Android's shared storage refuses (`/ \ : * ? " < > |`). The download then runs
-on the next night(s) with allowance to spare, and the finished file appears in
-the video download directory as `Some Talk.mp4`. `nibbles list` shows progress and
-`nibbles path "some talk"` says where it went.
+Android's shared storage refuses (`/ \ : * ? " < > |`) and put on one line
+(a TikTok caption keeps its line breaks; they become spaces). The download
+then runs on the next night(s) with allowance to spare, and the finished file
+appears in the video download directory as `Some Talk.mp4`. `nibbles list`
+shows progress and `nibbles path "some talk"` says where it went.
+
+Two downloads with one title — two videos that share it, or the same one
+queued again on purpose — are two items: the second is `Some Talk (2)` in the
+queue, because an item's name is what its partial and its record are kept
+under, and sharing one would resume one video's bytes into the other. Its
+file still arrives as `Some Talk.mp4`, or `Some Talk (2).mp4` beside the
+first.
 
 ```
 nibbles dest video ~/storage/movies   # change it for everything
@@ -191,7 +224,10 @@ the feed is picked, sized, marked and queued exactly as a search hit is.
   has, and the foot says `that is the whole feed` instead of a price. At 150
   it says `at the 150 cap`, which is the different sentence: there *is* more
   and ytq will not spend it. A deeper look that fails changes nothing — the
-  count and the price go back to what is actually on screen.
+  count and the price go back to what is actually on screen — and says why,
+  on a notice over the rows you were reading, as a Re-read that fails or
+  comes back empty does. (One that lands while you are on another tab is said
+  when you come back.)
 - **The selected title scrolls when it does not fit.** Only the one under the
   cursor, slowly, and only when it is genuinely too long for the room; every
   other row keeps its `…` and stays still, because a list where every line
@@ -202,8 +238,12 @@ the feed is picked, sized, marked and queued exactly as a search hit is.
   ones that do. The feed is a signed-in page; the jar is the same
   `~/.config/yt-dlp/cookies.txt` the bot-check section below is about, wired in
   by the `--cookies` line in `~/.config/yt-dlp/config`. `nibbles` reads that config
-  itself and refuses **before** spending anything if there is no cookie line,
+  itself — the one yt-dlp reads, which is the first of its config files that
+  exists, with `~` and `$HOME` in the jar's path expanded as yt-dlp expands
+  them — and refuses **before** spending anything if there is no cookie line,
   or the file it names is not there — the tab says which, in place of the list.
+  A `--cookies` line in a config file yt-dlp never gets to is pointed out
+  rather than trusted.
 - **An empty feed is never reported as "nothing new."** YouTube answers a
   logged-out feed with no entries rather than with an error, so an empty answer
   means the cookies have expired. The tab says exactly that, and how old the
@@ -286,7 +326,9 @@ sheet closes with it.
 - **The quality buttons are the heights you use**: the three you have picked
   most (240p, 480p and 720p until you have picked anything), or the ones set
   by hand under `quality chips` on the More tab — plus `audio`. A height this
-  video does not offer is grey; other heights are under Formats. `audio`
+  video does not offer is grey; other heights are under Formats. Set more by
+  hand than the row has room for and it shows the one you are on and those
+  around it, never narrower buttons; the rest are under Formats. `audio`
   turns the row into bitrates, with `← video` first to go back.
 - **Smallest | Largest** picks within that height. Which one you used is
   remembered, separately for video and audio, along with the format you chose
@@ -388,6 +430,26 @@ this run delivers it. The ask lives in the app and nowhere else: quit and it is
 gone, and a download that is paused or stops short never opens anything, not
 even when a later run finishes it.
 
+**Opening needs one line of Termux setup**: `allow-external-apps = true` in
+`~/.termux/termux.properties`, then `termux-reload-settings` ([the
+README](../README.md#termux-once-first) has the commands). Since termux-app
+0.118, Termux shares no file with another app without it, and `termux-open`
+still says it worked — so nibbles asks first. Open it when done, and Open it
+on a finished download's sheet, say what they came to, and refuse aloud,
+before anything is handed over, what Termux would refuse in silence:
+
+- the file is no longer where it was delivered (`it is not in
+  ~/storage/downloads any more`);
+- Termux may not read it (`run termux-setup-storage`);
+- it is outside Termux's own folders and internal storage — an SD card
+  (`move it to internal storage, or set its destination there in More`);
+- Termux has not been told it may share files (the line, the file, and
+  `termux-reload-settings`; the value must be exactly `true`).
+
+Otherwise the answer is `opened film.mp4` — which means Android was handed
+it; what the app it went to made of it is not told — or `could not open
+film.mp4`.
+
 Only one at a time: the queue takes an exclusive lock, so asking for a second
 while one is going says so and leaves the second queued. It still writes the
 queue item first either way, so it shows up in `nibbles list`, and
@@ -424,9 +486,15 @@ both handled in `~/.config/yt-dlp/config` rather than in `nibbles`:
 
   A shebang under `uv/tools/` means `uv tool install yt-dlp --with yt-dlp-ejs
   --force` — **not** `uv tool upgrade`, which answers "Nothing to upgrade" and
-  does nothing if the tool carries any version constraint. Anything else means
-  `<that python> -m pip install -U yt-dlp`. Do not read the `(pip)` marker in
-  `yt-dlp -v` as an answer: it says `(pip)` under a uv tool too.
+  does nothing if the tool carries any version constraint. (`nibbles` reads
+  uv's own record of the install and keeps what it says: the tool's extras,
+  such as `'yt-dlp[default]'`, and every `--with` with its own extras and pin;
+  only yt-dlp's own pin is left behind.) yt-dlp's own release — the
+  single-file zipapp, or the built binary with no shebang at all — updates
+  itself: `yt-dlp -U`. Anything else means `<that python> -m pip install -U
+  yt-dlp`, `<that python>` being the one the shebang names, or the one an
+  `env` shebang finds. Do not read the `(pip)` marker in `yt-dlp -v` as an
+  answer: it says `(pip)` under a uv tool too.
 
   **Checking the other two halves takes one command, no URL and no data:**
 
@@ -465,9 +533,11 @@ both handled in `~/.config/yt-dlp/config` rather than in `nibbles`:
 
 ## Notes
 
-- One video at a time; playlist URLs are refused. A *search* naturally comes
-  back as a list of them, which is a different thing and is what the results
-  list is.
+- One video at a time; playlist URLs are refused — and refused off the
+  list's first page, so a channel or a playlist pasted by mistake costs one
+  page rather than a full look at every video in it. A *search* naturally
+  comes back as a list of them, which is a different thing and is what the
+  results list is.
 - What you chose last is remembered, in the queue's own `config.json` beside
   the destinations: the format, Smallest or Largest for video and for audio,
   and how often you pick each height. It only decides what the sheet opens on

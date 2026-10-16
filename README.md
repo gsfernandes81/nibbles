@@ -56,9 +56,15 @@ screens follow; `design/divergences.md` lists where the build differs.
   the root are doors to the package's modules, kept for a phone armed, and
   holding items queued, before nibbles was a package. They are not shipped.
 - `queue/`: the queue, with the item contract in `queue/README.md`.
-- **`~/zwana-quota`** (`$ZWANA_HOME`, a clone beside this one, or under `~`):
-  the portal client and quota widget the zwana budget source reads every
-  guard figure through. Not needed with a manual budget.
+- **`~/zwana-quota`** (a clone beside the queue root, else under `~`): the
+  portal client and quota widget the zwana budget source reads every guard
+  figure through. Not needed with a manual budget. `$ZWANA_HOME` points a
+  shell (and the tests) at a clone somewhere else, but **never the nightly
+  job**: the job scheduler starts the runner without any shell's
+  environment, so it looks only beside the queue root and then in
+  `~/zwana-quota`. While the only clone is one `ZWANA_HOME` finds, `nibbles
+  arm` refuses and `nibbles status` says `BROKEN`; link it to where the job
+  looks (`ln -s <the clone> ~/zwana-quota`).
 - Installed dependencies: **blessed**, which owns the terminal, and
   **bewitch**, the styling library every screen is drawn with. A bewitch
   checkout (`$BEWITCH_HOME`, beside this one, or `~/bewitch`) wins over the
@@ -73,7 +79,35 @@ already holds something else.
 
 ## Install
 
-From PyPI, on Termux (`pkg install python termux-api`, and yt-dlp on PATH):
+### Termux, once, first
+
+```
+pkg install python termux-api     # and the Termux:API app, from where Termux came from
+termux-setup-storage              # lets Termux reach Downloads, where files land
+mkdir -p ~/.termux
+echo 'allow-external-apps = true' >> ~/.termux/termux.properties
+termux-reload-settings
+```
+
+**Without `allow-external-apps = true`, no download will open from the app.**
+Since termux-app 0.118, Termux hands no file to another app — the video
+player, the PDF viewer, the installer — until `termux.properties` says it
+may, and it reads that file only when it starts or on
+`termux-reload-settings`. Open it on a download's sheet, and Open it when
+done, ask first and say so (`could not open film.mp4: Termux shares no file
+with another app until ~/.termux/termux.properties has allow-external-apps =
+true: add it, then run termux-reload-settings`) rather than send a file
+nothing will open. The value must be exactly `true`. Termux reads the first
+of `~/.termux/termux.properties` and `~/.config/termux/termux.properties`
+that exists, so if your settings live in the second, put the line there
+instead: creating the first would hide them.
+
+yt-dlp is a separate install, on PATH; [docs/ytq.md](docs/ytq.md) has what
+YouTube needs of it.
+
+### nibbles
+
+From PyPI:
 
 ```
 uv tool install nibbles        # or: pip install nibbles
@@ -132,10 +166,13 @@ nibbles arm                                                 # register the runne
 nibbles status                                              # says what it found
 ```
 
-The `sed` matters: an item spells the absolute paths of the modules it imports
-into its own `sys.path.insert` lines, and an item that cannot import its
-downloader fails every night without spending a byte. `nibbles dump` shows an
-item's head if one does. Keep `~/dlq` and `~/ytq` until a night has gone
+The `sed` matters while `~/dlq` and `~/ytq` are still there: an item spells
+the directory it was written in into its own `sys.path.insert` line, ahead of
+everything else, so until the line is changed it imports the old copy's
+downloader. (Once they are gone an old item still finds this checkout's: the
+runner and `nibbles now` hand every item the package on `PYTHONPATH`, and the
+doors at the root answer the old flat imports.) `nibbles dump` shows an item's
+head if one fails to import. Keep `~/dlq` and `~/ytq` until a night has gone
 through, then delete them, along with the old completions (`rm
 ~/.config/fish/completions/{dlq,ytq}.fish`) if they are still there. (The old
 commands are run by path above because they may already be uninstalled:

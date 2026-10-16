@@ -113,7 +113,10 @@ owner asked for: a Done download whose file was removed says `deleted`, not
   is off`), `SPENT`, `RUNNING` (warn: a blind run, or the whole queue starting),
   `BLOCKED` (error: zwana not answering, or a stale reading), and `ASKING`
   (info) before the first reading lands. The right segment is the countdown
-  where there is one to count, and empty otherwise.
+  where there is one to count, and empty otherwise. `SPENT` inside the window
+  names the next window (`opens tomorrow 21:57`, `23h`), never one already
+  past. *Amended 2026-10-16, awaiting approval: it said `opens 21:57 · 0s`
+  of the window it was in.*
 
 ## Stop on a running fetch — 2026-10-10
 
@@ -183,8 +186,11 @@ owner asked for: a Done download whose file was removed says `deleted`, not
 
 ## Words where no mockup has any — 2026-10-10
 
-- A failed download's second line is its last error; a finished one's is its
-  size and the file it delivered (or `deleted`).
+- A failed download's second line is the item's refusal where it has one,
+  else `gave up 3h ago` (the runner records no error, and its UTC log stamp
+  is never drawn); a finished one's is its size and the file it delivered (or
+  `deleted`). *Amended 2026-10-16, awaiting approval: this said "its last
+  error", which drew the runner's UTC stamp of its last try.*
 - Before the first reading lands the window is `the window` (`Queue for the
   window`), never a made-up time.
 - An empty group says so: `nothing queued — Search or Feed adds something`,
@@ -238,4 +244,134 @@ owner asked for: a Done download whose file was removed says `deleted`, not
 - Why: "Open it when done" ran and nothing on the screen said so, and the
   sheet a person watches for the end of a download is the one place it must
   say the download ended.
+- Status: awaiting approval
+
+## Feed and Later: a read that fails over a listing — 2026-10-16
+
+- Spec: `k-feed` draws the list once read, and design §5 says an empty feed
+  still says the cookie is the likely cause and how old the jar is. Nothing
+  draws a Re-read or a deeper look that fails, comes back empty, or finds the
+  cookie jar gone once a listing is already up.
+- Built: the old rows stay, and what went wrong is a notice over them (titled
+  `Feed` or `Later`, the reason, then the cookie's fix, `esc OK`), as a search
+  that did not come back is: in `error` when the read failed, plain for an
+  empty answer or a missing jar. One that comes back while another tab or a
+  sheet is up is said when the tab is next on top with nothing over it. With
+  no listing yet it is drawn where the list would be, as before.
+- Why: the failure was kept and never drawn once a listing was up, so a
+  Re-read with expired cookies came back to the same rows and `read 3h ago`
+  with nothing said — the "nothing new" an empty feed must never read as —
+  and each `↓ 30 more` spent again with no word why.
+- Status: awaiting approval
+
+## Quality chips set by hand that outnumber the row — 2026-10-16
+
+- Spec: the tier buttons are the heights you use plus `audio` (at 40 columns
+  your three most-used); other heights live under Formats, and a wider
+  screen adds buttons rather than narrowing them. Nothing says which heights
+  set by hand under More stay when there are more than the row holds (More's
+  own `240-720` and `360-1080` at 32 columns, four or more at 40).
+- Built: the row holds as many as it has room for: the tier the sheet is on
+  and those around it, in height order (the rule the audio row already uses
+  for bitrates), then `audio`. The rest are under Formats. More still shows
+  the whole range you set.
+- Why: every button was narrowed instead, until the labels read `36…` and
+  `…`, and at 32 columns the last ones and `audio` were cut off.
+- Status: awaiting approval
+
+## The search bar while a search runs, keyboard up — 2026-10-16
+
+- Spec: `k-search` keyboard up: "the bar takes focus"; the search's own line
+  ends in `x stop` ("Stop on a running fetch"). No mockup draws a search
+  running with the keyboard up.
+- Built: with the keyboard up and nothing searched the bar holds the keyboard
+  as drawn, `q` and `x` included. While a search runs it lets go and is drawn
+  so (no cursor, Go plain): `x` is the Stop its line offers and `q` quits; a
+  letter or a tap on the field takes it back.
+- Why: the bar was drawn focused while the keys went elsewhere: `q` quit the
+  app and the `x` of `xbox` was swallowed. A bar that keeps the keys during a
+  search would make the `x stop` beside it type an `x` instead.
+- Status: awaiting approval
+
+## An item that could not be written — 2026-10-16
+
+- Spec: nothing draws a queueing that fails to write (a full phone).
+- Built: a notice, `Not queued`, in `error`, with the system's reason, over
+  the video sheet. The sheet stays as it was, formats and choice kept, so the
+  next try is the same tap. A Start now that cannot start the download after
+  the item was written says `Queued, not started`, as the busy-queue case
+  does, and gives the receipt.
+- Why: the app ended with a traceback, and the session's listings and probes
+  went with it.
+- Status: awaiting approval
+
+## A download that leaves the queue while Move holds it — 2026-10-16
+
+- Spec: `k-place` draws Move holding a `◆` row; it says nothing of the held
+  download finishing, failing or being removed meanwhile.
+- Built: the hold is let go before the frame is drawn, the Queue tab comes
+  back with its tabs, and the line above them says `<name> finished while it
+  was held` (or `failed …`, or `left the queue …`). Nothing is renamed.
+- Why: there is no place left to put it; drawing one crashed the app.
+- Status: awaiting approval
+
+## The download sheet `x` opens while Run now is starting — 2026-10-16
+
+- Spec: `k-download` is a named download's sheet, opened from its row.
+- Built: `x` on the Queue tab while our Run now is alive opens a sheet that
+  follows the run. It takes up each item the run starts. Before the first, it
+  is titled `Run now`, says `starting the queue` (the status bar's words) and
+  offers `x Pause` and `esc Back`. If the run ends without an item it says
+  `the run has ended`.
+- Why: bound to whatever was downloading when it opened (often nothing), it
+  said "downloading" over nothing and "stopped" over the item the run then
+  fetched.
+- Status: awaiting approval
+
+## Paste — 2026-10-16
+
+- Spec: the Search field takes "a pasted URL"; nothing draws a paste, or
+  says what one does anywhere else.
+- Built: bracketed paste is asked of Termux. A paste is typed into the Search
+  field (focusing it, appended to what is there, even with results up) or
+  into an open sheet's field (only what that field accepts), with line breaks
+  and tabs as spaces. It never submits; ⏎ or Go does. On a screen with no
+  field it is dropped.
+- Why: unbracketed, each line break in a paste was ⏎, and the rest acted as
+  keys on the screen underneath — a search, a probe for the selected row,
+  Now, `q`.
+- Status: awaiting approval
+
+## Two items with one name — 2026-10-16
+
+- Spec: design §6 — a video's download is its title, behind the `NN-`.
+  Nothing draws two items with the same title.
+- Built: the second is written as `NN-<title> (2).py` (then ` (3)`…), so its
+  Queue row reads `Talk (2)`. The file it delivers keeps the title, and the
+  runner's `free_name` settles a clash in the destination (`Talk (2).mp4`,
+  as for any file already there).
+- Why: an item's name keys its `work/`, `out/` and state record, and reusing
+  one resumed another video's partial or inherited a finished record
+  ("nothing left to fetch" every night).
+- Status: awaiting approval
+
+## Open it refuses what Termux would refuse in silence — 2026-10-16
+
+- Spec: the 2026-10-13 entry above records the opener's answers as `opened
+  film.mp4`, `could not open film.mp4`, or that it did not finish.
+- Built: those stay. A hand-off Termux would refuse with only a logcat line
+  is now refused before anything is sent, as `could not open film.mp4: <why:
+  the fix>`. The reasons are:
+  - it is not in <folder> any more;
+  - it cannot be read (`run termux-setup-storage`);
+  - it is not a file;
+  - it is outside Termux's folders and internal storage (`move it to
+    internal storage, or set its destination there in More`);
+  - Termux has not been told it may share files (`Termux shares no file with
+    another app until ~/.termux/termux.properties has allow-external-apps =
+    true: add it, then run termux-reload-settings`, with variants for a file
+    Termux cannot load or a value that is not `true`).
+- Why: termux-open exits 0 once its broadcast is sent, so each of these read
+  "opened" while nothing opened. This is the owner's "termux not opening
+  files".
 - Status: awaiting approval

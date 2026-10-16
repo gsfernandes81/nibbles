@@ -14,14 +14,26 @@ day they are **one package, `nibbles/`**, importing each other as
 doors left at the root). Two sibling checkouts
 are left: **zwana-quota** (the portal client and quota widget the zwana budget
 source reads its guard figures through; a manual budget needs none:
-`$ZWANA_HOME`, a clone beside this repo, then `~/zwana-quota`) and **bewitch**
-(the Lip Gloss port every screen is drawn with: `$BEWITCH_HOME`, beside, then
-`~/bewitch`; `tui._bewitch_root`, which falls back to the installed bewitch
-when there is no checkout). The installed dependencies are **blessed**, which
-owns the terminal, and **bewitch** from PyPI. `expire_sched._zwana_root` predicts the runner's resolution so
+`$ZWANA_HOME`, a clone beside the queue root, then `~/zwana-quota`) and
+**bewitch** (the Lip Gloss port every screen is drawn with: `$BEWITCH_HOME`,
+beside, then `~/bewitch`; `tui._bewitch_root`, which falls back to the
+installed bewitch when there is no checkout). The installed dependencies are
+**blessed**, which owns the terminal, and **bewitch** from PyPI.
+`home.zwana_root` is the one resolution of the zwana-quota checkout: the
+runner puts it on `sys.path` and `expire_sched._zwana_root` asks it, so
 `nibbles status` can name a missing checkout instead of letting an import
-traceback. The phone's move from `~/dlq` + `~/ytq` to `~/nibbles` is in the
-README.
+traceback. **`ZWANA_HOME` is a shell's variable, and the nightly job never
+has it** (2026-10-16) — JobScheduler starts the launcher in Termux's own
+environment, before any rc file — so `zwana_root(job=True)` answers as the
+job will, and `expire_sched.job_problem` (the launcher's shebang, then a
+checkout only `ZWANA_HOME` finds) is asked by `arm` before it registers and by
+`status` under its screen: one function, so the two cannot disagree. A
+checkout only the variable found was imported by every shell and never by the
+job, which fell back to a manual budget with nothing set and spent nothing,
+night after night, while `arm` succeeded and `status` showed zwana figures.
+`nibbles dump` shows both answers, and the tests lay the phone's arrangement
+out with a link beside the root when they want a job that works. The phone's
+move from `~/dlq` + `~/ytq` to `~/nibbles` is in the README.
 
 ## The app, and its spec
 
@@ -53,32 +65,57 @@ in what nothing draws.
   `ytsearch…:words` (the search), or whatever one of yt-dlp's own extractors
   matches — asked of yt-dlp offline (`ytq.yt_dlp_takes`, in yt-dlp's own
   interpreter), and handed to the app as `--link` (`LINK_KEY`) when the field
-  would otherwise search for it, a bare video id being the case. A link is
-  then a page or a file (`nibbles._url`): a flag only one of them takes says
-  which, YouTube's hosts are pages, and otherwise **the server's headers
-  decide** (`dlq.kind_of`, ~1 KB; HTML is a page, an attachment or anything
-  else a file) — never the name, and an unreachable server is an error, not
-  a guess. A page goes to `ytq.main`, a file to `dlq.main`. **A bare
-  `nibbles` only ever opens the app**: with no terminal it says it needs one
-  (the owner retired dlq's print-the-status fallback for it). **Words are
+  would otherwise search for it, a bare video id being the case. **A word is
+  never asked** (2026-10-16): a token shaped like one (`ytq._WORDLIKE`:
+  letters, lower case after the first, hyphen-joined — `programming`) is
+  refused before yt-dlp is asked, though YouTube's extractor takes any eleven
+  id characters, because a probe of a mistyped word spends data; the rare real
+  id of that shape is typed as `youtu.be/<id>`. yt-dlp's own words for the
+  signed-in lists (`:ytsubs`, `:ytwatchlater`) go to `ytq.main` unmarked, as
+  the field takes them, so they open Feed and Later instead of being probed as
+  a video. The target is the first word that is no flag's value
+  (`app._target`, `app.VALUE_FLAGS`), so flags may come in any order, and an
+  unquoted `ytsearch:` query's words are searched in the order typed. At the
+  door `--now` and `--list` are the video's flags (`app.QUEUE_VERBS` leaves
+  them out); only a bare `nibbles --list` is the queue's listing. A link is
+  then a page or a file (`app._url`), and goes on in one spelling whichever it
+  is — its scheme added, what is not ASCII escaped (`dlq.normal_url`): a flag
+  only one of them takes says which, YouTube's hosts are pages, and otherwise
+  **the server's headers decide** (`dlq.kind_of`, ~1 KB; a page is what
+  `expire_dl.is_page` says, the test the download puts every answer to: HTML,
+  unless it is an attachment) — never the name, and an unreachable server is
+  an error, not a guess. A page goes to `ytq.main`, a file to `dlq.main`.
+  **A bare `nibbles` only ever opens the app**: with no terminal it says it
+  needs one (the owner retired dlq's print-the-status fallback for it). **Words are
   never a search on their own**: `nibbles search WORDS` searches, and anything
   unknown is refused, because a mistyped verb that became a search would
-  spend data. There is no word for Feed or Later (a tap away), and none for
+  spend data. There is no word of nibbles' own for Feed or Later (a tap away;
+  yt-dlp's two reach them, as above), and none for
   a file (`nibbles <url>` is both); dlq's raw `queue` listing is gone.
   `test_cli.py` (dlq) pins every route. The modules keep their own `main`s
   for that door and for running a file directly; `expire_sched._me()` names
   `nibbles`.
 - **The layers.** `tui.py` is the one blessed `Terminal` (fullscreen, cbreak,
-  hidden cursor, clicks and the wheel in SGR, restored on Ctrl-Z and on any
-  exception) and turns what arrives into `Key`, `Tap`, `Scroll` (with the
-  cell the drag *began* on), `Resize` or `Done`; a mouse report is never a
-  key. `widgets.py` is bewitch-only drawing — button, dock, segmented,
+  hidden cursor, clicks and the wheel in SGR, bracketed paste; restored on
+  Ctrl-Z, on any exception, and on SIGHUP and SIGTERM, which `Session.read`
+  turns into `SystemExit`) and turns what arrives into `Key`, `Tap`, `Scroll`
+  (with the cell the drag *began* on), `Paste`, `Resize` or `Done`; a mouse
+  report is never a key, and **nor is a paste** (2026-10-16): unbracketed,
+  every line break in one was ⏎ and the rest acted as keys on the screen
+  underneath (a probe, Now, `q`). A `Paste` is one printable line
+  (`tui.one_line`) and goes only to the top screen's `paste` — the Search
+  field and every `FieldSheet` — and never submits. `widgets.py` is
+  bewitch-only drawing — button, dock, segmented,
   checkbox, field, tab bar, status bar, sheet, dim — each returning a `Piece`
   (a Block and its tap targets), and the `HitMap` taps are looked up in (last
   composed wins); it reads no keys and is kept separable so it can move into
   bewitch. `shell.py` is what the screens share: the words (`size`, `left`,
-  `clock`), the `ListView`, `Sheet`, `Confirm`, `Notice`. `nibbles.py` is the
-  loop. `yt_screens.py` and `queue_screens.py` are the screens. **bewitch
+  `clock`), the `ListView`, `Sheet`, `Confirm`, `Notice`. `app.py` is the
+  loop (`App`) and the door (`nibbles.main` calls `app.main`), and imports
+  `tui`, `widgets` and `shell` only inside the functions that use them: every
+  word that prints must run without bewitch or blessed, and a stale bewitch
+  checkout once took `status`, `arm` and `dump` down with an import
+  traceback. `yt_screens.py` and `queue_screens.py` are the screens. **bewitch
   draws; it does not read the keyboard** — that is blessed's, here.
 - **Every button calls what its key and its command call** — `write_item`,
   `do_reorder`, `do_remove`, `do_rename`, `do_requeue`, `do_clear_tries`,
@@ -90,12 +127,20 @@ in what nothing draws.
   anything: a tap is a press and a release sent on lift, only if the finger
   did not move; a drag is wheel events, one per row, every one stamped with
   where it began; a long press is Termux's selection. A button acts on the
-  press and fills for one frame (`tui.PRESSED`). `tui.Guard`: every tap is
+  press and fills for one frame (`tui.PRESSED`); `App.compose` clears
+  `app.pressed` once that frame is over, for the sheets too, which read it and
+  stayed filled until the next tap. `tui.Guard`: every tap is
   dropped for 100 ms after a screen or sheet appears, and one on the same cell
   for the rest of the 300 ms double-tap window. The last three columns of a
-  list are its bar: a tap there jumps, a drag that starts there moves the
-  thumb a row per row (`ListView.bar_drag`). The selection rides one item in
-  from the edge (Helix's scrolloff, `ListView.ride`/`follow`).
+  list are its bar: a tap there jumps, and a drag that starts there moves the
+  thumb a row per row of finger travel, the way the finger goes
+  (`ListView.bar_drag`: Termux scrolls naturally, so a finger going down
+  arrives as `Scroll(-1)`). The track stands for the view's `travel()`, the
+  rows above `furthest()`, so the thumb at the bottom is the last entry on
+  screen; where a row of the bar is worth less than an entry, the drag goes on
+  from the finger's row (`ListView.grip`) and reaches either end. The
+  selection rides one item in from the edge (Helix's scrolloff,
+  `ListView.ride`/`follow`).
 - **Fetches run in the background, and only a deliberate act spends.** A
   search, a format probe (one tap on a row), the feed's first read on first
   opening its tab, Re-read, and the deeper look are `tui.Job`s; inside one,
@@ -103,7 +148,15 @@ in what nothing draws.
   job so `x` (Stop) can kill it, and outside one (the printing paths, the
   tests) it is the plain `subprocess.run` it always was (it finds the job
   through `sys.modules["nibbles.tui"]`; under the bare `tui` it never did,
-  and Stop killed nothing). **The loop waits on every job whose `Done` is
+  and Stop killed nothing). **`x` stops only a fetch** (2026-10-16,
+  `App.stop_newest`): the newest job marked `fetch` (`tui.Job.fetch` — a
+  probe, a search, a feed read), never a question to zwana or the scheduler
+  started after it, which used to be the one stopped while the read went on
+  spending. **Leaving the app by any road** — `q`, ctrl-c, a hangup, SIGTERM,
+  an exception — cancels every job still running but the quiet hand-offs
+  (`App.closing`), which kills a fetch's yt-dlp: it runs in a session of its
+  own, hears no terminal signal, and fetched the whole listing for nobody.
+  **The loop waits on every job whose `Done` is
   still owed** (`App.unheard`), never only the running ones: a job that
   finished while a frame was drawn was left out of the next wait, and its
   sheet spun no more and never filled (2026-10-13). A hand-off to Android —
@@ -118,11 +171,28 @@ in what nothing draws.
   unchanged screen, and the loop blocks in `Session.read` until something
   happens. Only a running fetch's spinner, the selected title's marquee, a
   download's progress and the status bar's countdown wake it, and only while
-  they are changing (`App.next_wake`).
+  they are changing (`App.next_wake`) — the countdown each second only in its
+  last two minutes. **The countdown is never a moment already past**
+  (2026-10-16): a reading whose moment has come (the window opening, its stop
+  time), or one taken before a download ended, is asked again once, on the
+  edge (`QueueModel._expired`/`_ended`); a portal that is down is asked again
+  after `QueueModel.STALE`, never on every tick; and `SPENT` inside the window
+  names the next window (`QueueModel.next_open`), not one already past.
+- **No size is too small to draw** (2026-10-16). Below the 32×11 floor
+  nothing has to fit, but every `widgets` recipe, and the bewitch ones it
+  hands on, treats a width under nought as nought, because bewitch's
+  `truncate_row` never returns from a negative limit: a pinch-zoomed screen
+  died in a `RecursionError` and took the receipts with it. Every target is
+  clipped to the screen. `test_app_layout`'s sweep draws every tab and sheet
+  down to 1×1.
 - **Words** (design §6): the phone's clock and never UTC (`shell.clock`; the
-  runner's own `clock()` writes UTC for its log and is not shown on a screen),
+  runner's own `clock()` writes UTC for its log and is not shown on a screen:
+  a failed row's last try is read back by `expire_runner.unstamp` and said as
+  `gave up 3h ago`, where the item has no refusal of its own to say),
   no "tonight", nothing free or paid unless it is, time left in one unit
-  (`shell.left`), sizes in three figures (`shell.size`), and **one name
+  (`shell.left`), sizes in three figures (`shell.size`, the unit and the places
+  chosen by the figure as printed — `0.98 MiB`, never `1000 KiB` — KiB to
+  TiB), and **one name
   everywhere**: a video's download is its title cleaned only of what Android's
   shared storage refuses (`ytq.title_name`), behind the `NN-`.
 - **Pause is SIGINT, both kinds**: `Firing.stop` (the whole queue) always was,
@@ -138,6 +208,40 @@ in what nothing draws.
 - **`nibbles <url>` queues a direct file download** when the server says it
   is a file (2026-10-10; before that `dlq <url>`, and once a separate
   command). `dlq.py` keeps its own module and flags.
+- **A direct download is the file, whole, once, or nothing** (2026-10-16).
+  `expire_dl.is_page` is the one page test (`dlq.kind_of` asks it of a link,
+  `fetch` of every answer). A web page where the file should be, or a client
+  error that means a dead link (not 408/425/429, not a 5xx), is "not tonight"
+  until it is the `MAX_REFUSALS`-th answer in a row, then a strike, with the
+  part, the validators and the size untouched; a busy code, a 5xx and an
+  unreachable host stay "not tonight". The cap the runner echoes back
+  (`EXPIRE_TOTAL_BYTES`) bounds spending and is never a size: a body of
+  unstated length is delivered where it ends, and one that runs past its
+  whole cap is a strike, never delivered cut off. One 200 to a ranged request
+  keeps the part; validators that differ are a re-published file (the part
+  goes, nothing learned); only a second 200 in a row sets `no_range`, and any
+  206 clears it. A file already in `out/<item>/` with no part is delivered,
+  never bought again. A `--sha256` is cleaned to hashlib's spelling at both
+  ends (`expire_dl.sha256_digest`: upper case, a `sha256:` prefix, a whole
+  `sha256sum` line), and one that is not 64 hex digits is refused before a
+  byte moves. `expire_dl.move_file` is the download's own move into `out/`:
+  a rename, else `copyfile` to a hidden name beside the target, fsync,
+  rename, unlink the source; any failure removes the copy and leaves the
+  source. Never `copy2`/`shutil.move`, which copy the times and the mode after
+  every byte has landed, and shared storage refuses those with EPERM. (The
+  runner's `hand_over`, `out/` to the destination, still moves with
+  `shutil.move`.)
+- **A file download keeps its file's name** (2026-10-16, design §6):
+  `dlq.file_name` — Content-Disposition (`filename*` first), else the link's
+  last segment or, where that names no file, where it led — cleaned by
+  `ytq.title_name`'s rule with its suffix kept (or one made from the media
+  type), `--name` included. The item itself is `NN-<slug>.py`, `ytq.slugify`
+  of that name's stem. `dlq.render` writes the strings the item runs with
+  through `dlq._literal` (`json.dumps` with `ensure_ascii=False`), because
+  json.dumps' surrogate pairs read back in Python as lone surrogates, a name
+  no file can be opened under. An item whose probe saw Range ignored is
+  `PARTIAL: no`, so `admit()` gives it only a firing that can take all of it;
+  a probe that finds a web page queues nothing.
 - **The Queue tab is the whole queue.** dlq's listing and its legend row,
   the item screen and the settings page are gone (2026-10-10): the window
   card (the verdict, a bar of what the next window may spend against what
@@ -164,6 +268,30 @@ in what nothing draws.
   the download is the runner *unwinding* — `run_item` kills the item's tree on
   the way past — and only an interrupt does that. SIGTERM leaves yt-dlp
   spending data with nothing watching it.
+- **A stop finishes stopping** (2026-10-16). `expire_runner.Interrupts` notes
+  SIGINT and SIGHUP instead of raising them while the stop is carried out:
+  `run_item`'s cleanup (kill the tree, charge the ledger, save), a delivery in
+  progress (the copy finishes, then the run stops), `nibbles now` from the
+  spawn to its last write, and `run-now`'s front end (`expire_sched.run_queue`;
+  a bare `subprocess.run` SIGKILLed the runner 0.25 s into its unwinding). A
+  second ctrl-c, or Pause tapped twice, used to land inside that work and skip
+  the writes the first was waiting on, and a manual budget spent the bytes
+  again. A hangup is the interrupt to the runner (`_hung_up`, unless SIGHUP
+  was inherited ignored, as under nohup), and `deafen()` points stdout and
+  stderr at `/dev/null` first, because every echo to a hung-up terminal
+  raises EIO. `kill_tree` reaps the group's leader on every look; a zombie
+  leader held every stop for the full ten seconds. The ledger and the item
+  record are saved before `archive()`, in `fire()` and in `nibbles now`, so a
+  stop or an error during the copy onto shared storage cannot lose the spend.
+- **The download holds the lock** (2026-10-16). Every item inherits the
+  runner's lock file (`expire_runner.holding`, `lock_fds`, `pass_fds`), and an
+  `flock` belongs to the open file, so a runner or a `nibbles now` killed
+  outright cannot leave the queue looking free while its item writes — the
+  next `nibbles now` or forced firing used to open a second writer on the same
+  `.part`. It is released by closing, never `LOCK_UN`, which would take it
+  from the item too. The cost: a blind run's orphan, which has no stop time,
+  is no longer reaped by the next firing (that firing cannot take the lock);
+  it spends what is left of its slice and no more.
 - **`nibbles run-now --blind`** is the bargain when `ic.zwana.io` cannot be
   reached at all: every guard the runner carries is a portal figure, so a
   blind run has none and is bounded by what the items declared
@@ -176,6 +304,20 @@ in what nothing draws.
   `expire_runner.gate()` — the same function the firing gates on, so a screen
   saying "waiting for the window" cannot be a night the runner stopped for
   some other reason. A test must pin the *order* the gate answers in.
+- **Armed means job 2400 starts this root's runner** (2026-10-16):
+  `armed_script` reads job 2400's own line of `--pending`, because a
+  substring `2400` was also job 12400, a forty-minute period, or job 2400 left
+  starting `~/dlq`'s runner. Job 2400 starting another root's runner is "not
+  armed here", so More offers Arm, which registers the id here again. `arm`,
+  `cancel` and `status` answer in a sentence whatever the launcher holds and
+  wherever the scheduler stops answering.
+- **The printed screens measure in columns** (2026-10-16): `ytq.cols` is
+  bewitch's rule spelled with the standard library, so the printing paths and
+  `--status` need no bewitch; `ytq.fit` clips by it, and `expire_sched` lays
+  out, pads and wraps by it, because a name keeps its title's CJK. `match()`
+  asks for the name with its case before the name in any case, and the same
+  for the stem, so `99-Intro.py` beside `99-INTRO.py` still leaves Download
+  now (which hands `nibbles now` the exact name) one item to start.
 - **`nibbles queue` is the only thing in the queue that changes anything**, and an
   item is *four* things — the file in `queue/`, the partial in `work/<item>/`,
   anything finished in `out/<item>/`, and its record in `state.json`.
@@ -183,12 +325,26 @@ in what nothing draws.
   removal is spelled from it.
 - **The order is a position, never a number** — always **two digits**, because
   the runner sorts *file names*: `100` sorts before `20`. `ytq.next_number`
-  caps at `MAX_PRIORITY` for the same reason.
+  caps at `MAX_PRIORITY` for the same reason (the ytq half says how it
+  counts). **A move answers to the rename's collision rule** (2026-10-16) —
+  `expire_ui._occupied`: a name held by `failed/`, `done/`, a leftover
+  `work/` or `out/`, or a record in `state.json` is no room, because the keys
+  a move hands out are the keys `next_number` handed out before, and landing
+  on one made two items one (the record inherited, the finished row gone from
+  the listing, or a raw "Directory not empty"). `_taken`, `do_reorder`'s fast
+  path and `_reindex` (its fresh keys and its parking key) all answer to it.
+  A new item asks the same question of `ytq.names_in_use`; the set is written
+  twice today. A stray `NN-` file that is not `NN-name.py` is listed but
+  neither moved nor renamed, and a reorder leaves it its name.
 - **Removing keeps what was paid for.** The confirm's keys never vary with the
   item (`removal_answers` guarantees it). A done download whose file was
   deleted removes itself, gated on `_readable` — an `os.listdir`, because
   Android's Downloads *is there* and raises before `termux-setup-storage`.
-  Unreadable is `away` and left alone; only `gone` is acted on.
+  Unreadable is `away` and left alone; only `gone` is acted on. Keeping is
+  decided from the disk at the moment of the answer, never from the row the
+  confirm was built from, because a confirm can stay up across a firing:
+  `removal()` measures `work/`, `do_remove` measures again for what it says,
+  and a delete that would take more than the answer named is refused.
 - **What `n` says depends on where the phone is** —
   `expire_runner.portal_reachable`, a 1.5 s TCP connect to `ic.zwana.io`;
   the portal is on the vessel's network, so it answering *is* "on vessel
@@ -196,9 +352,19 @@ in what nothing draws.
 - **Nothing is queued twice** — items record `# SOURCE:` and `ytq.write_item`
   is the one door that refuses a duplicate; a file URL goes through it too.
 - **Destinations**: `nibbles dest` holds them; the item always downloads into
-  `out/<item>/` and the *runner* moves it at delivery (`shutil.move`, never a
-  rename — shared storage is a different filesystem), so an unreachable
-  destination leaves the file safe.
+  `out/<item>/` and the *runner* moves it at delivery (`hand_over`,
+  `shutil.move`, never a rename — shared storage is a different filesystem),
+  so an unreachable destination leaves the file safe. **A destination that
+  cannot be a folder reads as the default** (`dest_state`, keyed on the key
+  being present, for the reason settings do): a `*_dir` that was not a string
+  raised at delivery, after the bytes were spent. `set_dest` reads `default`
+  as `set_setting` does, any case and spaces round it. **Admission asks the
+  disk for what finishing takes** (2026-10-16, `disk_needed`, called by
+  `admit`): what is left to fetch, a second whole copy for an item with a
+  DEST (yt-dlp's merge output, and the delivery copy onto shared storage,
+  which on a phone is the same flash), and `DISK_SPARE`; what is already on
+  disk is not asked for again, and `plan()` works its one disk reading down
+  by what it admits.
 - **Every command line anchors to the queue root, not an installed copy** —
   `home.root()` resolves it (`$EXPIRE_HOME`, else the checkout the package
   sits in *only when it holds `queue/README.md`*, else `~/nibbles`), and
@@ -216,15 +382,20 @@ in what nothing draws.
   (Termux shebang, sets `EXPIRE_HOME` to its own directory, puts
   `home.SOURCE` on sys.path, runs `nibbles.expire_runner.main`), rewritten
   only while it is one of ours (`home.GENERATED`) and only when the package
-  moved; never into a checkout, a root `EXPIRE_HOME` names, or a non-empty
-  folder that is not a queue. Queue items put `home.SOURCE` (the checkout or
-  site-packages) on sys.path and import `nibbles.ytdl_item` /
+  moved, and written whole or not at all (a file beside it and a rename; an
+  empty launcher, which is what a cut-short write leaves, counts as ours, a
+  binary one does not); never into a checkout, a root `EXPIRE_HOME` names, or
+  a non-empty folder that is not a queue. Queue items put `home.SOURCE` (the
+  checkout or site-packages) on sys.path and import `nibbles.ytdl_item` /
   `nibbles.expire_dl`, because the job starts them with Termux's own
-  interpreter, which knows no venv. `nibbles now` is `python -m nibbles now`
-  under `sys.executable` with the package first on `PYTHONPATH`
-  (`home.child_env`). **The doors at the root** — `expire_runner.py`,
-  `expire_sched.py`, `ytdl_item.py`, `expire_dl.py` — are for the phone's
-  checkout, which predates the package: the armed job's path, items already
+  interpreter, which knows no venv; and both spawns — `run_item` and `nibbles
+  now` — give every item `home.child_env()`, the package first on
+  `PYTHONPATH`, so an item finds the package however it was written (a
+  reinstall that moved it used to fail every queued item nightly while
+  Download now worked). `nibbles now` itself is `python -m nibbles now` under
+  `sys.executable` in the same environment. **The doors at the root** —
+  `expire_runner.py`, `expire_sched.py`, `ytdl_item.py`, `expire_dl.py` — are
+  for the phone's checkout, which predates the package: the armed job's path, items already
   queued, and `python3 expire_sched.py`. Imported, each *is* its module
   (`sys.modules[__name__]`); run, it runs `main`. They are not shipped, and
   can go once no phone has a job or an item that names them. **A release is a
@@ -246,7 +417,9 @@ in what nothing draws.
   the printed listing) shows the declared cap with a `≤` until a server
   states a size, and a bar with no total stays empty. The bar is bewitch's
   `█` against `░`, both one column in Termux (checked on the phone,
-  2026-10-10, design §10).
+  2026-10-10, design §10). A figure that has not moved for
+  `queue_screens.STILL` (three status intervals) has no speed and no time
+  left, and a resumed download is measured afresh (2026-10-16).
 - **`nibbles dump [NAME]` is the bug report** (2026-08-28): environment, how the
   queue root and zwana-quota resolved, gate verdicts, state rows, failing
   items' heads and the newest logs, every section guarded so it finishes on
@@ -281,8 +454,21 @@ in what nothing draws.
   destinations and the other settings gone under a line saying it worked.
   `config_problem` is the one line that says so:
   `set_setting` and `set_dest` refuse with it and write nothing, and More, the
-  command and the dump all print it (ytq's own preferences, `ytq_prefs`, are
-  refused the same way by `ytq.save_prefs`). And **whether a
+  command and the dump all print it (ytq's own preferences and last format,
+  `ytq_prefs` and `ytq_last_format`, are refused the same way by
+  `ytq.save_prefs`, the one write `learn` and `remember_format` make).
+  `_read_config` is the one reader behind both, so a file one declines the
+  other names (a config that was not UTF-8 crashed More and every setter).
+  The state file is the other way round: **a `state.json` that cannot be read
+  is never written over as empty** (2026-10-16) — `load_state` hands back
+  `{"ledger_lost": <now>}`, so the first save after it (a firing, Put it back,
+  `nibbles now`) carries "the day cannot be read, so it reads as spent" in the
+  file itself until the next reset, and the bad file is copied to
+  `state.json.unreadable` first. Every writer loads, changes and saves, and an
+  empty state saved over the bad file was a valid one with no ledger, which a
+  manual budget read as an allowance nobody had touched. Both files are
+  written through `_write_whole` (a per-process temp name, fsync before the
+  rename). And **whether a
   stored value is in force is one function's answer** — `setting_state`, keyed
   on the key being *present*, because the three places that show the settings
   each used to decide it and a file holding `null` read as refused on the
@@ -305,7 +491,12 @@ in what nothing draws.
   is how a person learns to ignore notifications, while a malformed item and
   an item that has run out of nights each happen once and still need somebody;
   off leaves the log line and `nibbles status` exactly as they were, and the
-  switch is asked in `say_blocked`, not inside `notify`. And the window is a
+  switch is asked in `say_blocked`, not inside `notify`. **A notification
+  carries one id per thing to say** (2026-10-16): the firing's own word (ran,
+  blocked) is `NOTICE`, `expire-queue`, where the newest is the one that is
+  true; a malformed item, an item set aside and a file that could not reach
+  its folder each have their own, per item where it is about one, so a
+  firing's summary never replaces the warning it follows. And the window is a
   multiple of 15 minutes because that is JobScheduler's own floor for a
   periodic job — a window that is not a multiple of one would buy nothing
   beyond the nearest firing below it.
@@ -324,10 +515,14 @@ in what nothing draws.
   helpers the front ends borrowed off `runner.qw` (`Paint`, `countdown`,
   `since`, `grade`) are the runner's now, taken from `quota_widget` when it
   is there. `root_problem` names a missing checkout only when zwana is the
-  source. **A manual budget spends the allowance, less what the runner itself
-  moved since the last reset, less the reserve, less `FLOOR_MARGIN`**
-  (`manual_spendable`) — the margin for its second reason, the bytes that move
-  between two looks at a running download. What it moved is a **ledger**,
+  source. `portal_now` turns every failure of the asking — a timeout, a
+  hang-up, a reset, a captive page, a bad shape — into a missing reading with
+  its reason; only ctrl-c propagates (2026-10-16). One that escaped killed the
+  running download as "runner interrupted" and took the firing down unlogged,
+  so the five-minute dark timer never ran. **A manual budget spends the
+  allowance, less what the runner itself moved since the last reset, less the
+  reserve, less `FLOOR_MARGIN`** (`manual_spendable`) — the margin for its
+  second reason, the bytes that move between two looks at a running download. What it moved is a **ledger**,
   `state["spent"]`, `[epoch, bytes]` entries written by `note_spent` after
   every item `fire()` runs *and* every `nibbles now`, kept for both sources so a
   switch mid-day starts from what was spent, and entries rather than a total
@@ -419,7 +614,14 @@ in what nothing draws.
   `~`. The field takes three things: words, a URL (its video sheet opens), or
   a feed word (`subs`, `wl`: the Feed and Later tabs) — `looks_like_feed` is
   asked *before* `looks_like_url` because the feed's URL passes that test too.
-  Recent lists this session's searches and feeds, which reopen for free.
+  Recent lists this session's searches and feeds, which reopen for free. The
+  field's focus is one answer, `SearchTab.focused` (2026-10-16): tapped, or
+  the keyboard up with nothing searched and no search running (`k-search`).
+  The drawing, `typing` and the keys all ask it, because a field drawn focused
+  while the keys went elsewhere let `q` quit and ate the `x` of `xbox`. A
+  second Go or ⏎ on the same words while they are being fetched, or while
+  their answer is still owed, is no second request: `SearchTab.search` keeps
+  the first.
 - **Feed and Later read themselves on first opening their tab** (~0.2 MB),
   and **every deeper look re-buys the listing**: `feed_cost` is the total,
   never the increment, and it is on the `↓ 30 more · 0.6 MB in all` button
@@ -428,7 +630,12 @@ in what nothing draws.
   for is the end of the feed, told apart from `SUBS_MAX` in words; the depth
   commits only on a fetch that came back (`YouTube.want` vs `.asked`, per
   list); and `bumped_place` puts the cursor on the first new row when ↓ on
-  the last one asked.
+  the last one asked. A read that fails, comes back empty or finds no cookie
+  jar is said whatever is on screen (`FeedTab.failed`, 2026-10-16): before
+  anything is listed it is drawn in the list's place; after, it is a Notice
+  over the old rows, said when the tab is next on top with nothing over it.
+  Otherwise the old rows say nothing, which is the "nothing new" an empty feed
+  must never read as.
 - **Watch Later (`wl`) is the feed's twin** (2026-09-27). Everything that
   differs between the two signed-in lists is one `Feed` (`SUBS`,
   `WATCH_LATER`, keyed in `FEEDS`): the URL, the noun, what the end of it is
@@ -441,8 +648,11 @@ in what nothing draws.
   module on `PYTHONPATH`, which `ytdl_argv` prefers, so a real one is never
   asked.
 - **The cookie is asked about before anything is spent** — `cookie_state`
-  reads yt-dlp's own config with `shlex`, and refuses on a missing
-  `--cookies` line or a jar not on disk. **An empty feed is never reported as
+  reads the one user config yt-dlp reads (`user_config`: the first of its
+  seven candidates that opens) with `shlex`, expanding the jar as yt-dlp's
+  `expand_path` does, and refuses on a missing `--cookies` line or a jar not
+  on disk; a `--cookies` line in a later file, which yt-dlp never opens, is
+  named as hidden and not taken. **An empty feed is never reported as
   "nothing new"** — YouTube answers a logged-out feed with no entries, and
   `empty_feed_advice` says what that means and how old the jar is; a test
   must pin that it does.
@@ -453,7 +663,11 @@ in what nothing draws.
   sheet it applies to, measured at three widths, no `⚠` (ambiguous-width).
 - **One tap opens a row** — selected, its video sheet up, its format probe
   going (~0.3 MB) — and the probe is kept for the session: closing the sheet
-  does not cancel it, and the sheet opens on it at once next time. Each
+  does not cancel it, and the sheet opens on it at once next time. A probe is
+  `--flat-playlist --playlist-end 1` (`probe_argv`, 2026-10-16), so a link
+  that is a list — a playlist, a channel, a page of embeds — is refused off
+  its first page rather than after every entry was extracted in full, and
+  `multi_video` is refused beside `playlist`. Each
   listing keeps its own `ListView` (cursor and view) for the session, and
   `ListView.settle` is what makes a restored place safe on a list that grew,
   shrank or was resized.
@@ -466,12 +680,19 @@ in what nothing draws.
   rule is remembered per kind and the last format with it (`ytq.learn`, in
   `config.json`'s `ytq_prefs` and `ytq_last_format`). The size is the one
   figure, on the button; Now makes the button the one yes. A duplicate is the
-  `✓` line directly above `a Queue it again anyway`, pinned with it.
+  `✓` line directly above `a Queue it again anyway`, pinned with it. Heights
+  set by hand can outnumber the row: it keeps the tier it is on and those
+  around it (`yt_screens.around`, the audio row's rule), never narrower
+  buttons. An item that cannot be written (a full phone) is a Notice over the
+  kept sheet, and a Start now that cannot start says `Queued, not started`;
+  neither is a crash (2026-10-16).
 - **The selected title scrolls; nothing else does, and an idle screen still
   blocks.** `marquee` holds at the start of each lap; `yt_screens.overflows`
   is the one place that decides both drawing it moving and waking to move it,
   and a screen of short titles emits **zero** bytes over two idle seconds —
-  the property the loop was written for, held by a pty test.
+  the property the loop was written for, held by a pty test. `marquee` takes
+  the measure `overflows` decides with (`w.string_width`), so a CJK or emoji
+  title moves rather than sitting clipped while the loop wakes to move it.
 - **A notice never loses its own way out** — what the old full-page messages
   said is a `shell.Notice` sheet whose body scrolls and whose `esc OK` is
   pinned; a sweep holds it at every size. `wrapped()` sets
@@ -479,9 +700,25 @@ in what nothing draws.
   retyped wrong.
 - **`ytq.write_item` is the one door and refuses duplicates**
   (`ytq.Duplicate`), keyed on extractor and id rather than URL; the search,
-  a pasted URL, `--now`, `--from-json` and `dlq` all end there. The
-  results list marks what the queue already holds — before the probe is
-  spent.
+  a pasted URL, `--now`, `--from-json` and `dlq` all end there. The name
+  fallback compares `same_name` (casefolded, letters and digits in any
+  script), because `slugify` made every non-Latin title `video`. **It never
+  replaces** (2026-10-16): a name still in use (`names_in_use`: `queue/`,
+  `done/`, `failed/`, `work/`, `out/`, a state record) takes ` (2)`, ` (3)`…
+  after the title, chosen under a lock in `.staging`, and a failed write leaves
+  nothing staged — whatever answers to a name next inherits its partial, its
+  outbox and its record. The results list marks what the queue already holds —
+  before the probe is spent.
+- **Outside words are cleaned once, where they come in** (2026-10-16) —
+  `ytq.one_line`: every space and line break one space; every other control,
+  every format character but ZWJ/ZWNJ (Termux counts them a column, bewitch
+  none) and any lone surrogate dropped. `entries`, `probe` and `load_json`
+  (through `cleaned`: title, channel, uploader) apply it, and `render` and
+  `title_name` apply it again because they must hold whoever calls them: a
+  title must never end the item's `# DESC:` comment or its docstring
+  (TikTok's title is its caption, line breaks kept), nor reach the terminal
+  as an escape. `title_name` maps spaces before it drops the unprintable, so
+  a non-breaking space or a line break never glues two words together.
 - **A download is named after its title** (2026-10-10, design §6) —
   `ytq.title_name`, the title cleaned only of `/ \ : * ? " < > |` and capped
   well under 255 bytes, so `40-Crust of Rust - Subtyping and Variance.py` is
@@ -489,11 +726,33 @@ in what nothing draws.
   `item_name` is the one spelling of the file name `write_item` makes, and
   Rename on a download's sheet goes through the same cleaning. ytq queues
   last; Move on the Queue tab is the only place an order is chosen.
-- **`next_number` caps at `MAX_PRIORITY`** — the runner sorts file names, so
-  a third digit puts an item at the front, not the back.
-- **Downloading now spawns a detached `nibbles now`** (by path under the queue
-  root: `HERE / "expire_sched.py"`), so ytq stays open and the download
-  outlives the screen.
+- **yt-dlp is never told the title** (2026-10-16). An item's yt-dlp runs in
+  `work/<item>/dl` on paths relative to it (`-P home:. -P temp:`) and writes
+  `ytdl_item.STEM` (`media.<ext>`); `ytdl_item.deliver` renames the finished
+  file to `<title>.<ext>`. yt-dlp puts its paths and templates through
+  `expandvars`/`expanduser` (no escape for `$` on POSIX) and `%`-formatting,
+  and the item's directory is named after the title too, so a `$PATH` or `%(`
+  in a title once sent a whole video where nothing meters or delivers. `temp`
+  is pinned because `--paths` is a dictionary and the person's config (read
+  on purpose) could otherwise move every partial outside the meter.
+  `ytdl_item.adopt` renames partials an older firing left under the title
+  onto the stem before yt-dlp starts, so they resume rather than being bought
+  again. `ytdl_item.PP_MARKERS` names only postprocessors yt-dlp runs after
+  the download; one that runs before it (SponsorBlock, the thumbnail
+  convertor) froze the meter at nought for the whole firing. And
+  `ytdl_item.scaffolding` is the one rule for what is yt-dlp's bookkeeping,
+  anchored at the end of a name (`expire_sched._is_payload` asks it too), so a
+  title holding `.temp.` is never taken for a merge in progress.
+- **`next_number` counts `queue/` alone and caps at `MAX_PRIORITY`**
+  (2026-10-16) — the runner sorts file names, so a third digit puts an item
+  at the front, not the back. `done/` and `failed/` keep their numbers, and
+  counting them put every item from the tenth ever at 99, run in title order.
+  At the cap it has `expire_ui._reindex` deal the queue fresh keys first
+  (`_make_room`), unless `busy_problem` says a firing or a download holds it.
+- **Downloading now spawns a detached `nibbles now`** (`ytq.now_argv`:
+  `python -m nibbles now NAME --yes` under `sys.executable`, in a session of
+  its own, `home.child_env()`, the queue root its cwd), so the app stays open
+  and the download outlives the screen.
 - **`Choice.kind` decides an item's destination** — never the file extension
   (at queue time there is no file); `ytq.dest_for` is the one place, `--dest`
   wins over both.
@@ -503,6 +762,26 @@ in what nothing draws.
   grouped by tier, smallest first, opened at the tier the video sheet was on.
   `c` on the video sheet copies the page URL through `to_clipboard`
   (termux-clipboard-set; its answer is said above the tabs).
+- **One opener, and it refuses aloud what Termux refuses in silence**
+  (2026-10-16). `ytq.open_file` opens for Open it and Open it when done, and
+  Open it re-reads the queue first. termux-open exits 0 once its broadcast is
+  sent, so everything Termux would refuse with only a logcat line is asked
+  first, of the file at the moment of opening, never of the listing: it must
+  be there, readable and a file; its canonical path must be under Termux's
+  files or the primary storage (`termux_serves`, the provider's own prefix
+  test — an SD card is neither); and `allow-external-apps` must be `true` in
+  the first of `~/.termux/termux.properties` and
+  `~/.config/termux/termux.properties` that exists (`termux_shares`;
+  `java_properties` is `java.util.Properties.load`, trailing blanks and all,
+  so `true ` is false to Termux). Since termux-app 0.118 the provider serves
+  no file to another app without it — the owner's "files won't open" — and the
+  refusal names the line, the file and `termux-reload-settings`. termux-open
+  is handed a `file://` URI (`file_uri`), never a bare path, because `am`
+  parses it with `Uri.parse`; and because 0.118 re-parses the path into its
+  content:// URI, a path holding `%`, `#` or `?` goes through a link in
+  `$TMPDIR/nibbles-open/` named with full-width lookalikes (`uri_safe`).
+  xdg-open keeps the plain path. A model of Android's `Uri.parse` in
+  `test_queue_items.py` holds the round trip for both receivers.
 - **A run with no stop time must never be formatted with `int()`**
   (2026-08-28, and it had been broken since long before the split). `nibbles
   now` and `run-now --blind` both set `EXPIRE_STOP_EPOCH=0` on purpose —
@@ -577,7 +856,7 @@ would, and asserts on the *shape*: which tab is up by its header, that a row
 for a download exists, that the tabs are on their row, that a tap outside
 every button changes nothing, that after Move, ↓, Put here the file on disk
 has a smaller number than its neighbour. The headless half builds the real
-`nibbles.App` with no terminal (`App(None, tab, size=...)`), sets its reading,
+`nibbles.app.App` with no terminal (`App(None, tab, size=...)`), sets its reading,
 and composes it: the Queue tab's rows, the sheets' buttons and the More tab's
 rows are asked of the screen that draws them. The pty tests are marked `tui`
 and are most of the suite's wall clock.
@@ -597,25 +876,25 @@ One file per guarantee, and each says which:
 
 | file | what it pins |
 |---|---|
-| `test_tonight_budget.py` | the sum `plan()` promises is never more than the budget, for any ordering; every refusal `admit()` gives has a sentence on it |
+| `test_tonight_budget.py` | the sum `plan()` promises is never more than the budget, for any ordering; every refusal `admit()` gives has a sentence on it; the disk an item is admitted against is what finishing it takes (`disk_needed`), never refused half-way for the room it has used, and asked the same by the line and the firing |
 | `test_gate.py` | the order `gate()` answers in — two things wrong at once, and which is reported — including where a manual budget's `unset` sits |
-| `test_manual_budget.py` | a manual budget never spends past the allowance or into the reserve: the arithmetic, the ledger since the reset, `plan()` by permutation, firings in a row, `watch()` in flight, `nibbles now` charged |
-| `test_budget_source.py` | the source is a setting with the runner's spec; `snapshot()` only gains keys; the runner, `status`, `settings` and `dump` run with no zwana-quota and never import it |
-| `test_firing.py` | `fire()` admits through `admit()`; SIGINT and not SIGTERM; an item leads its own session |
-| `test_settings.py` | a bad stored value reads as the default; a broken `config.json` is never written over; what waives the reserve |
+| `test_manual_budget.py` | a manual budget never spends past the allowance or into the reserve: the arithmetic, the ledger since the reset, `plan()` by permutation, firings in a row, `watch()` in flight, `nibbles now` charged (paused twice, too); a day that could not be read stays spent through every write that follows |
+| `test_budget_source.py` | the source is a setting with the runner's spec; `snapshot()` only gains keys; the runner, `status`, `settings` and `dump` run with no zwana-quota and never import it; the screens name the checkout the runner imports, and what they say the job finds is what it finds |
+| `test_firing.py` | `fire()` admits through `admit()`; SIGINT and not SIGTERM; an item leads its own session; a stop (a second one, a hangup, run-now's front end) finishes stopping; the spend is on disk before delivery; the download holds the lock; both spawns hand the item the package; nothing a firing says once is replaced before it is read |
+| `test_settings.py` | a bad stored value reads as the default; a broken `config.json` is never written over; what waives the reserve; whatever is in the file is read or said, never raised; a destination that cannot be a folder reads as the default |
 | `test_clock.py` | the clock pinned and the timezone swept either side of the date line |
-| `test_downloader.py` | `expire_dl` against a loopback server: a file smaller than one chunk is *fetched* |
-| `test_listing.py` | the reader: `gone` vs `away`, and every download listed once |
-| `test_ui_moves.py` | the moves and removals on a real queue: bytes never lose their item |
+| `test_downloader.py` | `expire_dl` against a loopback server: a file smaller than one chunk is *fetched*; nothing that is not the file is delivered, and a page or a dead link three times in a row is a strike; the cap is never a size; one odd answer never condemns a download; a digest however it was pasted; `move_file` lands whole or not at all |
+| `test_listing.py` | the reader: `gone` vs `away`, and every download listed once; a title never reads as bookkeeping; a name that is exactly an item's is never ambiguous |
+| `test_ui_moves.py` | the moves and removals on a real queue: bytes never lose their item, a move never lands on a name something else holds, a stray neither moves nor stops a move, and a removal never deletes bytes its question did not name |
 | `test_cut_line.py` | the cut line is computed, an entry nothing can select, and moves without moving the budget |
-| `test_layout.py` | every line fits, at 32, 40, 80 and swept between; every verdict has a word and a status label; every action and every setting has its row |
-| `test_cli.py` | what a bare `nibbles` does, and where each word goes — every route `nibbles` has, and that it is the only executable |
+| `test_layout.py` | every line fits, at 32, 40, 80 and swept between, a wide name in the columns it takes; every verdict has a word and a status label; every action and every setting has its row |
+| `test_cli.py` | what a bare `nibbles` does, and where each word goes — every route `nibbles` has, that it is the only executable, and that the words that print need none of the screens; a word shaped like an id refused, flags in any order, one spelling of a link; `arm` and `status` agree about the job; a file's name, and whether it is partial |
 | `test_item_contract.py` | every way an item can fail to declare itself is a reason and never an exception |
-| `test_in_flight.py` | the guards that act while the bytes are moving: the byte cap, the floor, the deadline, a portal gone dark — and all of them again with the interface counters dark, as on a phone |
-| `test_dump.py` | `nibbles dump` finishes on the broken trees it exists for |
-| `test_queue_flows.py` | the tabs' flows headless: Remove keeps the bytes unless told, Rename moves everything, a setting set from its presets, a refused value written nowhere, a broken config never written over |
+| `test_in_flight.py` | the guards that act while the bytes are moving: the byte cap, the floor, the deadline, a portal gone dark — and all of them again with the interface counters dark, as on a phone; every way a portal poll can fail is a missing reading |
+| `test_dump.py` | `nibbles dump` finishes on the broken trees it exists for, and says where the nightly job looks |
+| `test_queue_flows.py` | the tabs' flows headless: Remove keeps the bytes unless told (and what a firing bought while it asked), Rename moves everything, a setting set from its presets, a refused value written nowhere, a broken config never written over; Move's hold let go when its download leaves, a tap putting it exactly there; Open it on the file as it is now; `x` following the run; a reading asked again once on its edge, a countdown never past, a stalled download with no speed, a failed row without the UTC stamp |
 | `test_screens.py` | the Queue and More tabs, on a pty |
-| `test_install.py` | an installed copy makes its own queue root and launcher, and writes into no checkout, no `EXPIRE_HOME` and no folder of somebody's; the launcher runs the runner in its own root; the wheel ships the contract where the package looks |
+| `test_install.py` | an installed copy makes its own queue root and launcher, and writes into no checkout, no `EXPIRE_HOME` and no folder of somebody's; the launcher runs the runner in its own root, and a write of it cut short leaves the old one; the wheel ships the contract where the package looks |
 
 **`make mutants` is the suite's own check.** poodle changes one operator,
 literal or comparison at a time and runs the tests against it; a mutant that
@@ -624,7 +903,7 @@ coverage cannot answer. `poodle_config.py` carries the whole arrangement and
 the reasons — the flat layout, the sibling checkout a worker's copy cannot
 find for itself, and the copy filters that keep this device's `state.json` and
 `config.json` out of a run that exists to be independent of them. The app's
-event loops (`nibbles.App.run`, `tui.Session.read`) are fenced `# nomut:
+event loops (`app.App.run`, `tui.Session.read`) are fenced `# nomut:
 start` / `# nomut: end`: a mutant inside one does not fail a test, it hangs a
 terminal until the timeout kills it, and what those loops do is checked under
 a pty instead. It is a
@@ -761,51 +1040,77 @@ also carries the app's pieces and its layout sweep.
 
 The files, and what each is for:
 
-- `test_item_bytes.py` — the metering. The merge case above all: a rename is
-  not new bytes, two names for one stream are one high-water mark, the freeze
-  holds the *last* figure, and a property says the count can never go down
-  however the files move about.
+- `test_item_bytes.py` — the metering. A rename is not new bytes; a stream is
+  the sum of its files at one look (a fragment in flight,
+  `x.part-FragN.part`, is its stream's); a `.part` that comes back smaller was
+  started over and what it holds is new; the freeze holds the *last* figure;
+  `ytdl_item.scaffolding` (the one rule, anchored at the end of a name, which
+  `expire_sched._is_payload` also asks) never hides a title's own bytes.
+  Properties say the count never goes down, and is never less than was
+  fetched nor more but for one fragment a stream.
 - `test_item_firing.py` — one firing: the resuming argv, `time_left` on an
   endless deadline, which file was produced and where it goes, and the whole
   decision table (a slice too small to extract in, no time left, already
   delivered, finished, exit 0 with nothing to show, the zero-firing strikes).
-  The poll loop runs on a **fake clock** (`Clock`) and a fake child, so the
-  budget stop, the deadline stop and the postprocessing lift are deterministic
-  and instant.
+  No title reaches what yt-dlp expands, the file arrives under the title
+  whatever it is, partials left under a title are resumed rather than bought
+  again, a temp path in the config cannot move them, and a postprocessor that
+  runs before the download is not the end of it. The poll loop runs on a
+  **fake clock** (`Clock`) and a fake child, so the budget stop, the deadline
+  stop and the postprocessing lift are deterministic and instant.
 - `test_asking.py` — what is asked for and what is said before asking:
-  `--flat-playlist`, `--playlist-end`, the four ways `ask` fails, the feed's
+  `--flat-playlist`, `--playlist-end`, the probe bounded to a list's first
+  page, a word never asked of yt-dlp, the four ways `ask` fails, the feed's
   price being the total, `next_page`'s two different sentences, the cookie
-  states, and the ages that mark themselves approximate.
+  states and the one user config yt-dlp reads, the ages that mark themselves
+  approximate, and the upgrade line (a uv receipt's extras and pins, a
+  self-updating release).
 - `test_formats.py` — what is offered and at what cap: unsized formats hidden
   and counted, storyboards dropped, merges paired by container family, the
   3%/12% margin, `withheld` scoped to YouTube and never conflated with
   `choices`'s `unsized`, and where the cursor opens.
 - `test_queue_items.py` — the one door. The item the runner has to be able to
   read (asked of `expire_runner.parse_item`), the duplicate refusal keyed on
-  id and the weaker fallback on name, two-digit names, and the duplicate's
-  verdict fitting the narrowest sheet.
+  id and the weaker fallback on name (any script), two-digit names, and the
+  duplicate's verdict fitting the narrowest sheet. No title or id ever reaches
+  the item as code; nothing is written over; downloads run in the order
+  queued; a broken `config.json` is never written over by `learn`; the
+  opener's refusals, and its URI round trip through a model of Android's
+  `Uri.parse`.
 - `test_layout.py` — the printed rows, 32 columns up, as properties: every
   row inside the terminal, the marquee filling its room exactly, wrapping
-  never losing a word.
+  never losing a word; a column counted as the screens count it, wide titles
+  scrolling in columns, and a title from outside drawn on its own row.
 - `test_cli.py` — the paths with no terminal: the flag combinations that are
   refused, `--list --from-json` printing and writing nothing, the feed
   refusing without a cookie, `subs`/`wl` reaching the app by the one road,
-  and the receipts printed after the app gives the terminal back.
-- `test_app_pieces.py` — the app's pieces with no terminal: a mouse report is
-  never a key, the two tap guards, the hit map, a row of buttons filling its
-  width exactly, one-unit time, the phone's clock, title names, tier picks
-  and the skipped codec, the learned heights, and the list's scrolloff and
-  draggable bar.
+  the search's words one search wherever a flag falls, and the receipts
+  printed after the app gives the terminal back.
+- `test_app_pieces.py` — the app's pieces with no terminal: a mouse report or
+  a paste is never a key (a paste arrives as one printable line), the two tap
+  guards, the hit map, a row of buttons filling its width exactly, nothing
+  drawn in less than nothing, one-unit time, sizes in three figures that read
+  back as themselves, the phone's clock, title names (words never glued
+  together), outside words one line and drawable, tier picks and the skipped
+  codec, the learned heights, and the list's scrolloff and a bar that follows
+  the finger to either end.
 - `test_app_flows.py` — the YouTube tabs' flows headless, through the real
-  `nibbles.App` with no terminal: one tap opens a row and starts its probe, a
+  `nibbles.app.App` with no terminal: one tap opens a row and starts its probe, a
   closed sheet keeps its probe, the withheld notice once a session and on
   top, Stop closing its sheet, the button writing the item under the video's
   own name, Now as the one yes, the duplicate's answer, `q` typing into a
-  focused field.
+  focused field. The field's focus acting as drawn, a second Go buying
+  nothing, `x` stopping a fetch and never a question asked after it, leaving
+  stopping every fetch, a paste typed and never submitted, a pressed button
+  on a sheet unfilled after one frame, a feed failure said over a listing, a
+  full phone said, and what the door hands the app landing where the field
+  would.
 - `test_app_layout.py` — **the layout sweep** (design §8): every tab and every
   sheet at widths 32 to 80 and heights 11 to 30 — every line exactly the
   width, no two targets overlapping, buttons three rows, the pinned answers
-  and `esc ×` always on screen, the five tabs always there.
+  and `esc ×` always on screen, the five tabs always there, hand-set quality
+  chips never squeezing a tier button — and below the floor, down to 1×1, the
+  screen's own size with every target on it.
 - `test_screens.py` — the app under a pty through `termux_pty`, marked `tui`.
   Structure only — which tab is up, that a row for a video exists, that the
   button carries the price — never whole-line literals. It drives what costs
@@ -815,7 +1120,9 @@ The files, and what each is for:
   **momentum never fetching**: a fling far past the end asks nothing, a
   rested pull asks once. **The idle-screen property is here**: a screen of
   short titles, selected or not, emits zero bytes over two seconds, and a
-  selected title too long for its row does not.
+  selected title too long for its row does not. A paste is typed into the
+  field and never submits, nothing the app started to fetch outlives it, and
+  a drag on the bar carries the thumb the way the finger goes.
 
 Two helpers deleted with the old self-tests are back as tests rather than as
 code: the shebang question (`test_the_runner_admits_what_ytq_writes` expects
@@ -858,7 +1165,7 @@ test could hold down. What is left over is where the next test goes.
   `GUARD_FLOOR`, and `state.pop("zero_firings", None)` whose default is never
   returned.
 
-The event loops (`nibbles.App.run` and `tui.Session.read`, as the curses loops
+The event loops (`app.App.run` and `tui.Session.read`, as the curses loops
 in `ytq.py` were) are fenced with `# nomut: start` / `# nomut: end`, and that is
 the only thing in the code that exists for the mutation run: a mutant inside
 one does not fail a test, it hangs a terminal until the timeout kills it.
