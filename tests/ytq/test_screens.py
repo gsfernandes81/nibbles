@@ -16,7 +16,10 @@ The pty answers blessed's startup queries the way Termux does
 from __future__ import annotations
 
 import json
+import os
+import signal
 import time
+from pathlib import Path
 
 import pytest
 
@@ -130,6 +133,75 @@ def test_watch_later_is_a_word_in_the_field_and_a_tab(tui, tmp_path):
     assert "watch later" in session.header
     assert "Also Saved" in session.text
     assert ytq.WL_URL in asks(stand_in["asked"])[0]
+
+
+def test_a_paste_is_typed_into_the_field_and_never_submits(tui, tmp_path):
+    """Termux wraps a paste once the app asks it to, and sends it as three
+    writes: the opening mark, the text with every line break a carriage
+    return, the closing mark. It lands in the field as one line; nothing is
+    searched until ⏎."""
+    stand_in = fake_ytdlp(tmp_path, search_info(["Pasted Result"]))
+    session = tui(**stand_in["env"])
+    home_screen(session)
+    assert b"\x1b[?2004h" in session.raw, "bracketed paste was never asked for"
+    for part in (b"\x1b[200~", b"crust\rsub\r", b"\x1b[201~"):
+        os.write(session.fd, part)
+    session.settle()
+    assert "crust sub" in session.text
+    assert "esc ×" not in session.text and "searching" not in session.text
+    assert asks(stand_in["asked"]) == []
+    assert os.waitpid(session.pid, os.WNOHANG) == (0, 0), "the paste quit the app"
+    session.send(ENTER)
+    session.wait_for(lambda lines: "Pasted Result" in joined(lines))
+    assert any("crust sub" in " ".join(argv) for argv in asks(stand_in["asked"]))
+
+
+def alive(pid: int) -> bool:
+    """Whether *pid* is a process still running (a zombie has finished)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+@pytest.mark.parametrize("leave", ["q", "ctrl-c", "hangup"])
+def test_nothing_the_app_started_to_fetch_outlives_it(tui, tmp_path, leave):
+    """A fetch's yt-dlp runs in a session of its own, so neither ``q``, nor
+    ctrl-c, nor the terminal hanging up reaches it: the app stops it on its
+    way out, as ``x`` would, rather than leave it spending with nobody to
+    read the answer. And the terminal is given back on a hangup too."""
+    fake = tmp_path / "fake" / "yt_dlp"
+    fake.mkdir(parents=True)
+    pidfile = tmp_path / "pid"
+    (fake / "__init__.py").write_text("")
+    (fake / "__main__.py").write_text(
+        "import os, time\n"
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        "time.sleep(30)\n"
+    )
+    session = tui(PYTHONPATH=str(fake.parent))
+    home_screen(session)
+    session.send(b"rust")
+    os.write(session.fd, ENTER)  # not send(): the spinner never lets it settle
+    end = time.monotonic() + 10
+    while not (pidfile.exists() and pidfile.read_text()) and time.monotonic() < end:
+        session.pump(0.1)
+    child = int(pidfile.read_text())
+    assert alive(child)
+    if leave == "q":
+        os.write(session.fd, b"q")
+    elif leave == "ctrl-c":
+        os.write(session.fd, b"\x03")
+    else:
+        os.kill(session.pid, signal.SIGHUP)
+    session.wait_exit()
+    end = time.monotonic() + 5
+    while alive(child) and time.monotonic() < end:
+        time.sleep(0.05)
+    assert not alive(child), leave
+    assert session.raw.rfind(b"\x1b[?2004l") > session.raw.rfind(b"\x1b[?2004h"), \
+        "the terminal was not given back"
 
 
 def test_a_saved_search_opens_on_its_results(tui, make_dump):

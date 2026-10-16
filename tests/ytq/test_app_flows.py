@@ -124,6 +124,204 @@ def test_stop_closes_the_sheet_that_was_waiting(monkeypatch):
     assert not any(isinstance(s, ys.VideoSheet) for s in app.sheets)
 
 
+def heard(app):
+    """Every job allowed to finish and its answer delivered, as the loop would."""
+    for job, _ in list(app.jobs):
+        end = time.monotonic() + 5
+        while not job.finished and time.monotonic() < end:
+            time.sleep(0.01)
+        app.handle(tui.Done(job))
+
+
+def child_of(job):
+    end = time.monotonic() + 5
+    while job._child is None and time.monotonic() < end:
+        time.sleep(0.01)
+    assert job._child is not None, "the fetch never started its child"
+    return job._child
+
+
+def test_x_stops_the_fetch_and_never_a_question_asked_after_it(monkeypatch):
+    """A feed read is going; a glance at More asks Android's scheduler, which
+    is newer. ``x`` back on Feed kills the read's yt-dlp, and the scheduler's
+    answer still lands — it is no fetch, holds no child, and dropping it left
+    More saying nothing about the nightly job."""
+    import threading
+
+    from nibbles import queue_screens as qs
+
+    release = threading.Event()
+    monkeypatch.setattr(ytq, "cookie_state", lambda: ("file", "a jar"))
+    monkeypatch.setattr(ytq, "read_feed",
+                        lambda feed, count: tui.run_child(["sleep", "30"], 60) and [])
+    monkeypatch.setattr(qs.sched, "job_rows",
+                        lambda: release.wait(5) and [("job", "not armed", "1;31")])
+    app = headless()
+    app.switch(nibbles.FEED)
+    reading = app.tabs[nibbles.FEED].job
+    assert reading is not None and reading.fetch
+    child = child_of(reading)
+    app.switch(nibbles.MORE)
+    asking = app.tabs[nibbles.MORE].job_job
+    app.switch(nibbles.FEED)
+    app.handle(tui.Key("x"))
+    assert reading.cancelled and not asking.cancelled
+    assert child.wait(5) is not None
+    release.set()
+    heard(app)
+    assert app.tabs[nibbles.MORE].job_rows == [("job", "not armed", "1;31")]
+    # With no fetch running, x stops nothing at all.
+    release.clear()
+    app.switch(nibbles.MORE)
+    asking = app.tabs[nibbles.MORE].job_job
+    assert not app.stop_newest() and not asking.cancelled
+    release.set()
+    heard(app)
+
+
+class Reads:
+    """A stand-in session for :meth:`App.run` that hands it *events* in
+    turn, raising one that is an exception, as ctrl-c raises in the loop."""
+
+    def __init__(self, *events):
+        self.events = list(events)
+
+    def start(self, job):
+        job.run(lambda: None)
+        return job
+
+    def show(self, block):
+        return 0
+
+    def read(self, timeout, jobs):
+        event = self.events.pop(0)
+        if isinstance(event, BaseException):
+            raise event
+        return event
+
+
+def test_leaving_the_app_stops_every_fetch_it_started(monkeypatch):
+    """``q`` and ctrl-c alike: a fetch's yt-dlp runs in a session of its own,
+    so nothing the terminal does reaches it — the app kills it on the way
+    out. A hand-off to Android is left to finish."""
+    for leaving in (tui.Key("q"), KeyboardInterrupt()):
+        app = headless()
+        fetch = app.start(tui.Job(lambda: tui.run_child(["sleep", "30"], 60), "reading",
+                                  fetch=True), shell.Screen())
+        handoff = app.start(tui.Job(lambda: tui.run_child(["sleep", "30"], 60), "copying",
+                                    quiet=True), shell.Screen())
+        fetching, handing = child_of(fetch), child_of(handoff)
+        app.session = Reads(leaving)
+        try:
+            app.run()
+        except KeyboardInterrupt:
+            assert isinstance(leaving, KeyboardInterrupt)
+        try:
+            assert fetching.wait(5) is not None, leaving
+            assert handing.poll() is None, leaving
+        finally:
+            handoff.cancel()
+            handing.wait(5)
+
+
+#: What a paste can hold that a key would act on: ⏎ (submit, open the
+#: selected row), q (quit), x (stop), n/l/s and ⏎ on a video sheet (Now, the
+#: rule, the button), esc, a tab, an arrow's escape sequence.
+PASTES = ["crust of rust\rsubtyping\r", "q", "x", "n\rl\rs\r\r", "\x1b", "a\tb",
+          "\x1b[A\r", "https://youtu.be/dQw4w9WgXcQ\n", "\r\n\r\n", "quit\rx\r"]
+
+
+def test_a_paste_goes_into_the_field_and_does_nothing_else(clean_queue, monkeypatch):
+    """Whatever it holds and wherever the field's focus was, with a listing
+    up whose selected row's formats are already in: the field takes it as
+    one line, and nothing is searched, opened, stopped, queued or quit."""
+    started = []
+    for text in PASTES:
+        for focused in (True, False):
+            app = headless()
+            monkeypatch.setattr(app.queue, "start_now", lambda name: started.append(name))
+            with_listing(app, info=video_info())
+            app.yt.view("crust").cursor = 0
+            search = app.tabs[0]
+            search.focus = focused
+            before = (search.value, len(app.jobs), app.tab)
+            event = tui.Paste(tui.one_line(text))
+            app.handle(event)
+            assert not app.done and not app.sheets, text
+            assert (len(app.jobs), app.tab) == before[1:], text
+            assert search.value == before[0] + event.text and search.value.isprintable()
+            assert search.focus
+    assert started == [] and ytq.items() == []
+
+
+def test_a_paste_into_a_sheets_field_never_sets_it(monkeypatch):
+    """Rename and the settings: the field takes what it accepts of a paste,
+    the sheet stays up, and only Set or ⏎ submits."""
+    from nibbles import queue_screens as qs
+
+    class Field(qs.FieldSheet):
+        submitted = False
+
+        def submit(self, app):
+            self.submitted = True
+
+    class Digits(Field):
+        def accepts(self, ch):
+            return ch.isdigit()
+
+    for sheet, text, value in ((Field("rename", "old"), "new\rname\r", "oldnew name"),
+                               (Digits("window", ""), "45 min\rq\r", "45")):
+        app = headless(tab=nibbles.QUEUE)
+        app.open(sheet)
+        app.handle(tui.Paste(tui.one_line(text)))
+        assert app.sheets[-1] is sheet and not sheet.submitted and not app.done
+        assert sheet.value == value
+
+
+def test_a_pressed_button_on_a_sheet_unfills_after_one_frame(monkeypatch):
+    """Filled for one frame wherever it is (``tui.PRESSED``): the sheets read
+    ``app.pressed`` themselves, and once it stayed set the last button tapped
+    on one stayed filled until the next tap."""
+    app = headless()
+    with_listing(app, info=video_info())
+    tap(app, "row")
+    tier = f"tier:{app.sheets[-1].tier[1]}"
+    tap(app, tier)
+    pressed = app.compose()
+    later = time.monotonic() + tui.PRESSED + 0.05
+    monkeypatch.setattr(nibbles.time, "monotonic", lambda: later)
+    after = app.compose()
+    app.pressed, app.pressed_until = None, 0.0
+    assert after == app.compose(), "drawn as if nothing had been pressed"
+    assert pressed != after, "and the press itself was drawn"
+
+
+def test_what_the_door_hands_the_app_lands_where_the_field_would(monkeypatch):
+    """``nibbles :ytsubs`` opens Feed and ``nibbles :ytwatchlater`` Later,
+    as the same words typed into the field do — never a video sheet probing
+    the list as one video. A bare id is still a link, and probed."""
+    seen = {}
+    probed = []
+    monkeypatch.setattr(nibbles, "run",
+                        lambda start, first, preloaded, now, dest: seen.update(first=first)
+                        or [])
+    monkeypatch.setattr(ytq.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(ytq, "yt_dlp_takes", lambda text, timeout=30: True)
+    monkeypatch.setattr(ytq, "probe", lambda url: probed.append(url) or video_info())
+    for word, tab in ((":ytsubs", nibbles.FEED), (":ytwatchlater", nibbles.LATER),
+                      ("dQw4w9WgXcQ", nibbles.SEARCH)):
+        assert nibbles.main([word]) == 0
+        typed, door = headless(), headless()
+        typed.yt.route(word)
+        door.yt.begin(seen["first"], None)
+        assert door.tab == tab
+        assert any(isinstance(s, ys.VideoSheet) for s in door.sheets) == (tab == nibbles.SEARCH)
+        if tab != nibbles.SEARCH:
+            assert typed.tab == door.tab and not typed.sheets
+        heard(door)
+    assert probed == ["dQw4w9WgXcQ"]
+
+
 def test_the_button_writes_the_item_under_the_videos_own_name(clean_queue):
     app = headless()
     info = video_info(title="Crust of Rust: Lifetimes")

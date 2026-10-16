@@ -6,10 +6,11 @@ the screens need from the terminal comes through here and nowhere else:
 - **one** :class:`Session` — one blessed ``Terminal``, fullscreen, cbreak, the
   cursor hidden, clicks and the wheel reported in SGR. The Queue and More tabs
   draw into it too: nothing opens a second ``Terminal``.
-- :meth:`Session.read` turns what arrives into one of five events —
-  :class:`Key`, :class:`Tap`, :class:`Scroll`, :class:`Resize`, :class:`Done` —
-  and drops everything else: a release, a motion report, a byte of an escape
-  sequence nobody asked for. A mouse report never arrives as a key.
+- :meth:`Session.read` turns what arrives into one of six events —
+  :class:`Key`, :class:`Tap`, :class:`Scroll`, :class:`Paste`,
+  :class:`Resize`, :class:`Done` — and drops everything else: a release, a
+  motion report, a byte of an escape sequence nobody asked for. A mouse report
+  never arrives as a key, and neither does a paste.
 - :class:`Job` is a fetch in a thread, holding its yt-dlp so Stop can kill it.
   When one finishes, the loop wakes with a :class:`Done`.
 - :meth:`Session.show` hands a whole screen to :class:`bewitch.screen.Frame`,
@@ -33,6 +34,7 @@ import select
 import signal
 import subprocess
 import sys
+import termios
 import threading
 import time
 from collections.abc import Callable
@@ -96,6 +98,22 @@ class Scroll:
 
 
 @dataclass(frozen=True)
+class Paste:
+    """Text pasted whole, as one line a field can hold (:func:`one_line`).
+
+    Termux wraps a paste in ``ESC[200~ … ESC[201~`` once the app asks for it
+    (bracketed paste, DECSET 2004), and otherwise types it, every line break a
+    carriage return: each of those was ⏎, and whatever followed it landed on
+    the screen under the field as keys — a search, then a probe for the
+    selected row, then ``q``. A paste is never a key, so it can submit, stop,
+    quit or press nothing; only a screen with a text field takes it, into
+    the field.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True)
 class Resize:
     width: int
     height: int
@@ -106,7 +124,7 @@ class Done:
     job: Job
 
 
-Event = Key | Tap | Scroll | Resize | Done
+Event = Key | Tap | Scroll | Paste | Resize | Done
 
 #: blessed's names for the keys the screens use, in the short spelling.
 _NAMES = {
@@ -139,16 +157,27 @@ _CONTROLS = {
 }
 
 
+def one_line(text: str) -> str:
+    """Pasted text as a one-line field holds it: the line breaks at either
+    end dropped, and every one inside it, every tab and every other control
+    character a space, so what reaches a field is all printable and nothing
+    in it can act as ⏎ or ``esc``."""
+    return "".join(ch if ch.isprintable() else " " for ch in text.strip("\r\n"))
+
+
 def event_of(ks) -> Event | None:
     """One blessed keystroke as an event, or ``None`` for one nobody wants.
 
     Pure on the keystroke, so it is tested without a terminal. A mouse report
     becomes a Tap or a Scroll or nothing; it is never handed on as a key,
-    whatever blessed calls it.
+    whatever blessed calls it. A bracketed paste is a :class:`Paste`, whole.
     """
     if not ks:
         return None
     name = ks.name or ""
+    if name == "BRACKETED_PASTE":
+        text = one_line(ks.text or "")
+        return Paste(text) if text else None
     if name.startswith("MOUSE_"):
         x, y = ks.mouse_xy
         if name == "MOUSE_LEFT":
@@ -206,6 +235,12 @@ class Job:
     #: draws no spinner, so it neither wakes the loop to animate one nor
     #: answers ``x``, which is for stopping what spends data.
     quiet: bool = False
+    #: A yt-dlp fetch — a search, a probe, a feed read — whose child is
+    #: handed over through :func:`run_child`: the only kind ``x`` stops.
+    #: Asking zwana or Android's scheduler spends nothing and holds no child
+    #: to kill; cancelling one only threw its answer away, and left the fetch
+    #: beside ``x stop`` spending.
+    fetch: bool = False
     result: object = None
     error: BaseException | None = None
     cancelled: bool = False
@@ -289,7 +324,8 @@ ESC_DELAY = 0.05
 
 class Session:
     """The terminal, owned: entered with ``with``, restored on the way out,
-    on Ctrl-Z and on any exception."""
+    on Ctrl-Z and on any exception — a hangup and SIGTERM included, which
+    leave by the same road as an exception (:meth:`read`)."""
 
     def __init__(self) -> None:
         import blessed
@@ -301,6 +337,7 @@ class Session:
         os.set_blocking(self._wake_w, False)
         self._resized = False
         self._suspend = False
+        self._ended = 0
         self._stack: contextlib.ExitStack | None = None
         self._old: dict[int, object] = {}
         self.size = (self.term.width, self.term.height)
@@ -328,6 +365,10 @@ class Session:
             # Clicks only: Termux sends a drag as wheel events whatever the
             # mode, and motion reports would be bytes nobody reads.
             stack.enter_context(self.term.mouse_enabled(clicks=True))
+            # A paste arrives whole (:class:`Paste`) rather than typed, its
+            # line breaks a ⏎ each. Asked like the mouse modes, and a
+            # terminal that does not have it keeps typing pastes as before.
+            stack.enter_context(self.term.bracketed_paste())
         except BaseException:
             stack.close()
             raise
@@ -338,8 +379,11 @@ class Session:
     def _leave(self) -> None:
         if self._stack is not None:
             stack, self._stack = self._stack, None
-            stack.close()
-            self._flush()
+            # A terminal that hung up has nothing left to restore, and saying
+            # so would only bury why the app is leaving.
+            with contextlib.suppress(OSError, termios.error):
+                stack.close()
+                self._flush()
 
     def __enter__(self) -> Session:
         self._enter()
@@ -347,6 +391,8 @@ class Session:
             (signal.SIGWINCH, self._on_winch),
             (signal.SIGTSTP, self._on_tstp),
             (signal.SIGCONT, self._on_cont),
+            (signal.SIGHUP, self._on_end),
+            (signal.SIGTERM, self._on_end),
         ):
             self._old[sig] = signal.signal(sig, handler)
         return self
@@ -378,6 +424,14 @@ class Session:
         self._resized = True
         self.wake()
 
+    def _on_end(self, signum: int, *_: object) -> None:
+        """The session closed (SIGHUP) or the app was told to end (SIGTERM).
+        Left to its default, either killed the app where it stood, and the
+        fetches it had started — in sessions of their own, so hearing
+        neither — went on spending with nobody to read them."""
+        self._ended = signum
+        self.wake()
+
     def _do_suspend(self) -> None:
         self._suspend = False
         self._leave()
@@ -407,6 +461,12 @@ class Session:
         deadline = None if timeout is None else time.monotonic() + timeout
         # nomut: start — checked on a pty, where a terminal answers it.
         while True:
+            if self._ended:
+                # Out through every ``finally`` on the way, as an exception
+                # would: the app's stops its fetches, this one restores the
+                # terminal. Not KeyboardInterrupt, which prints the receipts
+                # to a terminal that may be gone.
+                raise SystemExit(128 + self._ended)
             for job in jobs:
                 if job.finished:
                     return Done(job)

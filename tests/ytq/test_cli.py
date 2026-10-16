@@ -157,6 +157,20 @@ def test_the_receipts_are_printed_after_the_screen_is_gone(monkeypatch, capsys):
     assert capsys.readouterr().out.splitlines() == ["queued one", "queued two"]
 
 
+def test_the_words_are_one_search_wherever_a_flag_falls(monkeypatch):
+    """``nibbles ytsearch:crust --now of rust`` reaches here as words split
+    by a flag; they are still one search, in the order typed."""
+    seen = {}
+    monkeypatch.setattr(nibbles, "run",
+                        lambda start, first, preloaded, now, dest:
+                        seen.update(first=first, now=now, dest=dest) or [])
+    monkeypatch.setattr(ytq.sys.stdout, "isatty", lambda: True, raising=False)
+    assert ytq.main(["crust", "--now", "of", "rust"]) == 0
+    assert (seen["first"], seen["now"]) == ("crust of rust", True)
+    assert ytq.main(["crust", "--dest", "~/movies", "of", "rust"]) == 0
+    assert seen["first"] == "crust of rust" and seen["dest"].endswith("movies")
+
+
 def test_a_dest_given_once_is_a_directory_and_not_a_kind(monkeypatch):
     seen = {}
 

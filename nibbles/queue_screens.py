@@ -1429,6 +1429,12 @@ class FieldSheet(Sheet):
             self.focus = True
         return True
 
+    def paste(self, app, text: str) -> None:
+        """A paste (``tui.Paste``): what the field takes of it, typed in
+        whole. Never a submit — Set or ⏎ is."""
+        self.value += "".join(ch for ch in text if self.accepts(ch))
+        self.focus = True
+
     def accepts(self, ch: str) -> bool:
         return True
 

@@ -71,6 +71,34 @@ def test_keys_have_one_short_spelling():
     assert tui.event_of(FakeKey("q")) == tui.Key("q")
 
 
+def test_a_paste_is_one_event_and_never_a_key():
+    """What blessed hands over for a bracketed paste — built the way blessed
+    builds it — is one :class:`tui.Paste`, its line breaks spaces: never
+    a ⏎ or a letter that acts."""
+    from blessed.dec_modes import DecPrivateMode
+    from blessed.keyboard import RE_PATTERN_BRACKETED_PASTE, Keystroke
+
+    sent = "\x1b[200~crust of rust\rsubtyping\r\x1b[201~"
+    ks = Keystroke(ucs=sent, mode=DecPrivateMode.BRACKETED_PASTE,
+                   match=RE_PATTERN_BRACKETED_PASTE.match(sent))
+    assert ks.name == "BRACKETED_PASTE"
+    assert tui.event_of(ks) == tui.Paste("crust of rust subtyping")
+    empty = "\x1b[200~\r\n\x1b[201~"
+    ks = Keystroke(ucs=empty, mode=DecPrivateMode.BRACKETED_PASTE,
+                   match=RE_PATTERN_BRACKETED_PASTE.match(empty))
+    assert tui.event_of(ks) is None
+
+
+@given(st.text())
+def test_a_paste_reaches_a_field_as_one_printable_line(text):
+    """Every character a field can show is kept, in order; everything else —
+    a line break, a tab, an escape — is a space."""
+    line = tui.one_line(text)
+    assert line.isprintable()
+    kept = [ch for ch in text.strip("\r\n") if ch.isprintable() and ch != " "]
+    assert [ch for ch in line if ch != " "] == kept
+
+
 # --------------------------------------------------------------------------- #
 # The guards
 # --------------------------------------------------------------------------- #

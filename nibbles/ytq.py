@@ -378,6 +378,15 @@ def yt_dlp_takes(text: str, timeout: int = 30) -> bool | None:
     return {0: True, 1: False}.get(done.returncode)
 
 
+#: A word to the eye: letters, lower case after the first, hyphen-joined.
+#: YouTube's extractor takes any eleven of ``[A-Za-z0-9_-]`` as a video id —
+#: ``programming``, ``documentary`` — and a probe of one spent data on a
+#: word, where a mistyped word is refused for nothing. A real id is random,
+#: and shaped like this about once in ten thousand; that one still opens as
+#: ``youtu.be/<id>``.
+_WORDLIKE = re.compile(r"[A-Za-z][a-z]*(?:-[a-z]+)*")
+
+
 def read_input(text: str) -> tuple[str, str] | None:
     """What yt-dlp would make of *text* on its command line, as ``nibbles
     <text>`` takes it: ``("url", link)``, ``("search", words)``, or ``None``
@@ -385,7 +394,8 @@ def read_input(text: str) -> tuple[str, str] | None:
 
     A link (with or without its scheme, which is added the way yt-dlp adds
     it), ``ytsearch…:words`` (the app's own search), or anything one of
-    yt-dlp's extractors takes — a bare video id, for one — asked of yt-dlp.
+    yt-dlp's extractors takes — a bare video id, for one — asked of yt-dlp,
+    unless it is shaped like a word (:data:`_WORDLIKE`).
     """
     text = text.strip()
     if not text:
@@ -398,7 +408,7 @@ def read_input(text: str) -> tuple[str, str] | None:
         return "url", text
     if _NO_SCHEME.match(text) and " " not in text:
         return "url", f"https://{text}"
-    if " " not in text and yt_dlp_takes(text):
+    if " " not in text and not _WORDLIKE.fullmatch(text) and yt_dlp_takes(text):
         return "url", text
     return None
 
@@ -2803,7 +2813,9 @@ def main(argv: list[str] | None = None) -> int:
         help="use a saved 'yt-dlp -J' dump or search instead of asking again; "
         "costs no data",
     )
-    args = parser.parse_args(argv)
+    # Intermixed: the words are one list wherever a flag falls among them
+    # (``ytsearch:crust --now of rust``), in the order they were typed.
+    args = parser.parse_intermixed_args(argv)
     first = " ".join(args.terms).strip()
 
     if args.subs and args.wl:

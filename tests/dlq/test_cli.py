@@ -15,15 +15,16 @@ module and its own flags, with the dispatcher only the door.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from types import SimpleNamespace
 
 import pytest
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from _pty import ZWANA
+from _pty import ZWANA, make_root
 
 MiB = 1024**2
 
@@ -1015,6 +1016,208 @@ def test_a_word_that_is_no_command_is_refused_and_spends_nothing(dlq, monkeypatc
     assert dlq.app.main(["stauts"]) == 2
     assert went == []
     assert "nibbles search stauts" in capsys.readouterr().err
+
+
+def test_a_word_shaped_like_a_video_id_is_refused_and_spends_nothing(dlq, monkeypatch):
+    """YouTube's extractor takes any eleven ``[A-Za-z0-9_-]`` as an id, so
+    yt-dlp says yes to ``programming``: a word is still refused, and only
+    something shaped like an id is handed on to be probed."""
+    went = _routes(dlq, monkeypatch, takes=True)
+    for word in ("programming", "documentary", "lo-fi-beats", "Photography"):
+        went.clear()
+        assert dlq.app.main([word]) == 2, word
+        assert went == [], (word, went)
+    assert dlq.app.main(["dQw4w9WgXcQ"]) == 0
+    assert went == [("ytq", ["--link", "dQw4w9WgXcQ"])]
+
+
+def test_yt_dlps_own_word_for_a_list_is_the_fields_and_never_a_probe(dlq, monkeypatch):
+    """``:ytsubs`` and ``:ytwatchlater`` are taken by yt-dlp, and the field
+    takes them for the Feed and Later tabs: handed on as the field has them,
+    never marked as a link for the video sheet to probe."""
+    went = _routes(dlq, monkeypatch, takes=True)
+    for word in (":ytsubs", ":ytwatchlater"):
+        went.clear()
+        assert dlq.app.main([word]) == 0
+        assert went == [("ytq", [word])], word
+
+
+def test_now_and_list_are_a_videos_flags_wherever_they_stand(dlq, monkeypatch):
+    """At the door ``--now`` and ``--list`` are the video's, as the usage
+    says, so the order they are typed in changes nothing; a bare ``--list``
+    alone is the queue's listing (in the table above)."""
+    went = _routes(dlq, monkeypatch, takes=True)
+    for flag in ("--now", "--list"):
+        went.clear()
+        assert dlq.app.main([flag, "dQw4w9WgXcQ"]) == 0
+        assert went == [("ytq", ["--link", "dQw4w9WgXcQ", flag])]
+        for link in ("vimeo.com/76979871", "https://vimeo.com/76979871"):
+            went.clear()
+            assert dlq.app.main([flag, link]) == 0
+            assert dlq.app.main([link, flag]) == 0
+            assert went[0] == went[1], went
+            assert went[0][0] == "ytq" and flag in went[0][1]
+
+
+@pytest.mark.parametrize("flag, value", [
+    ("--dest", "/sdcard/Movies"),
+    ("--dest", "videos.old/"),
+    ("--name", "a.iso"),
+    ("--number", "5"),
+    ("--sha256", "ab12"),
+    ("--expect-bytes", "1000"),
+])
+@pytest.mark.parametrize("url", ["https://x.example/thing",
+                                 "https://www.youtube.com/watch?v=dQw4w9WgXcQ"])
+def test_a_flags_value_is_never_taken_for_the_link(dlq, monkeypatch, flag, value, url):
+    """``nibbles --dest DIR URL`` (the docs' own example) goes where
+    ``nibbles URL --dest DIR`` does, with the same words, in any order that
+    keeps the value after its flag — and the value is never asked of yt-dlp
+    or of a server as if it were the link."""
+    import itertools
+
+    went = _routes(dlq, monkeypatch, kind="file")
+    asked = []
+    monkeypatch.setattr(dlq.queuer, "kind_of",
+                        lambda link, timeout=0: asked.append(link) or "file")
+    monkeypatch.setattr(dlq.ytq, "yt_dlp_takes",
+                        lambda text, timeout=0: asked.append(text) or False)
+    for extra in ([], [["--now"]]):
+        routes = []
+        for order in itertools.permutations([[url], [flag, value], *extra]):
+            went.clear()
+            argv = [word for group in order for word in group]
+            assert dlq.app.main(argv) == 0, argv
+            assert len(went) == 1, (argv, went)
+            where, handed = went[0]
+            assert handed[0] == url, (argv, handed)
+            routes.append((where, sorted(handed)))
+        assert all(route == routes[0] for route in routes), routes
+    assert not any(value in text for text in asked), asked
+
+
+@settings(max_examples=40)
+@given(words=st.lists(st.from_regex(r"[a-z]{1,8}", fullmatch=True), min_size=1, max_size=5),
+       now=st.none() | st.integers(min_value=1, max_value=5))
+def test_a_search_typed_unquoted_is_searched_in_the_order_typed(dlq, monkeypatch, words, now):
+    """``nibbles ytsearch:crust of rust`` is three words to the shell; the
+    field is handed them in that order, with ``--now`` wherever it fell."""
+    seen = []
+    monkeypatch.setattr(dlq.app, "run",
+                        lambda start, first, preloaded, now, dest: seen.append((first, now))
+                        or [])
+    monkeypatch.setattr(dlq.app.sys.stdout, "isatty", lambda: True)
+    argv = [f"ytsearch:{words[0]}", *words[1:]]
+    if now is not None:
+        argv.insert(min(now, len(argv)), "--now")
+    assert dlq.app.main(argv) == 0
+    assert seen[-1] == (" ".join(words), now is not None)
+
+
+@pytest.mark.parametrize("path", ["/Документ.pdf", "/文件.iso", "/emoji-😀.bin",
+                                  "/a%20b.bin", "/q.bin?name=café#part"])
+def test_a_link_that_is_not_ascii_is_asked_and_queued_in_one_spelling(
+    dlq, serving, monkeypatch, capsys, path
+):
+    """A file name in Cyrillic was a traceback from deep in http.client. The
+    door hands on one spelling, escaped: the server is asked for the same
+    path, and the item names its source in ASCII."""
+    import urllib.parse
+
+    serving.payload = b"x" * 1000
+    url = serving.url.rsplit("/", 1)[0] + path
+    monkeypatch.setattr(dlq.ytq, "SHEBANG", f"#!{sys.executable}")
+    # Asked for its headers (no flag says what it is) and queued; then a
+    # file's own flag, which asks the probe alone.
+    assert dlq.app.main([url]) == 0
+    assert len(list((dlq.root / "queue").glob("*.py"))) == 1
+    assert dlq.app.main([url, "--dry-run"]) == 0
+    printed = capsys.readouterr().out
+    source = next(line for line in printed.splitlines() if line.startswith("# SOURCE:"))
+    assert source.isascii(), source
+    sent = serving.state_of_the_world["head"]
+    assert sent and all(p.isascii() for p in sent), sent
+    expected = urllib.parse.urlsplit(url)
+    for p in sent:
+        asked = urllib.parse.urlsplit(p)
+        assert urllib.parse.unquote(asked.path) == urllib.parse.unquote(expected.path)
+
+
+def test_a_link_without_its_scheme_has_one_whatever_its_flags_say(dlq, monkeypatch):
+    """``www.`` is a link to the eye and to yt-dlp; handed to the file queue
+    by its own flags it still goes on with its scheme."""
+    went = _routes(dlq, monkeypatch, kind="file")
+    assert dlq.app.main(["www.example.com/x.iso", "--name", "x.iso"]) == 0
+    assert went == [("file", ["https://www.example.com/x.iso", "--name", "x.iso"])]
+    went.clear()
+    assert dlq.app.main(["youtu.be/dQw4w9WgXcQ", "--now"]) == 0
+    assert went == [("ytq", ["https://youtu.be/dQw4w9WgXcQ", "--now"])]
+
+
+_LINK_TEXT = st.text(
+    st.characters(blacklist_categories=("Cs", "Cc", "Zs", "Zl", "Zp"),
+                  blacklist_characters="%?#\\"),
+    min_size=1,
+)
+
+
+@given(path=_LINK_TEXT, query=_LINK_TEXT)
+def test_one_spelling_of_a_link_is_ascii_and_means_what_was_typed(dlq, path, query):
+    import urllib.parse
+
+    url = f"https://x.example/{path}?{query}"
+    normal = dlq.queuer.normal_url(url)
+    assert normal.isascii()
+    assert dlq.queuer.normal_url(normal) == normal
+    typed, spelled = urllib.parse.urlsplit(url), urllib.parse.urlsplit(normal)
+    assert urllib.parse.unquote(spelled.path) == typed.path
+    assert urllib.parse.unquote(spelled.query) == typed.query
+    assert spelled.netloc == typed.netloc
+
+
+@given(text=st.text(st.characters(blacklist_categories=("Cs",)), max_size=40))
+def test_one_spelling_of_a_link_is_its_own_spelling(dlq, text):
+    """Idempotent whatever it is handed, escapes included."""
+    once = dlq.queuer.normal_url(f"https://x.example/{text}")
+    assert dlq.queuer.normal_url(once) == once
+
+
+def test_the_words_that_print_need_none_of_the_screens(tmp_path):
+    """A stale bewitch checkout — one that predates what ``tui`` imports — is
+    the app's problem, and the app's alone: every word that prints, the bug
+    report among them, goes through the door without the screens' modules,
+    so it answers rather than dying in an import."""
+    import subprocess
+
+    from _pty import ZWANA
+
+    root = make_root(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    stale = tmp_path / "stale"
+    (stale / "bewitch").mkdir(parents=True)
+    (stale / "bewitch" / "__init__.py").write_text("")
+    program = (
+        "import sys, nibbles\n"
+        "for verb in sys.argv[1:]:\n"
+        "    try:\n"
+        "        nibbles.main([verb])\n"
+        "    except SystemExit:\n"
+        "        pass\n"
+        "screens = ('nibbles.tui', 'nibbles.widgets', 'nibbles.shell', 'bewitch', 'blessed')\n"
+        "print('LOADED', [m for m in screens if m in sys.modules], file=sys.stderr)\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", program,
+         "help", "status", "settings", "names", "logs", "list", "dump"],
+        cwd=root, capture_output=True, text=True, timeout=120,
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home),
+             "EXPIRE_HOME": str(root), "ZWANA_HOME": str(ZWANA),
+             "BEWITCH_HOME": str(stale), "COLUMNS": "40", "TERM": "dumb"},
+    )
+    said = done.stdout + done.stderr
+    assert "Traceback" not in said, said
+    assert "LOADED []" in done.stderr, done.stderr
 
 
 def test_a_bare_nibbles_only_ever_opens_the_app(dlq, monkeypatch, capsys):

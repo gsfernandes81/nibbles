@@ -164,7 +164,8 @@ class YouTube:
         job = self.probing.get(url)
         if job is not None and not job.finished and not job.cancelled:
             return job
-        job = tui.Job(lambda u=url: ytq.probe(u), "asking YouTube for formats", key=url)
+        job = tui.Job(lambda u=url: ytq.probe(u), "asking YouTube for formats", key=url,
+                      fetch=True)
         self.probing[url] = job
         self.app.start(job, ProbeOwner(self, url))
         return job
@@ -320,7 +321,8 @@ class SearchTab(Screen):
         if self.job is not None and not self.job.finished:
             self.job.cancel()
         self.job = app.start(
-            tui.Job(lambda q=query: ytq.search(q), f"searching for {query}", key=query), self
+            tui.Job(lambda q=query: ytq.search(q), f"searching for {query}", key=query,
+                    fetch=True), self
         )
 
     def shown(self, app) -> None:
@@ -438,6 +440,13 @@ class SearchTab(Screen):
         else:
             view.view(event.dy)
 
+    def paste(self, app, text: str) -> None:
+        """A paste (``tui.Paste``) goes into the field, focused, and does no
+        more: it never searches, whatever line breaks it held — ⏎ or Go
+        does that."""
+        self.value += text
+        self.focus = True
+
     def key(self, app, key: str) -> bool:
         yt = app.yt
         if self.focused(app):
@@ -550,7 +559,7 @@ class FeedTab(Screen):
         count = yt.want[self.key_]
         self.job = app.start(
             tui.Job(lambda c=count, f=self.feed: ytq.read_feed(f, c),
-                    f"reading {self.feed.name}", key=(count, detail, deeper)),
+                    f"reading {self.feed.name}", key=(count, detail, deeper), fetch=True),
             self,
         )
 

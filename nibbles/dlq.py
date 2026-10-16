@@ -161,6 +161,33 @@ def kind_of(url: str, timeout: int = TIMEOUT) -> str:
     return "page" if kind in PAGE_TYPES else "file"
 
 
+#: What :func:`normal_url` leaves as it is: the characters a URL is built
+#: of, and ``%``, so an escape already there stays one.
+_URL_SAFE = "/:?#[]@!$&'()*+,;=%~"
+
+
+def normal_url(url: str) -> str:
+    """A link as ``nibbles <url>`` hands it on, so the headers asked, the
+    item written and the duplicate check all see one spelling of it.
+
+    Its scheme added (``https://``) when it was typed without one, the way
+    yt-dlp adds it; and whatever is not ASCII in its path, query and fragment
+    percent-encoded, which is what a server is sent — http.client will not
+    send it as typed, and a Cyrillic file name was a traceback. Idempotent:
+    an escape already there is kept. The host is left as it is, because
+    the resolver and http.client IDNA-encode a host themselves.
+    """
+    text = url.strip()
+    if "://" not in text:
+        text = f"https://{text}"
+    parts = urllib.parse.urlsplit(text)
+    return urllib.parse.urlunsplit((
+        parts.scheme, parts.netloc,
+        *(urllib.parse.quote(part, safe=_URL_SAFE)
+          for part in (parts.path, parts.query, parts.fragment)),
+    ))
+
+
 def name_from_url(url: str) -> str:
     """A filesystem-safe file name taken from the URL's last path segment."""
     path = urllib.parse.unquote(urllib.parse.urlsplit(url).path)

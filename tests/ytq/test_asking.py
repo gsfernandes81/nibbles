@@ -545,6 +545,26 @@ def test_what_yt_dlp_would_not_take_is_not(monkeypatch):
     assert ytq.read_input("dQw4w9WgXcQ") is None
 
 
+@given(text=st.from_regex(r"[A-Za-z][a-z]{0,10}(-[a-z]{1,11}){0,3}", fullmatch=True))
+def test_a_word_is_never_asked_of_yt_dlp(text):
+    """``programming`` is eleven of YouTube's id characters, and yt-dlp would
+    take it as one: a word is refused before yt-dlp is asked, so typing one
+    never spends a probe."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ytq, "yt_dlp_takes", lambda text, timeout=30: pytest.fail(text))
+        assert ytq.read_input(text) is None
+
+
+@given(ident=st.from_regex(r"[A-Za-z0-9_-]{11}", fullmatch=True)
+       .filter(lambda text: re.search(r"[0-9_]|.[A-Z]|^-|-$|--", text)))
+def test_what_is_shaped_like_an_id_is_still_asked(ident):
+    """A digit, an underscore, a capital past the first letter, a stray
+    hyphen: not a word, so yt-dlp is asked, and a yes is a link."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ytq, "yt_dlp_takes", lambda text, timeout=30: True)
+        assert ytq.read_input(ident) == ("url", ident)
+
+
 def test_yt_dlp_itself_is_asked_offline(monkeypatch, tmp_path):
     """Against a stand-in ``yt_dlp`` whose one extractor takes eleven-letter
     ids, and whose catch-all takes everything: the catch-all is not asked."""
