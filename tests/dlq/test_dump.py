@@ -93,6 +93,26 @@ def test_it_finishes_on_an_item_that_is_not_a_text_file(dlq, capsys, whole):
     assert "20-holiday.py" in said
 
 
+def test_an_item_that_is_not_text_never_hides_a_failed_one_after_it(dlq, capsys):
+    """Queued rows come before failed ones, and the contract's own stray —
+    ``20-holiday.png`` — is a queued row. Its head not being text has to end
+    its own head and not the section, or every failed item after it is left
+    out of the paste that was made for them."""
+    (dlq.root / "queue" / "20-holiday.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+    )
+    dlq.item("30-broken.py", where="failed", body="sys.path.insert(0, '/the/evidence')\n")
+    said, _ = dumped(dlq, capsys)
+    lines = said.splitlines()
+    start = lines.index("== items")
+    end = next(at for at in range(start + 1, len(lines)) if lines[at].startswith("== "))
+    items = "\n".join(lines[start:end])
+    assert "20-holiday.png" in items
+    assert "30-broken.py" in items
+    assert "/the/evidence" in items
+    assert items.index("20-holiday.png") < items.index("30-broken.py")
+
+
 def test_it_finishes_with_a_sibling_checkout_missing(dlq, capsys, monkeypatch, whole):
     """The runner imports ``quota_widget`` from the zwana-quota checkout, and a
     dump written because that checkout is missing is the one that must arrive.
@@ -105,6 +125,17 @@ def test_it_finishes_with_a_sibling_checkout_missing(dlq, capsys, monkeypatch, w
     said, sections = dumped(dlq, capsys)
     assert sections == whole
     assert "unreadable" in said
+
+
+def test_it_says_where_the_nightly_job_looks_when_that_is_not_here(dlq, capsys):
+    """The suite's own arrangement, ZWANA_HOME and nothing beside the root, is
+    the one the job cannot see; the dump is where both answers are side by
+    side."""
+    job = dlq.sched._zwana_root(job=True)
+    assert job != dlq.sched._zwana_root()
+    said, _ = dumped(dlq, capsys)
+    assert str(dlq.sched._zwana_root()) in said
+    assert str(job) in said
 
 
 def test_it_finishes_with_no_logs_directory(dlq, capsys, whole):

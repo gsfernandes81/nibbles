@@ -22,6 +22,8 @@ import os
 import time
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 MiB = 1024**2
 
@@ -301,6 +303,36 @@ def test_a_name_that_matches_nothing_or_too_much_resolves_to_nothing(dlq, capsys
     assert dlq.sched.resolve("10-talk")["name"] == "10-talk.py"
     said = capsys.readouterr().err
     assert "10-talk.py" in said and "20-talk-two.py" in said
+
+
+@given(
+    title=st.text(
+        alphabet=st.characters(categories=["Lu", "Ll", "Lt", "Lo"]), min_size=1, max_size=12
+    )
+)
+def test_a_name_that_is_exactly_an_items_is_never_ambiguous(dlq, title):
+    """Whatever else differs from it only in case. Names are titles with their
+    case kept and, past the ninth, all numbered 99 — and the screens hand
+    ``nibbles now`` the exact name, so a match without case made Download now
+    start nothing at all. What is shown, the stem, is exact too."""
+    variants = (title, title.upper(), title.lower(), title.title(), title.swapcase())
+    names = sorted({f"99-{variant}.py" for variant in variants})
+    for name in names:
+        assert dlq.sched.match(name, names) == [name]
+        assert dlq.sched.match(name[: -len(".py")], names) == [name]
+
+
+def test_download_now_names_the_one_item_whatever_differs_from_it_in_case(
+    dlq, capsys
+):
+    """Through the real tree: a queued ``Intro`` and a finished ``INTRO``."""
+    dlq.item("99-Intro.py")
+    dlq.item("99-INTRO.py", where="done/2026-10-01")
+    for name in ("99-Intro.py", "99-INTRO.py"):
+        assert dlq.sched.resolve(name)["name"] == name
+    # Typed in neither case, it is still one of two, and said to be.
+    assert dlq.sched.resolve("99-intro.py") is None
+    assert "99-Intro.py" in capsys.readouterr().err
 
 
 def test_the_extension_is_dropped_where_it_distinguishes_nothing(dlq):

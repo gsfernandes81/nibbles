@@ -69,6 +69,31 @@ def root() -> Path:
     return Path.home() / "nibbles"
 
 
+def zwana_root(root: Path, *, job: bool = False) -> Path:
+    """Where the runner working out of *root* imports ``quota_widget`` from.
+
+    ``$ZWANA_HOME``, else a zwana-quota clone beside the root, else
+    ``~/zwana-quota``. This is the one resolution: the runner puts it on
+    ``sys.path``, and ``expire_sched`` asks it again so that ``nibbles status``
+    can name a missing checkout instead of letting that import traceback. Two
+    copies of it would agree only for as long as somebody kept them alike.
+
+    *job* answers as the nightly job will. The scheduler starts the launcher
+    in Termux's own environment, before any shell has run and without reading
+    any rc file, so a ``ZWANA_HOME`` exported in ``.bashrc`` is not there to be
+    honoured. A checkout that only that variable finds is one every shell
+    finds and the job never imports: the job then falls back to a manual
+    budget with nothing set, and spends nothing every night without saying so.
+    """
+    override = None if job else os.environ.get("ZWANA_HOME")
+    if override:
+        return Path(override).expanduser().resolve()
+    beside = root.parent / "zwana-quota"
+    if beside.is_dir():
+        return beside.resolve()
+    return Path.home() / "zwana-quota"
+
+
 def contract() -> str:
     """The item contract's text, from the wheel or from the checkout."""
     for path in (SHIPPED_CONTRACT, SOURCE / CONTRACT):
@@ -123,12 +148,42 @@ def ensure(where: Path | None = None) -> list[str]:
     wanted = launcher()
     try:
         current = runner.read_text(encoding="utf-8")
-    except OSError:
+    except FileNotFoundError:
         current = None
-    if current is None or (current != wanted and GENERATED in current.splitlines()[:2]):
-        runner.write_text(wanted, encoding="utf-8")
-        runner.chmod(0o700)
+    except (OSError, ValueError):
+        # There, and not text this module could have written: somebody's.
+        return said
+    # An empty file is ours too. It is what a write cut short leaves (the disk
+    # full, the process killed between truncating and writing), it holds
+    # nothing of anybody's, and left alone it is a job that fires an empty
+    # file every night.
+    ours = current is not None and (
+        not current.strip() or GENERATED in current.splitlines()[:2]
+    )
+    if current is None or (current != wanted and ours):
+        try:
+            _replace(runner, wanted)
+        except OSError as exc:
+            said.append(f"could not update {runner}: {exc.strerror or exc}")
     return said
+
+
+def _replace(path: Path, text: str) -> None:
+    """Write *path* whole or not at all.
+
+    Through a file beside it and a rename, because writing in place truncates
+    first: a write that fails half way leaves an empty launcher, and the one
+    before it — stale, but still ours and still a runner — is gone. This way a
+    failed write leaves the old file exactly as it was, and the next run of
+    ``nibbles`` tries again.
+    """
+    spare = path.with_name(f".{path.name}.new")
+    try:
+        spare.write_text(text, encoding="utf-8")
+        spare.chmod(0o700)
+        os.replace(spare, path)
+    finally:
+        spare.unlink(missing_ok=True)
 
 
 def child_env() -> dict[str, str]:

@@ -15,10 +15,15 @@ module and its own flags, with the dispatcher only the door.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from types import SimpleNamespace
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+
+from _pty import ZWANA
 
 MiB = 1024**2
 
@@ -294,8 +299,44 @@ def test_a_runner_the_scheduler_could_not_exec_is_reported_rather_than_fired(
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture
+def zwana_beside(dlq):
+    """zwana-quota where the nightly job finds it: beside the queue root.
+
+    The suite finds its checkout through ``ZWANA_HOME``, which is exactly the
+    arrangement the job cannot see — so a test that wants a job that works has
+    to lay out the phone's arrangement. Taken away afterwards, because the
+    root's parent outlives the test.
+    """
+    link = dlq.root.parent / "zwana-quota"
+    link.symlink_to(ZWANA, target_is_directory=True)
+    yield link
+    link.unlink()
+
+
+@pytest.fixture
+def scheduler(offline, monkeypatch):
+    """termux-job-scheduler, answering: every call it was asked, in order.
+
+    ``pending`` is what ``--pending`` prints; ``fail``, when set, is raised by
+    every call after it, which is the scheduler answering one question and
+    then not the next.
+    """
+    asked = SimpleNamespace(calls=[], pending="", fail=None)
+
+    def api(*args, timeout=30):
+        asked.calls.append(args)
+        if args[0] != "--pending" and asked.fail is not None:
+            raise asked.fail
+        out = asked.pending if args[0] == "--pending" else ""
+        return subprocess.CompletedProcess(["termux-job-scheduler", *args], 0, out, "")
+
+    monkeypatch.setattr(offline.sched, "api", api)
+    return asked
+
+
 def test_the_status_screen_prints_and_says_whether_anything_is_broken(
-    offline, capsys
+    offline, capsys, zwana_beside
 ):
     offline.item("10-thing.py")
     assert offline.sched.main(["status"]) == 0
@@ -313,6 +354,154 @@ def test_a_broken_checkout_stops_the_status_screen_rather_than_filling_it(
     said = capsys.readouterr().out
     assert "BROKEN" in said
     assert "DOWNLOAD QUEUE" not in said
+
+
+def test_arm_and_status_agree_about_a_checkout_only_this_shell_can_find(
+    offline, scheduler, capsys, request
+):
+    """The nightly job is not started from a shell, so it never has
+    ``ZWANA_HOME``: a checkout only that finds is one every screen here reads
+    figures through and the job never imports. Arming refuses and the status
+    screen says so — both by one function — until the checkout is where the
+    job looks."""
+    sched = offline.sched
+    # The suite's own arrangement: ZWANA_HOME, and nothing beside the root.
+    assert sched.job_problem()
+    worked, said = sched.do_arm()
+    assert not worked and said.strip()
+    assert not [call for call in scheduler.calls if "--script" in call]
+    assert sched.main(["status"]) == 1
+    assert "BROKEN" in capsys.readouterr().out
+
+    link = offline.root.parent / "zwana-quota"
+    link.symlink_to(ZWANA, target_is_directory=True)
+    request.addfinalizer(link.unlink)
+    assert sched.job_problem() is None
+    worked, said = sched.do_arm()
+    assert worked
+    assert [call for call in scheduler.calls if "--script" in call]
+    assert sched.main(["status"]) == 0
+
+
+def test_a_manual_budget_needs_no_checkout_the_job_can_see(offline, scheduler):
+    """Nothing is read through zwana-quota, so where it is cannot matter."""
+    offline.config({"budget": "manual", "allowance_mb": 1000})
+    assert offline.sched.job_problem() is None
+    assert offline.sched.do_arm()[0]
+
+
+@given(
+    body=st.one_of(
+        st.sampled_from([b"", b"#!", b"#!   \n", b"#!\nimport x\n", b"\n#!/x\n", b"\xff\xfe"]),
+        st.binary(max_size=64),
+        st.binary(max_size=32).map(lambda tail: b"#!" + tail),
+    )
+)
+def test_whatever_the_launcher_holds_arm_and_status_answer_in_sentences(
+    offline, scheduler, body
+):
+    """An empty launcher is what a write cut short leaves, and a bare ``#!``
+    is one keystroke from a real one. Either is a launcher the scheduler
+    cannot exec, which is the question these exist to answer — not an
+    exception to raise from the screen that asked it."""
+    offline.sched.RUNNER.write_bytes(body)
+    problem = offline.sched.shebang_problem()
+    assert problem is None or problem.strip()
+    worked, said = offline.sched.do_arm()
+    assert isinstance(worked, bool) and said.strip()
+    assert offline.sched.main(["status"]) in (0, 1)
+
+
+def test_a_scheduler_that_stops_answering_part_way_is_a_sentence(
+    offline, scheduler, zwana_beside
+):
+    """``--pending`` answering is no promise that the next call does."""
+    for fault in (subprocess.TimeoutExpired("termux-job-scheduler", 30), OSError("gone")):
+        scheduler.fail = fault
+        for verb in (offline.sched.do_arm, offline.sched.do_cancel):
+            worked, said = verb()
+            assert not worked and said.strip()
+
+
+#: Other ids a substring "2400" also finds, and other runners job 2400 might
+#: start: an old root's, a throwaway one's, and a path with the digits in it.
+DECOY_IDS = [2400, 12400, 24000, 24001, 240, 1]
+ELSEWHERE = [
+    "/data/data/com.termux/files/home/dlq/expire_runner.py",
+    "/tmp/throwaway/expire_runner.py",
+    "/x/2400/sync.sh",
+]
+
+
+@given(
+    jobs=st.lists(
+        st.tuples(
+            st.sampled_from(DECOY_IDS),
+            st.integers(0, len(ELSEWHERE)),
+            st.sampled_from([900_000, 2_400_000, 86_400_000]),
+        ),
+        max_size=4,
+        unique_by=lambda job: job[0],
+    )
+)
+def test_the_job_is_armed_only_when_our_id_starts_this_roots_runner(
+    offline, scheduler, jobs
+):
+    """Whatever else is registered. A job left at ~/dlq after the move, or by
+    a throwaway root, fires faithfully every night onto a queue that is not
+    this one, and a screen calling that armed hides the one button that
+    fixes it."""
+    runners = [str(offline.sched.RUNNER), *ELSEWHERE]
+    scheduler.pending = "\n".join(
+        f"Pending Job {job}: {runners[which]}    (periodic: {ms}ms) (persisted)"
+        for job, which, ms in jobs
+    ) or "No jobs found"
+    ours = any(job == offline.sched.JOB_ID and which == 0 for job, which, _ in jobs)
+    assert offline.ui.armed(offline.sched.job_rows()) is ours
+
+
+def test_a_job_that_starts_another_roots_runner_is_armed_again_from_more(
+    offline, scheduler, monkeypatch
+):
+    """Not the confirm that stops it: Arm, which registers the id again at
+    this root's runner."""
+    scheduler.pending = (
+        f"Pending Job {offline.sched.JOB_ID}: {ELSEWHERE[0]}    (periodic: 900000ms)"
+    )
+
+    def stub():
+        return True, "job registered"
+
+    monkeypatch.setattr(offline.sched, "do_arm", stub)
+    app = offline.app.App(None, 4, size=(40, 24))
+    tab = app.tabs[4]
+    tab.job_rows = offline.sched.job_rows()
+    tab.act(app, ("job",))
+    assert not app.sheets
+    assert tab.arming is not None and tab.arming.work is stub
+
+
+@pytest.mark.parametrize("spelled", ["default", "Default", " default ", "DEFAULT\t", "", " "])
+def test_every_spelling_of_default_puts_a_destination_back_and_makes_nothing(
+    dlq, monkeypatch, tmp_path, spelled
+):
+    """As ``settings`` reads "default", and nothing left over: a capital or a
+    stray space typed on the phone was a folder made wherever nibbles had been
+    started, with every video delivered into it under a line saying it
+    worked."""
+    monkeypatch.chdir(tmp_path)
+    assert dlq.sched.set_dest("video", str(dlq.root / "films"))[0]
+    assert dlq.sched.main(["dest", "video", spelled]) == 0
+    assert "video_dir" not in dlq.runner.load_config()
+    assert dlq.runner.dests()["video"] == dlq.runner.default_dests()["video"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_destination_typed_with_spaces_round_it_is_that_destination(dlq):
+    films = dlq.root / "films"
+    worked, _ = dlq.sched.set_dest("video", f"  {films}\t")
+    assert worked
+    assert dlq.runner.dests()["video"] == films
 
 
 def test_the_listing_and_the_completions_show_the_same_downloads(dlq, capsys):

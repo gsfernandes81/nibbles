@@ -79,6 +79,7 @@ import sys
 import textwrap
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
 from nibbles import home, ytdl_item
@@ -2099,15 +2100,48 @@ class Running:
 # --------------------------------------------------------------------------- #
 
 
+def cols(text: str) -> int:
+    """The columns *text* takes in a terminal, which is not its ``len``.
+
+    A title keeps its CJK and its emoji, and Termux draws those two columns
+    wide, so a line measured in characters can be twice the screen. East Asian
+    Wide and Fullwidth are two; combining marks, format characters (ZWJ, the
+    variation selectors) and controls are none; everything else is one,
+    Ambiguous included (``…``, ``≤``), as Termux draws it. The same rule as
+    bewitch's ``char_width``, spelled with the standard library because the
+    printing paths and the runner's ``--status`` run where bewitch may not.
+    """
+    if text.isascii() and text.isprintable():
+        return len(text)
+    return sum(_char_cols(ch) for ch in text)
+
+
+def _char_cols(ch: str) -> int:
+    """The columns one character takes: see :func:`cols`."""
+    if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf", "Cc"):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
 def fit(text: str, width: int) -> str:
-    """*text* clipped to *width*, saying so when something was lost.
+    """*text* clipped to *width* columns, saying so when something was lost.
 
     Public because ``expire_sched`` lays out the same terminal and there is no
-    second answer to be had about what a clipped string looks like.
+    second answer to be had about what a clipped string looks like. Measured
+    in columns (:func:`cols`), and a wide character that would straddle the
+    edge is dropped rather than split.
     """
     if width <= 0:
         return ""
-    return text if len(text) <= width else text[: max(1, width - 1)] + "…"
+    if cols(text) <= width:
+        return text
+    room, used, kept = max(1, width - 1), 0, []
+    for ch in text:
+        used += _char_cols(ch)
+        if used > room:
+            break
+        kept.append(ch)
+    return "".join(kept) + "…"
 
 
 def wrapped(text: str, width: int) -> list[str]:

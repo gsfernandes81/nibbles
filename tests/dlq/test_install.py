@@ -11,6 +11,7 @@ somebody's own are never written.
 
 from __future__ import annotations
 
+import errno
 import os
 import subprocess
 import sys
@@ -88,6 +89,54 @@ def test_only_a_launcher_of_ours_is_ever_rewritten(home, tmp_path):
     launcher.write_text(theirs, encoding="utf-8")
     home.ensure(root)
     assert launcher.read_text(encoding="utf-8") == theirs
+
+
+def test_a_launcher_write_cut_short_leaves_the_old_one_and_is_tried_again(
+    home, tmp_path, monkeypatch
+):
+    """The disk filling up half way through an upgrade's rewrite. Written in
+    place, that was an empty launcher — not ours by its first line, so never
+    rewritten again, and a job firing an empty file every night after."""
+    root = tmp_path / "nibbles"
+    home.ensure(root)
+    launcher = root / home.LAUNCHER
+    stale = home.launcher().replace(str(home.SOURCE), "/where/the/package/was")
+    launcher.write_text(stale, encoding="utf-8")
+
+    write = Path.write_text
+
+    def full(self, data, *args, **kwargs):
+        write(self, "", *args, **kwargs)
+        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "write_text", full)
+        said = home.ensure(root)
+    assert said  # and it says so, rather than tracebacking every command
+    assert launcher.read_text(encoding="utf-8") == stale
+    assert sorted(path.name for path in root.iterdir()) == ["expire_runner.py", "queue"]
+
+    home.ensure(root)
+    assert launcher.read_text(encoding="utf-8") == home.launcher()
+    assert os.access(launcher, os.X_OK)
+
+
+def test_an_empty_launcher_is_ours_and_one_that_is_not_text_is_somebody_s(home, tmp_path):
+    """An empty file holds nothing of anybody's, and is what a cut-short write
+    leaves; a binary there is a runner somebody built, and is left alone
+    rather than read as text and raised over."""
+    root = tmp_path / "nibbles"
+    home.ensure(root)
+    launcher = root / home.LAUNCHER
+    for nothing in ("", "\n", "   \n"):
+        launcher.write_text(nothing, encoding="utf-8")
+        home.ensure(root)
+        assert launcher.read_text(encoding="utf-8") == home.launcher()
+
+    theirs = b"\x7fELF\x02\x01\x01\x00\xff\xfe"
+    launcher.write_bytes(theirs)
+    assert home.ensure(root) == []
+    assert launcher.read_bytes() == theirs
 
 
 def test_the_launcher_runs_the_runner_in_the_root_it_sits_in(home, dlq, tmp_path):

@@ -28,6 +28,9 @@ WIDTHS = [32, 40, 80]
 #: A long name, a long description and a long destination — the three cells a
 #: layout gives up room in, each one longer than any width tested.
 LONG = "a-really-quite-long-name-for-a-download-that-somebody-queued"
+#: A title as a name keeps it: CJK and full-width punctuation two columns each,
+#: an emoji, and a combining mark that takes none.
+WIDE_TITLE = "【公式】米津玄師 - さよーならまたいつか！ Kenshi Yonezu 🎵 café"
 
 
 def plain(pairs):
@@ -42,8 +45,14 @@ def fits(line: str, width: int) -> bool:
     wrapping a path is visibly a wrapped path, whereas a break inserted into
     one reads as a path with a space in it, and these are the lines somebody is
     about to retype.
+
+    Measured in columns, by the rule the app's own screens are drawn to
+    (bewitch's): a name keeps the CJK of its title, two columns each on a
+    phone, and a line counted in characters can be nearly twice the screen.
     """
-    return len(line) <= width or " " not in line.strip()
+    from bewitch.lipgloss._cells import string_width
+
+    return string_width(line) <= width or " " not in line.strip()
 
 
 def paint(text, code):
@@ -58,6 +67,7 @@ def stocked(dlq):
     dlq.item("30-failed.py", where="failed", desc="this one failed")
     dlq.item("40-done.py", where="done/2026-09-01", desc="this one finished")
     (dlq.root / "queue" / "50-broken.py").write_text("# nothing declared here\n")
+    dlq.item(f"60-{dlq.ytq.title_name(WIDE_TITLE)}.py", cap=48 * MiB, desc=WIDE_TITLE)
     work = dlq.root / "work" / f"10-{LONG}.py"
     work.mkdir(parents=True, exist_ok=True)
     (work / "part.bin").write_bytes(b"x" * 4096)
@@ -348,7 +358,36 @@ def test_wrapping_always_gives_back_at_least_one_line(dlq, text, width):
     # Long words are left whole on purpose: a break inserted into a path reads
     # as a path with a space in it, and these are lines someone retypes.
     for line in lines:
-        assert len(line) <= max(8, width) or " " not in line.strip()
+        assert dlq.ytq.cols(line) <= max(8, width) or " " not in line.strip()
+    # And nothing but space is lost at a break.
+    assert "".join("".join(lines).split()) == "".join(text.split())
+
+
+@given(width=st.integers(32, 120))
+def test_a_wide_name_is_laid_out_in_the_columns_it_takes(dlq, width):
+    """Measured in columns, a name in CJK lines its figures up with its
+    neighbours' and its row fits; measured in characters, its state sat
+    further right than theirs and the row ran off a phone."""
+    rows = stocked(dlq)
+    drawn = plain(dlq.sched.compose_list(rows, width, paint))
+    from bewitch.lipgloss._cells import string_width
+
+    def figures_at(name):
+        """The column *name*'s figures start at; ``None`` in the tight shape,
+        where they are on a line of their own."""
+        shown = dlq.sched._display_name(name)
+        line = next(line for line in drawn if line.startswith(f"  {shown[:6]}"))
+        rest = line[len(shown) + 2 :]
+        if not line.startswith(f"  {shown}") or not rest.strip():
+            return None
+        return string_width(line[: len(line) - len(rest.lstrip())])
+
+    # Two queued downloads with the same state, so the same figures column.
+    wide = next(row["name"] for row in rows if row["name"].startswith("60-"))
+    plain_name = next(row["name"] for row in rows if row["name"].startswith("20-"))
+    assert figures_at(wide) == figures_at(plain_name)
+    for line in drawn:
+        assert fits(line, width), line
 
 
 def test_a_bar_is_drawn_in_characters_a_phone_draws_one_column_wide(dlq):

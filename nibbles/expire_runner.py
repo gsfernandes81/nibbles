@@ -101,16 +101,10 @@ from nibbles import home
 #: ``expire_runner.py`` at the root, which names its own directory as
 #: ``EXPIRE_HOME`` first: the runner works out of the root it was armed at.
 HERE = home.root()
-# quota_widget lives in the zwana-quota checkout: $ZWANA_HOME, a clone beside
-# the queue root, or ~/zwana-quota. expire_sched._zwana_root predicts this same
-# resolution so `nibbles status` can say which checkout is missing instead of
-# letting this import traceback.
-_zwana = os.environ.get("ZWANA_HOME")
-_beside = HERE.parent / "zwana-quota"
-sys.path.insert(1, str(
-    Path(_zwana).expanduser().resolve() if _zwana
-    else (_beside.resolve() if _beside.is_dir() else Path.home() / "zwana-quota")
-))
+# quota_widget lives in the zwana-quota checkout, found by home.zwana_root: the
+# one resolution, which expire_sched asks too so `nibbles status` can say which
+# checkout is missing instead of letting this import traceback.
+sys.path.insert(1, str(home.zwana_root(HERE)))
 
 import contextlib  # noqa: E402
 import importlib.util  # noqa: E402

@@ -78,7 +78,6 @@ import re
 import shutil
 import subprocess
 import sys
-import textwrap
 import time
 from pathlib import Path
 
@@ -139,13 +138,23 @@ def api_problem() -> str | None:
     try:
         if api("--pending", timeout=20).returncode != 0:
             return "termux-job-scheduler returned an error"
-    except FileNotFoundError:
-        return "termux-job-scheduler not found - pkg install termux-api"
-    except subprocess.TimeoutExpired:
-        return "Termux:API did not respond - is the Termux:API app installed?"
-    except OSError as exc:
-        return f"termux-job-scheduler failed: {exc}"
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return _api_failure(exc)
     return None
+
+
+def _api_failure(exc: Exception) -> str:
+    """The sentence for a scheduler call that never came back with an answer.
+
+    One spelling for every call: the scheduler answering ``--pending`` is no
+    promise that it answers the call after it, and a timeout there is the
+    same fault as a timeout here.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return "termux-job-scheduler not found - pkg install termux-api"
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "Termux:API did not respond - is the Termux:API app installed?"
+    return f"termux-job-scheduler failed: {exc}"
 
 
 def require_api() -> None:
@@ -174,10 +183,21 @@ def shebang_problem() -> str | None:
             f"there is no runner at {RUNNER}; set EXPIRE_HOME to the "
             f"checkout holding queue/README.md"
         )
-    first = RUNNER.read_text().splitlines()[0]
+    # Read as forgivingly as the scheduler reads it. An empty file, a bare
+    # ``#!`` and bytes that are not text are all launchers it cannot exec,
+    # which is this function's answer to give, not an exception to raise from
+    # the screens that ask it.
+    try:
+        lines = RUNNER.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return f"could not read {RUNNER}: {exc.strerror or exc}"
+    first = lines[0] if lines else ""
     if not first.startswith("#!"):
         return f"{RUNNER.name} has no shebang, so the scheduler cannot exec it"
-    interpreter = first[2:].strip().split()[0]
+    words = first[2:].split()
+    if not words:
+        return f"{RUNNER.name} names no interpreter, so the scheduler cannot exec it"
+    interpreter = words[0]
     if not Path(interpreter).exists():
         return (
             f"{RUNNER.name} starts with '{first}' but {interpreter} does "
@@ -201,12 +221,48 @@ def root_problem() -> str | None:
             f"{ROOT} is not a queue root: no queue/README.md in it. Check EXPIRE_HOME."
         )
     if _zwana_wanted() and not (_zwana_root() / "quota_widget.py").is_file():
+        # Not "or set ZWANA_HOME": that would mend this shell and nothing
+        # else, and the nightly job is not started from a shell (see
+        # :func:`_zwana_unseen`).
         return (
             f"no quota_widget.py in {_zwana_root()}, which the runner "
-            f"imports; clone zwana-quota beside the queue checkout or set "
-            f"ZWANA_HOME, or set {_me()} settings budget manual"
+            f"imports; clone zwana-quota at {_short(ROOT.parent / 'zwana-quota')}, "
+            f"or set {_me()} settings budget manual"
         )
     return None
+
+
+def job_problem() -> str | None:
+    """Why the nightly job would fire and not do what it was armed to do.
+
+    Both ways are invisible from a shell in which everything works: a launcher
+    the scheduler cannot exec (:func:`shebang_problem`), and a zwana-quota
+    checkout only this shell can find (:func:`_zwana_unseen`). ``arm`` asks
+    it before registering anything and ``status`` under its screen, so the
+    two cannot disagree about whether the job will work.
+    """
+    return shebang_problem() or _zwana_unseen()
+
+
+def _zwana_unseen() -> str | None:
+    """Why the job would not import the zwana-quota checkout this shell does.
+
+    The job is not started from a shell, so it never has ``ZWANA_HOME``
+    (:func:`home.zwana_root`). If that variable is the only thing that finds
+    the checkout, every screen here shows a zwana budget while the job falls
+    back to a manual one with no allowance, and nothing downloads, night after
+    night, with no notification.
+    """
+    if not _zwana_wanted():
+        return None
+    found, job = _zwana_root(), _zwana_root(job=True)
+    if found == job or (job / "quota_widget.py").is_file():
+        return None
+    return (
+        f"the nightly job is not started from a shell, so it never sees "
+        f"ZWANA_HOME and would not find zwana-quota at {_short(found)}; "
+        f"link it to {_short(job)}, or set {_me()} settings budget manual"
+    )
 
 
 def _zwana_wanted() -> bool:
@@ -224,23 +280,17 @@ def _zwana_wanted() -> bool:
         return True
 
 
-def _zwana_root() -> Path:
-    """Where the runner will look for ``quota_widget``.
+def _zwana_root(job: bool = False) -> Path:
+    """Where the runner will look for ``quota_widget``: :func:`home.zwana_root`.
 
-    Spelled from :data:`ROOT` rather than this file, because what imports it
-    is the runner started from ``ROOT/expire_runner.py`` — under ``EXPIRE_HOME`` that may not be this
-    checkout — and the answer has to be the one THAT copy gives: $ZWANA_HOME,
-    a clone beside the queue root, or ~/zwana-quota. expire_runner's own
-    resolution is the original; this predicts it for a message that can name
-    the missing checkout instead of surfacing as an import traceback.
+    Asked of :data:`ROOT` rather than this file, because what imports it is
+    the runner started from ``ROOT/expire_runner.py`` — under ``EXPIRE_HOME``
+    that may not be this checkout — and the answer has to be the one THAT copy
+    gives. It is the runner's own function, not a second spelling of it, so a
+    missing checkout is named rather than surfacing as an import traceback.
+    *job* asks it as the nightly job will be answered.
     """
-    override = os.environ.get("ZWANA_HOME")
-    if override:
-        return Path(override).expanduser().resolve()
-    beside = ROOT.parent / "zwana-quota"
-    if beside.is_dir():
-        return beside.resolve()
-    return Path.home() / "zwana-quota"
+    return home.zwana_root(ROOT, job=job)
 
 
 def do_arm() -> tuple[bool, str]:
@@ -257,31 +307,34 @@ def do_arm() -> tuple[bool, str]:
     scheduler itself says is passed through untouched — on the one machine this
     runs on it is the evidence, and paraphrasing it loses the reason.
     """
-    problem = api_problem() or root_problem() or shebang_problem()
+    problem = api_problem() or root_problem() or job_problem()
     if problem:
         return False, problem
     try:
         RUNNER.chmod(0o700)
     except OSError as exc:
         return False, f"could not make the runner executable: {exc}"
-    result = api(
-        "--script",
-        str(RUNNER),
-        "--job-id",
-        str(JOB_ID),
-        "--period-ms",
-        str(PERIOD_MS),
-        "--network",
-        "any",
-        "--battery-not-low",
-        "false",
-        "--storage-not-low",
-        "false",
-        "--charging",
-        "false",
-        "--persisted",
-        "true",
-    )
+    try:
+        result = api(
+            "--script",
+            str(RUNNER),
+            "--job-id",
+            str(JOB_ID),
+            "--period-ms",
+            str(PERIOD_MS),
+            "--network",
+            "any",
+            "--battery-not-low",
+            "false",
+            "--storage-not-low",
+            "false",
+            "--charging",
+            "false",
+            "--persisted",
+            "true",
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return False, _api_failure(exc)
     said = (result.stdout.strip() or result.stderr.strip()).strip()
     if result.returncode:
         return False, said or "termux-job-scheduler refused the job"
@@ -301,7 +354,10 @@ def do_cancel() -> tuple[bool, str]:
     problem = api_problem()
     if problem:
         return False, problem
-    result = api("--cancel", "--job-id", str(JOB_ID))
+    try:
+        result = api("--cancel", "--job-id", str(JOB_ID))
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return False, _api_failure(exc)
     said = (result.stdout.strip() or result.stderr.strip()).strip()
     if result.returncode:
         return False, said or "termux-job-scheduler refused to cancel it"
@@ -321,6 +377,30 @@ def cancel() -> None:
 #: unregister keys say, and a second spelling would put "arm it" on a screen
 #: whose own status line says it is armed — each of them right on its own.
 ARMED = "armed"
+
+#: One job in ``termux-job-scheduler --pending``, which termux-api prints as
+#: ``Pending Job ID: SCRIPT    DESCRIPTION``, one line each — the script
+#: path ending at the four spaces before the description, or at the line's end.
+_PENDING_JOB = re.compile(r"\bJob (\d+): (.*?)(?: {4}|\t|$)", re.MULTILINE)
+
+
+def armed_script(pending: str) -> str | None:
+    """The script job :data:`JOB_ID` starts, by *pending*; ``None`` if none.
+
+    Read off the job's own line, never found anywhere in the text: "2400" is
+    also job 12400, a forty-minute period (``periodic: 2400000ms``) and any
+    path with those digits in it, and none of them is our job.
+    """
+    for job in _PENDING_JOB.finditer(pending):
+        if int(job.group(1)) == JOB_ID:
+            return job.group(2)
+    return None
+
+
+def _same_file(script: str, runner: Path) -> bool:
+    """Whether the scheduler's *script* is *runner*, however either is spelled
+    (Android answers ``/data/user/0`` for ``/data/data``, a link for a path)."""
+    return script == str(runner) or os.path.realpath(script) == os.path.realpath(runner)
 
 
 def job_rows() -> list[tuple[str, str, str]]:
@@ -347,9 +427,19 @@ def job_rows() -> list[tuple[str, str, str]]:
         # that gets opened when something is already wrong.
         return [("job", f"termux-job-scheduler failed: {exc}", "1;31")]
 
-    if str(JOB_ID) in pending:
+    script = armed_script(pending)
+    if script is not None and _same_file(script, RUNNER):
         every = PERIOD_MS // 60_000
         return [("job", f"{ARMED}, fires every {every}m", "32")]
+    if script is not None:
+        # Our id, somebody else's runner: a root this phone used to be armed
+        # at (~/dlq before the move), or a throwaway EXPIRE_HOME. The job fires
+        # faithfully every night onto a queue that is not this one, so it is
+        # not armed — and saying so is what puts Arm back on the screen, which
+        # re-registers the id at this root's runner.
+        starts = _short(Path(script))
+        said = f"not armed here: job {JOB_ID} starts {starts} - {_me()} arm"
+        return [("job", said, "1;31")]
     if pending.strip():
         return [
             ("job", f"not armed - {_me()} arm", "1;31"),
@@ -377,7 +467,7 @@ def status() -> int:
             print(f"  {line}")
         return 1
 
-    problem = shebang_problem()
+    problem = job_problem()
     machinery = job_rows()
     when, what = _last_firing()
     if when or what:
@@ -726,13 +816,23 @@ def match(needle: str, names: list[str]) -> list[str]:
     Tiers rather than one pass, so that something which is exactly an item's
     name cannot be made ambiguous by another item merely containing it: an
     unlucky slug should never make a name un-typeable.
+
+    Exactly means case too, first. Names are titles with their case kept, and
+    past the ninth item they all number 99, so ``99-Intro.py`` and
+    ``99-INTRO.py`` sit side by side — and the screens hand ``nibbles now``
+    the exact name, which matching without case made ambiguous, so Download
+    now started nothing. A name typed in neither case still matches without
+    it, while that is unambiguous.
     """
-    wanted = needle.strip().lower()
+    exact = needle.strip()
+    wanted = exact.lower()
     if not wanted:
         return []
     numeric = wanted.isdigit()
     tiers = (
+        [name for name in names if name == exact],
         [name for name in names if name.lower() == wanted],
+        [name for name in names if Path(name).stem == exact],
         [name for name in names if Path(name).stem.lower() == wanted],
         [name for name in names if numeric and name.split("-", 1)[0] == wanted],
         [name for name in names if wanted in name.lower()],
@@ -891,6 +991,20 @@ def _display_name(name: str) -> str:
 #: One spelling of "clipped, and saying so", shared with the module that draws
 #: the other half of this terminal.
 _fit = ytq.fit
+#: And of how wide that terminal finds a string: columns, not characters. A
+#: name is a title with its CJK and emoji kept, two columns each on a phone,
+#: so a row laid out by ``len`` can be nearly twice the screen and wrap.
+_cols = ytq.cols
+
+
+def _pad(text: str, width: int) -> str:
+    """*text* with spaces after it to *width* columns: ``ljust``, by columns."""
+    return text + " " * (width - _cols(text))
+
+
+#: Where a line may break, and what becomes a space: textwrap's own ASCII
+#: whitespace, so a no-break space still holds its two words together.
+_BREAKS = re.compile(r"([\t\n\x0b\x0c\r ]+)")
 
 
 def _wrap(text: str, width: int, follow: str = "") -> list[str]:
@@ -905,14 +1019,39 @@ def _wrap(text: str, width: int, follow: str = "") -> list[str]:
     than being split. That is deliberate: the terminal wrapping a path is
     visibly a wrapped path, whereas a break this code inserts reads as a path
     with a space in it, and these are the lines someone is about to retype.
+
+    Measured in columns (:data:`_cols`), which is why this is not
+    ``textwrap``: it counts characters, and the live download's name is a
+    title. Otherwise it is textwrap's rule as this asked it: tabs expanded,
+    whitespace turned to spaces, the spaces at a break dropped, the
+    paragraph's own indent kept, *follow* in front of every later line, and
+    no break at a hyphen.
     """
-    return textwrap.wrap(
-        text,
-        max(8, width),
-        subsequent_indent=follow,
-        break_long_words=False,
-        break_on_hyphens=False,
-    ) or [""]
+    width = max(8, width)
+    chunks = [
+        " " * len(chunk) if _BREAKS.fullmatch(chunk) else chunk
+        for chunk in _BREAKS.split(text.expandtabs())
+        if chunk
+    ]
+    chunks.reverse()
+    lines: list[str] = []
+    while chunks:
+        indent = follow if lines else ""
+        room = width - _cols(indent)
+        if lines and not chunks[-1].strip():
+            chunks.pop()  # the spaces at a break start no line
+        line: list[str] = []
+        used = 0
+        while chunks and used + _cols(chunks[-1]) <= room:
+            used += _cols(chunks[-1])
+            line.append(chunks.pop())
+        if chunks and not line and _cols(chunks[-1]) > room:
+            line.append(chunks.pop())  # wider than any line: left whole
+        if line and not line[-1].strip():
+            line.pop()
+        if line:
+            lines.append(indent + "".join(line))
+    return lines or [""]
 
 
 #: Below this the description column goes. A phone in portrait is around 40
@@ -951,9 +1090,9 @@ def compose_list(rows: list[dict], width: int, paint) -> list[tuple[str, str]]:
         )
         for row in rows
     }
-    name_w = max((len(cell[0]) for cell in cells.values()), default=0)
-    state_w = max((len(cell[1]) for cell in cells.values()), default=0)
-    prog_w = max((len(cell[2]) for cell in cells.values()), default=0)
+    name_w = max((_cols(cell[0]) for cell in cells.values()), default=0)
+    state_w = max((_cols(cell[1]) for cell in cells.values()), default=0)
+    prog_w = max((_cols(cell[2]) for cell in cells.values()), default=0)
 
     one_line = 2 + name_w + 2 + state_w + 2 + prog_w
     tight = one_line > width
@@ -982,14 +1121,14 @@ def compose_list(rows: list[dict], width: int, paint) -> list[tuple[str, str]]:
                 if number:
                     out.append(("", ""))
                 figures = f"{state:>{state_w}}  "
-                figures += _fit(progress, max(0, width - 2 - len(figures)))
+                figures += _fit(progress, max(0, width - 2 - _cols(figures)))
                 titled = f"  {_fit(name, width - 2)}"
                 out.append((titled, titled))
                 out.append(
                     (f"  {figures}".rstrip(), f"  {paint(figures, tone)}".rstrip())
                 )
                 continue
-            head = f"  {name.ljust(name_w)}  "
+            head = f"  {_pad(name, name_w)}  "
             line = f"{head}{state:>{state_w}}  {progress}"
             painted = (
                 f"{head}{paint(state.rjust(state_w), tone)}  {paint(progress, tone)}"
@@ -1410,7 +1549,7 @@ def _labelled(
     longer than a phone screen, and never worth clipping.
     """
     pad = " " * max(1, 10 - len(label))
-    if len(label) + len(pad) + len(text) <= width:
+    if len(label) + len(pad) + _cols(text) <= width:
         return [(f"{label}{pad}{text}", f"{paint(label, '1')}{pad}{paint(text, hue)}")]
     out = [(label, paint(label, "1"))]
     for line in _wrap(text, width - 2):
@@ -1468,10 +1607,10 @@ def _queue_rows(facts: dict, width: int, paint) -> list[tuple[str, str]]:
             )
         )
 
-    name_w = max((len(cell[0]) for cell in cells), default=0)
-    state_w = max((len(cell[1]) for cell in cells), default=0)
-    prog_w = max((len(cell[2]) for cell in cells), default=0)
-    tries_w = max((len(cell[3]) for cell in cells), default=0)
+    name_w = max((_cols(cell[0]) for cell in cells), default=0)
+    state_w = max((_cols(cell[1]) for cell in cells), default=0)
+    prog_w = max((_cols(cell[2]) for cell in cells), default=0)
+    tries_w = max((_cols(cell[3]) for cell in cells), default=0)
     tries_col = 2 + tries_w if tries_w else 0
     one_line = 2 + name_w + 2 + state_w + 2 + prog_w + tries_col
     tight = one_line > width
@@ -1488,7 +1627,7 @@ def _queue_rows(facts: dict, width: int, paint) -> list[tuple[str, str]]:
             figures = f"{state:>{state_w}}  {progress}"
             room = width - 2
             for marker in (f"  {tries}", f"  {counted}", ""):
-                if marker.strip() and len(figures) + len(marker) <= room:
+                if marker.strip() and _cols(figures) + _cols(marker) <= room:
                     figures += marker
                     break
             figures = _fit(figures, room)
@@ -1496,7 +1635,7 @@ def _queue_rows(facts: dict, width: int, paint) -> list[tuple[str, str]]:
             out.append((titled, titled))
             out.append((f"  {figures}", f"  {paint(figures, tone)}"))
             continue
-        head = f"  {name.ljust(name_w)}  "
+        head = f"  {_pad(name, name_w)}  "
         line = f"{head}{state:>{state_w}}  {progress.ljust(prog_w)}"
         painted = (
             f"{head}{paint(state.rjust(state_w), tone)}  "
@@ -1680,7 +1819,12 @@ def set_dest(kind: str, value: str) -> tuple[bool, list[str]]:
     if broken:
         return False, [broken]
     config = runner.load_config()
-    if value == "default":
+    # Read the way set_setting reads "default", and nothing left over: a
+    # stray space or a capital typed on the phone would otherwise be a
+    # relative path, made under whatever directory nibbles was started in and
+    # reported as a success. A folder really called "default" is ./default.
+    value = value.strip()
+    if value.lower() in ("", "default"):
         config.pop(f"{kind}_dir", None)
         runner.save_config(config)
         return True, [f"{kind} downloads go to {runner.dests()[kind]} again"]
@@ -2494,8 +2638,15 @@ def dump(target: str | None = None) -> int:
         zwana = _zwana_root()
         print(f"  zwana      : {zwana}")
         print(f"    quota_widget.py      : {(zwana / 'quota_widget.py').is_file()}")
+        # Where the nightly job looks, when that is somewhere else: it has no
+        # ZWANA_HOME, and a checkout only this shell finds is the evidence.
+        job = _zwana_root(job=True)
+        if job != zwana:
+            print(f"  zwana, job : {job}")
+            print(f"    quota_widget.py      : {(job / 'quota_widget.py').is_file()}")
         print(f"  gate       : {root_problem() or 'ok'}")
         print(f"  shebang    : {shebang_problem() or 'ok'}")
+        print(f"  job's zwana: {_zwana_unseen() or 'ok'}")
 
     def _settings() -> None:
         runner = _runner()
@@ -2604,11 +2755,16 @@ def dump(target: str | None = None) -> int:
             print("  (no matching item)")
         for row in wanted:
             print(f"  -- {row['name']}  where={row['where']}  error={row['error']}")
+            # A file that is not text ends its own head, not the section: the
+            # contract's own stray (20-holiday.png) sorts ahead of every failed
+            # item, and those are what this paste is for. Not decoded with
+            # errors="replace", because its error line already says what it
+            # is, and a head of control bytes is not evidence of anything.
             try:
                 head = row["path"].read_text(encoding="utf-8").splitlines()[:14]
                 for line in head:
                     print(f"     {line}")
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 print(f"     (unreadable: {exc})")
 
     def _logs() -> None:

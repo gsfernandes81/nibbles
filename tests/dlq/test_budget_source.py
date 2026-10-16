@@ -22,7 +22,7 @@ import time
 
 import pytest
 
-from _pty import make_root
+from _pty import ZWANA, make_root
 
 MiB = 1024**2
 MB = 1_000_000
@@ -180,6 +180,78 @@ def test_a_manual_snapshot_has_no_portal_and_invents_no_expiring_figure(
     assert facts["spendable"] == dlq.runner.manual_spendable(reading)
     assert facts["deadline"] == reading["resets"]
     assert facts["verdict"] == "go"
+
+
+# --------------------------------------------------------------------------- #
+# Where zwana-quota is found, and by whom
+# --------------------------------------------------------------------------- #
+
+#: What a runner imported out of a root reports: the path it put on sys.path
+#: for quota_widget, whether that imports, and the source it then defaults to.
+ASK_RUNNER = (
+    "import json, os, sys\n"
+    "sys.path.insert(0, os.environ['EXPIRE_HOME'])\n"
+    "before = list(sys.path)\n"
+    "from nibbles import expire_runner as r\n"
+    "print(json.dumps([[p for p in sys.path if p not in before],\n"
+    "                  r.ZWANA_IMPORTABLE, r.budget_source()]))\n"
+)
+
+
+def runner_in(env: dict[str, str], root) -> list:
+    """Import the runner in a process of its own, under exactly *env*."""
+    said = subprocess.run(
+        [sys.executable, "-c", ASK_RUNNER],
+        cwd=root, env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert said.returncode == 0, said.stderr
+    return json.loads(said.stdout)
+
+
+@pytest.fixture
+def placed(dlq, monkeypatch, request):
+    """Lay out where zwana-quota is: named by ``ZWANA_HOME`` (the suite's own
+    arrangement), linked beside the root, or nowhere at all. Hands back the
+    environment a shell would run the runner under, then."""
+
+    def place(where: str) -> dict[str, str]:
+        env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(dlq.home),
+               "EXPIRE_HOME": str(dlq.root)}
+        monkeypatch.delenv("ZWANA_HOME", raising=False)
+        if where == "named":
+            env["ZWANA_HOME"] = str(ZWANA)
+            monkeypatch.setenv("ZWANA_HOME", str(ZWANA))
+        if where == "beside":
+            link = dlq.root.parent / "zwana-quota"
+            link.symlink_to(ZWANA, target_is_directory=True)
+            request.addfinalizer(link.unlink)
+        return env
+
+    return place
+
+
+@pytest.mark.parametrize("where", ["named", "beside", "nowhere"])
+def test_the_screens_name_the_checkout_the_runner_imports(dlq, placed, where):
+    """One resolution: what ``nibbles status`` names as missing is the path
+    the runner put on sys.path, however the checkout was found."""
+    env = placed(where)
+    added, _, _ = runner_in(env, dlq.root)
+    assert added == [str(dlq.sched._zwana_root())]
+
+
+@pytest.mark.parametrize("where", ["named", "beside"])
+def test_what_the_screens_say_the_job_finds_is_what_the_job_finds(dlq, placed, where):
+    """The job is started with Termux's own environment and never a shell's:
+    no ``ZWANA_HOME``. So the job is predicted without it, and where that
+    finds no checkout the screens say the job will not work — rather than
+    showing zwana figures over a job that spends nothing every night."""
+    env = placed(where)
+    env.pop("ZWANA_HOME", None)  # the job's environment
+    added, importable, source = runner_in(env, dlq.root)
+    assert added == [str(dlq.sched._zwana_root(job=True))]
+    assert (dlq.sched.job_problem() is None) == importable
+    # What the screens show is the source the job then reads by.
+    assert importable == (source == dlq.runner.budget_source())
 
 
 # --------------------------------------------------------------------------- #

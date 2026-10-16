@@ -245,10 +245,25 @@ def test_wrapping_never_loses_a_word(text, width):
     width=st.integers(min_value=2, max_value=80),
 )
 def test_clipping_says_that_something_was_lost(text, width):
+    """In columns: a title keeps its CJK and emoji, two columns each, and a
+    clip counted in characters ran off the screen it was clipped for."""
     clipped = ytq.fit(text, width)
-    assert len(clipped) <= width
-    if clipped != text:
+    assert ytq.cols(clipped) <= width
+    if ytq.cols(text) <= width:
+        assert clipped == text
+    else:
         assert clipped.endswith("…")
+        assert text.startswith(clipped[:-1])
+
+
+@given(text=st.text(max_size=40))
+def test_a_terminal_column_is_counted_as_the_app_s_screens_count_it(text):
+    """The printing paths cannot import bewitch, so they carry their own
+    measure; it has to be bewitch's, or a line the app draws to fit is one
+    the printed listing clips to a different width."""
+    from bewitch.lipgloss._cells import string_width
+
+    assert ytq.cols(text) == string_width(text)
 
 
 def test_there_is_nothing_to_draw_in_no_room_at_all():
