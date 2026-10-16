@@ -22,8 +22,11 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import email.utils
+import http.client
 import json
 import math
+import mimetypes
 import re
 import sys
 import textwrap
@@ -32,7 +35,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
+from nibbles import expire_dl
 from nibbles import ytq
 
 BASE_HEADERS = {
@@ -47,6 +52,50 @@ TIMEOUT = 30
 
 class ProbeError(RuntimeError):
     """The URL could not be sized."""
+
+
+class Look(NamedTuple):
+    """One answer's status and headers, and where it came from after any
+    redirect."""
+
+    code: int
+    headers: object
+    url: str
+
+
+def _look(url: str, timeout: int, ranged: bool) -> Look | None:
+    """One look at *url*'s headers: HEAD, or (*ranged*) a GET for
+    ``bytes=0-0`` closed unread, which costs at most one byte of payload.
+
+    The one place the two questions ``nibbles <url>`` asks — :func:`kind_of`
+    and :func:`probe` — decide what an answer that is not an answer means, so
+    the two cannot drift apart on it: a refused HEAD is ``None`` (plenty of
+    servers refuse it, and the ranged GET settles it), a refused GET is a
+    :class:`ProbeError` naming the status, and a server that cannot be reached
+    — or does not talk HTTP, or is not a URL at all — is a :class:`ProbeError`
+    too. An unreachable server is an error, never a guess.
+    """
+    try:
+        if ranged:
+            request = urllib.request.Request(
+                url, headers={**BASE_HEADERS, "Range": "bytes=0-0"}
+            )
+        else:
+            request = urllib.request.Request(url, method="HEAD", headers=BASE_HEADERS)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return Look(response.getcode(), response.headers, response.geturl())
+    except urllib.error.HTTPError as exc:
+        if not ranged:
+            return None
+        raise ProbeError(f"HTTP {exc.code} {exc.reason}") from exc
+    except (
+        urllib.error.URLError,
+        OSError,
+        TimeoutError,
+        http.client.HTTPException,
+        ValueError,
+    ) as exc:
+        raise ProbeError(f"cannot reach {url}: {exc}") from exc
 
 
 def _from_head(headers) -> tuple[int, bool | None]:
@@ -74,7 +123,65 @@ def _from_ranged(code: int, headers) -> tuple[int, bool | None]:
     return 0, None
 
 
-def probe(url: str, timeout: int = TIMEOUT) -> tuple[int, bool | None]:
+class Probe(NamedTuple):
+    """What a header look found out about a file before any of it is fetched.
+
+    The first two are the size and the resume verdict; the rest is what the
+    same answer said about the file, which is what names it.
+    """
+
+    size: int
+    resumable: bool | None
+    #: The name the server gives it (Content-Disposition), or "".
+    name: str = ""
+    #: The media type it says it is, or "".
+    kind: str = ""
+    #: Where the answer came from after any redirect, or "".
+    url: str = ""
+    #: Whether the answer was a web page rather than a file.
+    page: bool = False
+
+
+def _disposition_name(headers) -> str:
+    """The file name a Content-Disposition gives, ``filename*`` first.
+
+    The starred form (RFC 5987, ``UTF-8''…``) is the one that can spell a
+    name that is not ASCII, and a server sending both means it. Any directory
+    in it is dropped, as a browser drops it.
+    """
+    try:
+        params = headers.get_params(header="content-disposition") or []
+    except AttributeError:  # a plain mapping, not a message
+        return ""
+    plain = ""
+    for key, value in params[1:]:
+        if key.lower() != "filename":
+            continue
+        if isinstance(value, tuple):
+            plain = email.utils.collapse_rfc2231_value(value)
+            break
+        plain = plain or value
+    return re.split(r"[/\\]", plain)[-1]
+
+
+def _media_type(headers) -> str:
+    return (headers.get("Content-Type") or "").split(";")[0].strip().lower()
+
+
+def _described(look: Look | None) -> tuple[str, str, str, bool]:
+    """``(name, kind, url, page)``: what *look* said about the file."""
+    if look is None:
+        return "", "", "", False
+    headers = look.headers
+    return (
+        _disposition_name(headers),
+        _media_type(headers),
+        look.url or "",
+        expire_dl.is_page(headers),
+    )
+
+
+def probe(url: str, timeout: int = TIMEOUT) -> Probe:
     """Size the file and test resume support without downloading it.
 
     HEAD first; if that answers with both a length and an Accept-Ranges verdict
@@ -82,43 +189,30 @@ def probe(url: str, timeout: int = TIMEOUT) -> tuple[int, bool | None]:
     at the cost of headers plus at most one payload byte.
     """
     size, resumable = 0, None
-    try:
-        request = urllib.request.Request(url, method="HEAD", headers=BASE_HEADERS)
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            size, resumable = _from_head(response.headers)
-    except urllib.error.HTTPError:
-        pass  # Plenty of servers refuse HEAD; the ranged GET settles it.
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        raise ProbeError(f"cannot reach {url}: {exc}")
+    seen = _look(url, timeout, ranged=False)
+    if seen is not None:
+        size, resumable = _from_head(seen.headers)
 
-    if size and resumable is not None:
-        return size, resumable
-
-    request = urllib.request.Request(
-        url, headers={**BASE_HEADERS, "Range": "bytes=0-0"}
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            ranged_size, ranged_resumable = _from_ranged(
-                response.getcode(), response.headers
-            )
-    except urllib.error.HTTPError as exc:
-        if size:
-            return size, resumable
-        raise ProbeError(f"HTTP {exc.code} {exc.reason}")
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        if size:
-            return size, resumable
-        raise ProbeError(f"cannot reach {url}: {exc}")
-    return (
-        ranged_size or size,
-        ranged_resumable if ranged_resumable is not None else resumable,
-    )
+    if not (size and resumable is not None):
+        try:
+            ranged = _look(url, timeout, ranged=True)
+        except ProbeError:
+            # Half an answer is still an answer: what HEAD said stands.
+            if not size:
+                raise
+        else:
+            ranged_size, ranged_resumable = _from_ranged(ranged.code, ranged.headers)
+            size = ranged_size or size
+            if ranged_resumable is not None:
+                resumable = ranged_resumable
+            seen = ranged
+    return Probe(size, resumable, *_described(seen))
 
 
 #: What a page is, as opposed to a file: these go to yt-dlp, which reads
 #: the page for the video in it; anything else is fetched as it is, by Range.
-PAGE_TYPES = ("text/html", "application/xhtml+xml")
+#: The download itself refuses the same answers (``expire_dl.is_page``).
+PAGE_TYPES = expire_dl.PAGE_TYPES
 
 #: Hosts that are only ever pages, so asking them costs nothing at all.
 PAGE_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
@@ -131,34 +225,15 @@ def kind_of(url: str, timeout: int = TIMEOUT) -> str:
     question it asks: YouTube's hosts are pages without asking, and anything
     else is asked by its headers — HEAD, or where that is refused a GET for
     ``bytes=0-0`` closed unread, the same two looks :func:`probe` takes — and
-    is a page only when it says it is HTML. A file that names no type is
-    still a file: what is not a page has nothing in it for yt-dlp to find.
+    is a page only when :func:`expire_dl.is_page` says so, the test the
+    download itself puts every answer to. A file that names no type is still
+    a file: what is not a page has nothing in it for yt-dlp to find.
     """
     host = (urllib.parse.urlsplit(url).hostname or "").lower()
     if any(host == known or host.endswith(f".{known}") for known in PAGE_HOSTS):
         return "page"
-    headers = None
-    try:
-        request = urllib.request.Request(url, method="HEAD", headers=BASE_HEADERS)
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            headers = response.headers
-    except urllib.error.HTTPError:
-        pass  # Plenty of servers refuse HEAD; the ranged GET settles it.
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        raise ProbeError(f"cannot reach {url}: {exc}") from exc
-    if headers is None:
-        request = urllib.request.Request(url, headers={**BASE_HEADERS, "Range": "bytes=0-0"})
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                headers = response.headers
-        except urllib.error.HTTPError as exc:
-            raise ProbeError(f"HTTP {exc.code} {exc.reason}") from exc
-        except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            raise ProbeError(f"cannot reach {url}: {exc}") from exc
-    if "attachment" in (headers.get("Content-Disposition") or "").lower():
-        return "file"
-    kind = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
-    return "page" if kind in PAGE_TYPES else "file"
+    look = _look(url, timeout, ranged=False) or _look(url, timeout, ranged=True)
+    return "page" if expire_dl.is_page(look.headers) else "file"
 
 
 #: What :func:`normal_url` leaves as it is: the characters a URL is built
@@ -188,16 +263,102 @@ def normal_url(url: str) -> str:
     ))
 
 
-def name_from_url(url: str) -> str:
-    """A filesystem-safe file name taken from the URL's last path segment."""
+#: A suffix kept as one: what Android reads a file's type from, and nothing
+#: else. Longer, or anything but letters and digits, is part of the name.
+SUFFIX = re.compile(r"[A-Za-z0-9]{1,10}")
+
+#: Media types that say nothing about what a file is, so no suffix is made
+#: from them.
+UNTYPED = (
+    "application/octet-stream",
+    "binary/octet-stream",
+    "application/download",
+    "application/force-download",
+    "application/x-download",
+)
+
+
+def _named(text: str) -> bool:
+    """Whether anything of *text* is left once it is cleaned for a name."""
+    kept = "".join(ch for ch in ytq.REFUSED.sub(" ", text) if ch.isprintable())
+    return bool(kept.strip(" -."))
+
+
+def _suffix(name: str) -> str:
+    stem, dot, suffix = name.rpartition(".")
+    return suffix if dot and SUFFIX.fullmatch(suffix) and _named(stem) else ""
+
+
+def file_name(raw: str, kind: str = "") -> str:
+    """The name a download is saved under: *raw*, cleaned as a video's title
+    is (:func:`ytq.title_name`: only what Android's shared storage refuses,
+    capped well under 255 bytes) with its suffix kept whole — or, where it
+    has none, one made from the media type *kind*, because Android's opener
+    reads a file's type from its suffix and nothing else.
+
+    One rule for every name a file download gets, ``--name`` included: a name
+    with a ``/`` in it failed every firing after the request was paid for, one
+    with a ``:`` or ``?`` downloaded and then could not be handed to shared
+    storage, and one long enough that ``.part.meta.json`` passed 255 bytes was
+    downloaded, delivered, struck and downloaded again. A name with nothing
+    left in it is ``download``.
+    """
+    raw = (raw or "").strip()
+    suffix = _suffix(raw)
+    stem = raw[: -len(suffix) - 1] if suffix else raw
+    if not suffix and kind and kind not in UNTYPED:
+        suffix = (mimetypes.guess_extension(kind) or "").lstrip(".")
+    stem = ytq.title_name(stem) if _named(stem) else "download"
+    return f"{stem}.{suffix}" if suffix else stem
+
+
+def _segment(url: str) -> str:
     path = urllib.parse.unquote(urllib.parse.urlsplit(url).path)
-    base = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(path).name).strip("-.")
-    return base or "download"
+    return path.rstrip("/").rpartition("/")[2]
+
+
+def name_from_url(url: str, final: str = "", kind: str = "") -> str:
+    """A safe file name from the URL's last path segment (:func:`file_name`).
+
+    The link's own segment, unless it names no type of file and *final* —
+    where the link redirected to — does: ``/latest/download`` and
+    ``get.php?id=`` say nothing, the release they land on does.
+    """
+    asked, landed = _segment(url), _segment(final) if final else ""
+    if landed and ((_suffix(landed) and not _suffix(asked)) or not _named(asked)):
+        asked = landed
+    return file_name(asked, kind)
 
 
 def expect_bytes(size: int) -> int:
     """The cap to declare: the measurement plus the same margin ytq uses."""
     return int(math.ceil(size * ytq.OVERHEAD_EXACT)) + ytq.OVERHEAD_FIXED
+
+
+def _line(text: str) -> str:
+    """*text* on one line: what a header comment can hold. Anything that is
+    not printable (a line break above all) would end the comment early."""
+    return "".join(ch if ch.isprintable() else " " for ch in str(text))
+
+
+def _doc(text: str) -> str:
+    """*text* as the item's docstring may hold it: on one line, with no
+    backslash to start an escape (``\\N``, ``\\U`` and ``\\x`` are errors in a
+    plain string) and no ``\"\"\"`` to end it. The docstring is for a person
+    reading the item; what is fetched and saved is the json.dumps'd copy."""
+    return _line(text).replace("\\", "/").replace('"""', "'''")
+
+
+def _literal(text: str) -> str:
+    """*text* as a Python string literal that reads back as exactly *text*.
+
+    json.dumps, but never ``ensure_ascii``: that spells a character outside
+    the Basic Multilingual Plane — an emoji, most of all — as a UTF-16
+    surrogate pair, which JSON reads back as the character and *Python* reads
+    back as two lone surrogates, a name no file can be opened under. Written
+    as itself, it is read as itself: the item is UTF-8, as Python reads it.
+    """
+    return json.dumps(text, ensure_ascii=False)
 
 
 def render(
@@ -208,9 +369,16 @@ def render(
     sha256: str | None,
     probed: str,
     dest: str = "file",
+    partial: bool = True,
 ) -> str:
-    """The queue item source. Strings go through json.dumps so no URL or name
-    can produce a file that does not parse."""
+    """The queue item source. The strings it runs with go through
+    :func:`_literal` and the copies a person reads through :func:`_doc` and
+    :func:`_line`, so no URL or name can produce a file that does not parse.
+
+    *partial* is whether the server resumes: ``PARTIAL: no`` when the probe
+    saw it ignore Range, so the runner gives it a firing that can take the
+    whole of it rather than a slice it would have to throw away.
+    """
     if size:
         note = (
             f"Sized {size:,} bytes by a header probe on {probed}; "
@@ -224,16 +392,21 @@ def render(
             "declared spending cap rather than a measurement."
         )
         shown = "size unstated"
+    if not partial:
+        note += (
+            " The server ignores Range, so it is fetched in one piece, in a "
+            "firing that can take all of it."
+        )
     return f'''{ytq.SHEBANG}
 # EXPIRE: v1
 # EXPECT_BYTES: {cap}
-# PARTIAL: yes
-# DEST: {dest}
-# SOURCE: url:{url}
-# DESC: {f"{name} ({shown}, direct download)"[:160]}
-"""{name}
+# PARTIAL: {"yes" if partial else "no"}
+# DEST: {_line(dest)}
+# SOURCE: url:{_line(url)}
+# DESC: {_line(f"{name} ({shown}, direct download)")[:160]}
+"""{_doc(name)}
 
-{url}
+{_doc(url)}
 
 {textwrap.fill(note, 78)}
 """
@@ -244,12 +417,32 @@ sys.path.insert(0, {json.dumps(str(ytq.MODULE_DIR))})
 from nibbles import expire_dl  # noqa: E402
 
 sys.exit(expire_dl.run(
-    {json.dumps(url)},
-    {json.dumps(name)},
+    {_literal(url)},
+    {_literal(name)},
     expect_sha256={ytq.literal(sha256)},
     total_hint={size},
 ))
 '''
+
+
+def _priority(text: str) -> int:
+    """``--number``: a place in the queue, 0 to :data:`ytq.MAX_PRIORITY`.
+
+    The runner sorts item *names*, so ``100`` would run before ``20``, and a
+    negative number writes an item nothing lists or runs — reported as
+    queued. Refused rather than clamped: 99 for 100 shares a key with
+    whatever is already there.
+    """
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from None
+    if not 0 <= value <= ytq.MAX_PRIORITY:
+        raise argparse.ArgumentTypeError(
+            f"{value} is not 0 to {ytq.MAX_PRIORITY}: the queue runs in name "
+            f"order, so {value} would not run where it looks like it should"
+        )
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -268,12 +461,14 @@ def main(argv: list[str] | None = None) -> int:
             docs: ~/nibbles/docs/download-queue.md"""),
     )
     parser.add_argument("url", nargs="?", help="the file to download")
-    parser.add_argument("--name", help="saved file name (default: from the URL)")
+    parser.add_argument(
+        "--name", help="saved file name (default: what the server or the URL calls it)"
+    )
     parser.add_argument(
         "--number",
-        type=int,
+        type=_priority,
         metavar="NN",
-        help="queue priority prefix (default: after the last)",
+        help=f"queue priority prefix, 0 to {ytq.MAX_PRIORITY} (default: after the last)",
     )
     parser.add_argument(
         "--sha256", metavar="HEX", help="verify the finished file before delivery"
@@ -307,17 +502,35 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.url:
         parser.error("a URL is required")
+    sha256 = None
+    if args.sha256:
+        # Cleaned here, before anything is asked or written: an upper-case or
+        # prefixed digest is the same digest, and one that is not a SHA-256
+        # at all would fail a correct file once per strike.
+        try:
+            sha256 = expire_dl.sha256_digest(args.sha256)
+        except ValueError as exc:
+            parser.error(str(exc))
 
-    name = args.name or name_from_url(args.url)
     try:
-        size, resumable = probe(args.url)
+        found = probe(args.url)
     except ProbeError as exc:
         if args.expect_bytes and not args.probe:
             print(f"probe failed ({exc}); trusting --expect-bytes", file=sys.stderr)
-            size, resumable = 0, None
+            found = Probe(0, None)
         else:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+    size, resumable = found.size, found.resumable
+
+    # Named after the probe, from what it was told: the name asked for, else
+    # the one the server gives the file, else the link's (or where it led).
+    if args.name:
+        name = file_name(args.name)
+    elif found.name:
+        name = file_name(found.name, found.kind)
+    else:
+        name = name_from_url(args.url, found.url, found.kind)
 
     resume_note = {
         True: "server supports resume (Range honoured)",
@@ -330,12 +543,25 @@ def main(argv: list[str] | None = None) -> int:
             f"{f'{ytq.human(size)} ({size:,} bytes)' if size else 'size not stated'}"
             f"  ·  {resume_note}"
         )
+        if found.page:
+            print("it answers with a web page, not a file")
         if size:
             print(
                 f"would declare EXPECT_BYTES {expect_bytes(size):,} "
                 f"({ytq.human(expect_bytes(size))})"
             )
         return 0
+
+    if found.page:
+        # What the download would be handed is a page — a sign-in or error
+        # page, or a page and not a file at all — and it refuses pages, so an
+        # item queued now could only fail. Said now instead.
+        print(
+            f"error: {args.url} answers with a web page, not a file; nothing "
+            "queued (nibbles <url> alone opens a page)",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.expect_bytes:
         cap = args.expect_bytes
@@ -362,9 +588,12 @@ def main(argv: list[str] | None = None) -> int:
         name,
         cap,
         size,
-        args.sha256,
+        sha256,
         time.strftime("%Y-%m-%d", time.gmtime()),
         dest=str(Path(args.dest).expanduser()) if args.dest else "file",
+        # Unknown is not "no": the first firing finds out, and expire_dl
+        # stops a server that turns out not to resume before it spends.
+        partial=resumable is not False,
     )
     if args.dry_run:
         print(source, end="")
@@ -394,11 +623,11 @@ def main(argv: list[str] | None = None) -> int:
         f"cap {ytq.human(cap)}"
     )
     where = ytq.landing(args.dest or "file")
-    print(f"lands in {where} once the nightly window has worked through it")
+    print(f"lands in {where} as {name} once the nightly window has worked through it")
     if resumable is False and size > ytq.SLICE_MIN_BYTES:
         print(
-            "warning: this server ignores Range requests, so the whole file "
-            "must fit one night's slice or the item will fail"
+            "warning: this server ignores Range requests, so it waits for a "
+            "firing whose budget can take the whole file at once"
         )
     return 0
 

@@ -14,6 +14,8 @@ module and its own flags, with the dispatcher only the door.
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import os
 import subprocess
@@ -547,7 +549,7 @@ def test_a_server_that_answers_head_settles_both_questions_at_once(dlq, serving)
     """HEAD first: a length and an Accept-Ranges verdict is the whole answer,
     and it costs no payload at all."""
     serving.payload = b"x" * 4096
-    assert dlq.queuer.probe(serving.url) == (4096, True)
+    assert dlq.queuer.probe(serving.url)[:2] == (4096, True)
     assert serving.state_of_the_world["head"]
     assert "asked" not in serving.state_of_the_world  # no GET was needed
 
@@ -562,7 +564,7 @@ def test_a_server_that_will_not_say_is_asked_for_one_byte(dlq, serving):
     serving.payload = b"y" * 8192
     serving.state_ranges = False
     serving.state_length = False
-    assert dlq.queuer.probe(serving.url) == (8192, True)
+    assert dlq.queuer.probe(serving.url)[:2] == (8192, True)
     assert serving.state_of_the_world["asked"] == ["bytes=0-0"]
 
 
@@ -570,7 +572,7 @@ def test_a_server_that_refuses_head_is_still_sized(dlq, serving):
     """Plenty of them do; the ranged GET settles it."""
     serving.payload = b"z" * 2048
     serving.head_code = 405
-    assert dlq.queuer.probe(serving.url) == (2048, True)
+    assert dlq.queuer.probe(serving.url)[:2] == (2048, True)
 
 
 def test_a_server_that_ignores_range_says_so_in_the_answer(dlq, serving):
@@ -579,7 +581,7 @@ def test_a_server_that_ignores_range_says_so_in_the_answer(dlq, serving):
     serving.payload = b"w" * 3000
     serving.honour_range = False
     serving.state_ranges = False
-    assert dlq.queuer.probe(serving.url) == (3000, False)
+    assert dlq.queuer.probe(serving.url)[:2] == (3000, False)
 
 
 def test_what_head_said_stands_when_the_ranged_get_will_not_answer(dlq, serving):
@@ -592,7 +594,7 @@ def test_what_head_said_stands_when_the_ranged_get_will_not_answer(dlq, serving)
     serving.payload = b"q" * 5000
     serving.state_ranges = False  # so the ranged GET is asked for at all
     serving.get_code = 500
-    size, resumable = dlq.queuer.probe(serving.url)
+    size, resumable = dlq.queuer.probe(serving.url)[:2]
     assert size == 5000
     assert resumable is None  # nothing was settled about resuming
 
@@ -632,7 +634,7 @@ def test_a_probe_says_what_it_found_about_resuming(dlq, monkeypatch, capsys, res
     item can be fetched in slices, the second that it cannot, and the third
     that the server did not say and the first firing will find out."""
     monkeypatch.setattr(
-        dlq.queuer, "probe", lambda url, timeout=30: (100 * MiB, resumable)
+        dlq.queuer, "probe", lambda url, timeout=30: dlq.queuer.Probe(100 * MiB, resumable)
     )
     assert dlq.queuer.main(["https://example.invalid/x.iso", "--probe"]) == 0
     said = capsys.readouterr().out
@@ -690,7 +692,7 @@ def probed(dlq, monkeypatch):
     """A server that states a size and honours Range, without a server."""
 
     def probe(url, timeout=30):
-        return 100 * MiB, True
+        return dlq.queuer.Probe(100 * MiB, True)
 
     monkeypatch.setattr(dlq.queuer, "probe", probe)
     # The shebang an item is written with is Termux's absolute python, spelled
@@ -749,7 +751,7 @@ def test_a_dry_run_writes_nothing(probed, capsys):
 def test_a_server_that_states_no_size_needs_a_cap_to_be_given(dlq, monkeypatch, capsys):
     """"unknown" is not a valid ``EXPECT_BYTES``: the cap is the most you are
     willing to let it cost."""
-    monkeypatch.setattr(dlq.queuer, "probe", lambda url, timeout=30: (0, None))
+    monkeypatch.setattr(dlq.queuer, "probe", lambda url, timeout=30: dlq.queuer.Probe(0, None))
     monkeypatch.setattr(dlq.ytq, "SHEBANG", f"#!{sys.executable}")
     assert dlq.queuer.main(["https://example.invalid/feed"]) == 1
     assert "--expect-bytes" in capsys.readouterr().err
@@ -771,9 +773,229 @@ def test_a_cap_below_the_measured_size_is_refused(probed, capsys):
 def test_a_name_is_taken_from_the_url_and_made_safe(dlq):
     name_from_url = dlq.queuer.name_from_url
     assert name_from_url("https://x.invalid/a/b/big.iso") == "big.iso"
-    assert name_from_url("https://x.invalid/a/b/%20big%20file.iso") == "big-file.iso"
+    spaced = name_from_url("https://x.invalid/a/b/%20big%20file.iso")
+    assert spaced.endswith(".iso") and "big" in spaced and "file" in spaced
     assert name_from_url("https://x.invalid/") == "download"
     assert "/" not in name_from_url("https://x.invalid/a/../b")
+    # A name that is not ASCII is still its name, not its bare suffix.
+    assert name_from_url("https://x.invalid/%D0%94%D0%BE%D0%BA.pdf") == "Док.pdf"
+    # A link that names no file says less than the address it led to.
+    assert name_from_url(
+        "https://x.invalid/latest/download", "https://cdn.invalid/v2/app-2.apk"
+    ) == "app-2.apk"
+
+
+#: Every character Android's shared storage refuses in a name.
+REFUSED = set('/\\:*?"<>|')
+
+
+@given(raw=st.text(), kind=st.sampled_from(["", "application/pdf", "text/html"]))
+def test_every_name_a_file_is_given_is_one_shared_storage_takes(dlq, raw, kind):
+    """``--name``, a server's name and a URL's all go through one rule: only
+    what Android refuses is taken out, it fits well under 255 bytes with
+    ``.part.meta.json`` on the end, and a suffix that was there is kept —
+    since the suffix is all Android's opener reads a file's type from."""
+    name = dlq.queuer.file_name(raw, kind)
+    assert name
+    assert not REFUSED & set(name)
+    assert name.isprintable()
+    assert len(f"{name}.part.meta.json".encode()) <= 255
+    suffix = dlq.queuer._suffix(raw.strip())
+    if suffix:
+        assert name.endswith(f".{suffix}")
+
+
+@given(stem=st.text(alphabet=st.characters(categories=["L", "N"]), min_size=1, max_size=40))
+def test_a_name_that_is_already_clean_is_kept_as_it_is(dlq, stem):
+    assert dlq.queuer.file_name(f"{stem}.pdf") == f"{stem}.pdf"
+
+
+def _run_args(source: str) -> tuple[list, dict]:
+    """What an item hands ``expire_dl.run``, read back as Python reads it."""
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "run":
+            return (
+                [ast.literal_eval(arg) for arg in node.args],
+                {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords},
+            )
+    raise AssertionError("no expire_dl.run call in the item")
+
+
+def _dry_run(dlq, capsys, argv: list[str]) -> str:
+    capsys.readouterr()
+    assert dlq.queuer.main([*argv, "--dry-run"]) == 0
+    return capsys.readouterr().out
+
+
+def test_a_file_is_named_by_what_its_server_says(dlq, serving, capsys):
+    """The name a server gives a file (Content-Disposition, ``filename*``
+    first) beats a link that says ``download?id=``; with none, its type gives
+    a nameless file a suffix, which is what Android opens it by."""
+    serving.payload = b"%PDF" * 100
+    url = serving.url.replace("file.bin", "download?id=123")
+    serving.content_type = "application/pdf"
+    serving.disposition = (
+        "attachment; filename=\"Report Q3.pdf\"; "
+        "filename*=UTF-8''%D0%9E%D1%82%D1%87%D1%91%D1%82%20Q3.pdf"
+    )
+    (_, name), _ = _run_args(_dry_run(dlq, capsys, [url]))
+    assert name == "Отчёт Q3.pdf"
+
+    serving.disposition = None
+    (_, name), _ = _run_args(_dry_run(dlq, capsys, [url]))
+    assert name.endswith(".pdf")
+
+
+def test_two_files_behind_one_unhelpful_link_are_not_one_file(dlq, serving, monkeypatch):
+    monkeypatch.setattr(dlq.ytq, "SHEBANG", f"#!{sys.executable}")
+    serving.payload = b"x" * 1000
+    for ident, called in ((1, "Report A.pdf"), (2, "Report B.pdf")):
+        serving.disposition = f'attachment; filename="{called}"'
+        url = serving.url.replace("file.bin", f"download?id={ident}")
+        assert dlq.queuer.main([url]) == 0
+    assert len(list((dlq.root / "queue").glob("*.py"))) == 2
+
+
+@pytest.mark.parametrize(
+    "asked", ["sub/x.iso", "Report: Q3?.pdf", 'a"""b.bin', "my\\Nfile.iso", "a" * 300 + ".iso"]
+)
+def test_a_name_asked_for_is_cleaned_like_any_other(probed, capsys, asked):
+    """A ``/`` failed every firing after the request was paid for; a ``:``
+    downloaded and could not be handed to shared storage; a name too long for
+    its sidecar was downloaded, delivered, struck and downloaded again."""
+    source = _dry_run(probed, capsys, ["https://example.invalid/x", "--name", asked])
+    compile(source, "item", "exec")
+    (_, name), _ = _run_args(source)
+    assert name == probed.queuer.file_name(asked)
+    assert Path_suffix(name) == Path_suffix(asked)
+
+
+def Path_suffix(name: str) -> str:  # noqa: N802 - reads as what it stands for
+    return name.rpartition(".")[2]
+
+
+def test_a_page_is_not_queued_as_a_file(dlq, serving, monkeypatch, capsys):
+    """A flag that only a file takes skips asking what the link is; the probe
+    then finds a web page — a sign-in page, or a page and not a file — which
+    the download would refuse at every firing. Said now, and nothing written."""
+    monkeypatch.setattr(dlq.ytq, "SHEBANG", f"#!{sys.executable}")
+    serving.payload = b"<html></html>"
+    serving.content_type = "text/html; charset=utf-8"
+    assert dlq.queuer.main([serving.url, "--name", "page.html"]) == 1
+    assert "page" in capsys.readouterr().err
+    assert list((dlq.root / "queue").glob("*.py")) == []
+    # An HTML file sent as an attachment is a file, and is queued.
+    serving.disposition = 'attachment; filename="page.html"'
+    assert dlq.queuer.main([serving.url]) == 0
+
+
+@pytest.mark.parametrize(
+    ("kind", "disposition", "answer"),
+    [
+        ("text/html; charset=utf-8", None, "page"),
+        ("application/xhtml+xml", None, "page"),
+        ("text/html", "attachment; filename=a.html", "file"),
+        ("application/zip", None, "file"),
+        (None, None, "file"),
+    ],
+)
+def test_what_a_link_is_is_what_its_server_says(dlq, serving, kind, disposition, answer):
+    serving.payload = b"x" * 100
+    serving.content_type, serving.disposition = kind, disposition
+    assert dlq.queuer.kind_of(serving.url) == answer
+    # A server that refuses HEAD is asked once more, by a ranged GET.
+    serving.head_code = 405
+    assert dlq.queuer.kind_of(serving.url) == answer
+    assert serving.state_of_the_world["asked"] == ["bytes=0-0"]
+
+
+def test_a_link_that_cannot_be_asked_is_an_error_and_not_a_guess(dlq, serving):
+    with pytest.raises(dlq.queuer.ProbeError):
+        dlq.queuer.kind_of("http://127.0.0.1:1/nothing", timeout=2)
+    serving.head_code, serving.get_code = 405, 404
+    with pytest.raises(dlq.queuer.ProbeError):
+        dlq.queuer.kind_of(serving.url)
+
+
+@pytest.mark.parametrize("resumable", [True, None, False])
+def test_an_item_is_partial_unless_its_server_was_seen_not_to_resume(
+    dlq, monkeypatch, capsys, resumable
+):
+    """``PARTIAL: yes`` for a server the probe saw ignore Range was a promise
+    the first slice broke: downloaded, thrown away at the next request, then a
+    strike. ``no`` gets it a firing that can take all of it. Unknown is not
+    "no": the first firing finds out."""
+    monkeypatch.setattr(
+        dlq.queuer, "probe", lambda url, timeout=30: dlq.queuer.Probe(100 * MiB, resumable)
+    )
+    monkeypatch.setattr(dlq.ytq, "SHEBANG", f"#!{sys.executable}")
+    assert dlq.queuer.main(["https://example.invalid/big.iso"]) == 0
+    item = dlq.runner.parse_item(next((dlq.root / "queue").glob("*.py")))
+    assert item["partial"] is (resumable is not False)
+
+
+SPELLED = {
+    "upper": str.upper,
+    "prefixed": lambda hexed: f"SHA256:{hexed}",
+    "sha256sum line": lambda hexed: f"{hexed}  big.iso",
+}
+
+
+@pytest.mark.parametrize("spell", SPELLED.values(), ids=SPELLED.keys())
+def test_a_digest_is_written_as_hashlib_spells_it(probed, capsys, spell):
+    digest = hashlib.sha256(b"big").hexdigest()
+    source = _dry_run(probed, capsys, ["https://example.invalid/big.iso", "--sha256", spell(digest)])
+    assert _run_args(source)[1]["expect_sha256"] == digest
+
+
+@pytest.mark.parametrize(
+    "wrong", [hashlib.md5(b"x").hexdigest(), "sha256:abc", "not a digest"]  # noqa: S324
+)
+def test_a_digest_that_is_not_one_is_refused_and_nothing_is_written(probed, wrong):
+    with pytest.raises(SystemExit) as refused:
+        probed.queuer.main(["https://example.invalid/big.iso", "--sha256", wrong])
+    assert refused.value.code != 0
+    assert list((probed.root / "queue").glob("*.py")) == []
+
+
+@given(number=st.integers(-1000, 1000))
+def test_anything_reported_as_queued_is_listed_and_runs(probed, number):
+    """``--number`` is a place in a queue the runner sorts by *name*: 100
+    would run before 20, and -1 wrote an item nothing lists or runs, reported
+    as queued. Either it is a place, or it is refused and nothing is written."""
+    for path in (probed.root / "queue").glob("*.py"):
+        path.unlink()
+    try:
+        code = probed.queuer.main(["https://example.invalid/x.iso", "--number", str(number)])
+    except SystemExit as refused:
+        code = refused.code
+    written = list((probed.root / "queue").glob("*.py"))
+    if code != 0:
+        assert written == []
+        return
+    assert len(written) == 1
+    runs = [item["name"] for item in probed.runner.queued_items()[0]]
+    listed = [path.name for _, path in probed.ytq.items()]
+    assert runs.count(written[0].name) == 1
+    assert listed.count(written[0].name) == 1
+
+
+text = st.text(alphabet=st.characters(exclude_categories=["Cs"]))
+
+
+@given(tail=text, name=text)
+def test_any_url_and_any_name_at_all_still_write_an_item_that_parses(dlq, tail, name):
+    """The docstring is a person's copy of the URL and the name, and a
+    backslash in either (``\\N``, ``\\U``, ``\\x``) or a ``\"\"\"`` wrote an
+    item that never compiled — reported as queued. What it runs with is
+    exactly what it was given."""
+    url = f"https://x.invalid/{tail}"
+    source = dlq.queuer.render(url, name, 100, 10, None, "2026-10-16")
+    compile(source, "item", "exec")
+    assert _run_args(source)[0] == [url, name]
+    if url.isprintable():
+        # As the duplicate check reads it, which strips the line's end.
+        assert dlq.ytq.source_of(source) == f"url:{url}".rstrip()
 
 
 def test_the_item_it_writes_is_valid_python_that_names_its_source(probed):
@@ -837,7 +1059,7 @@ def test_a_server_that_ignores_range_is_a_warning_at_queue_time(dlq, monkeypatch
     night — and the night it fails is not the night to find out."""
     monkeypatch.setattr(dlq.ytq, "SHEBANG", f"#!{sys.executable}")
     monkeypatch.setattr(
-        dlq.queuer, "probe", lambda url, timeout=30: (500 * MiB, False)
+        dlq.queuer, "probe", lambda url, timeout=30: dlq.queuer.Probe(500 * MiB, False)
     )
     assert dlq.queuer.main(["https://example.invalid/big.iso"]) == 0
     said = capsys.readouterr().out
