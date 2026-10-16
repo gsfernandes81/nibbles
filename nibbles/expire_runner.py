@@ -137,18 +137,6 @@ def _qw():
     return _QW
 
 
-def __getattr__(name: str):
-    """``expire_runner.qw`` for the front ends, imported when first asked for.
-
-    A module ``__getattr__`` is only consulted for a name the module does not
-    have, so this costs nothing anywhere else, and code inside this file asks
-    :func:`_qw` rather than the bare name.
-    """
-    if name == "qw":
-        return _qw()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 ROOT = HERE
 QUEUE = ROOT / "queue"
 STAGING = QUEUE / ".staging"

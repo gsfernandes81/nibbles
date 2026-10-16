@@ -64,8 +64,10 @@ item("20-Some Talk About Rust.py", 505 * MiB)
 item("30-big.iso.py", 8192 * MiB)
 item("40-An Old Talk.py", 300 * MiB, where="failed")
 item("50-Crust of Rust - Lifetimes.py", 92 * MiB, where="done/2026-10-09")
+# ``last`` is what the runner writes there: its UTC log stamp of the last try,
+# which the row says as how long ago.
 (ROOT / "state.json").write_text(json.dumps({"items": {
-    "40-An Old Talk.py": {"attempts": 3, "last": "yt-dlp: HTTP Error 403"}}}))
+    "40-An Old Talk.py": {"attempts": 3, "last": runner.stamp(time.time() - 3 * 3600)}}}))
 (ROOT / "logs" / "runner.log").write_text(
     "2026-10-09 23:00:04Z firing: window open, 480 MiB to spend\n"
     "2026-10-09 23:00:05Z 20-Some Talk About Rust.py: admitted, 46 MiB this slice\n"
@@ -73,7 +75,7 @@ item("50-Crust of Rust - Lifetimes.py", 92 * MiB, where="done/2026-10-09")
 
 
 def reading(free=763 * MiB, spent=283 * MiB):
-    doc = runner.qw.derive({
+    doc = runner._qw().derive({
         "ts": time.time(), "credits": 4.0, "per_credit": 1_000_000,
         "remainder": free, "pool": free + spent, "grant": free + spent,
         "drawn_today": 0, "allocated": 0, "online": True,
@@ -325,6 +327,17 @@ def nightly_download(h):
     return app
 
 
+def open_refused(h):
+    """Open it on a finished download, refused the way Termux refuses until it
+    is told to share: the one opener's own sentence (``ytq.termux_shares``)."""
+    app = app_at(3, h)
+    app.tabs[3].group = 2
+    row = next(r for r in app.queue.rows if r["where"] == "done")
+    app.sheets[:] = [qs.ItemSheet(row)]
+    qs.said_opening(app, f"could not open Crust of Rust - Lifetimes.mp4: {ytq.termux_shares()}")
+    return app
+
+
 # ---------------------------------------------------------------------------------
 
 def build() -> list[dict]:
@@ -372,7 +385,7 @@ def build() -> list[dict]:
         "The file's last lines, scrolled to the end. An item's own log is the same sheet.",
     ], more_sheet(lambda app: qs.LogSheet("Runner log", ROOT / "logs" / "runner.log")))
     add("f-failed", "Words: the Failed group", [
-        "A failed download's second line is its last error; the mark is `×`.",
+        "A failed download's second line is the item's own refusal where it has one, else when it gave up (`gave up 3h ago`: the runner's UTC stamp, said on no clock); the mark is `×`.",
     ], group(1))
     add("f-done", "Words: the Done group", [
         "A finished one's is its size and the file it delivered (or `deleted`); the mark is `✓`.",
@@ -392,6 +405,9 @@ def build() -> list[dict]:
     add("f-pause", "Pause only on a download this session can stop", [
         "A nightly firing's download (or a `dlq now` elsewhere) gets `esc Back` alone: this app holds no handle on it, and a Pause that says paused over a download that carries on would be worse than none.",
     ], nightly_download)
+    add("f-open-refused", "Open it: a refusal is said whole", [
+        "The one opener's refusal names its fix, so it is never clipped: a notice in the error tone, wrapped, `esc OK` pinned. Its success, `opened <name>`, stays on the line above the tabs. Open it when done says a refusal in the same words, wrapped in red where the checkbox was, with Back pinned under it.",
+    ], open_refused)
     empty_rows = add("f-empty", "Words: an empty group", [
         "`nothing queued — Search or Feed adds something`, `nothing has failed`, `nothing finished yet`.",
     ], empty_queue)

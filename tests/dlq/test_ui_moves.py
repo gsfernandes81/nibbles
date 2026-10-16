@@ -349,6 +349,54 @@ def test_a_title_queued_again_does_not_take_the_finished_ones_name(dlq, fired):
     assert granted > 0
 
 
+@given(
+    held=st.lists(
+        st.tuples(
+            st.sampled_from(["queue", "done", "failed", "work", "out", "record"]),
+            st.sampled_from(["one", "two", "Song"]),
+            st.sampled_from([10, 20, 30]),
+        ),
+        max_size=8,
+    ),
+)
+def test_a_move_and_a_write_never_disagree_about_a_name(dlq, held):
+    """One collision rule: the name ``write_item`` writes by is the name a
+    move or a rename answers to. A rename refuses exactly the names a write
+    steps round, and a write never lands on one a move would refuse — so
+    whichever of them comes second, it cannot take the other's name."""
+    clear(dlq)
+    dlq.item("40-mover.py")
+    records = {}
+    for kind, slug, key in held:
+        name = f"{key:02d}-{slug}.py"
+        if kind == "queue":
+            dlq.item(name)
+        elif kind in ("done", "failed"):
+            if any(next((dlq.root / sub).rglob(name), None) for sub in ("done", "failed")):
+                continue
+            dlq.item(name, where="done/2026-10-01" if kind == "done" else "failed")
+        elif kind in ("work", "out"):
+            (dlq.root / kind / name).mkdir(parents=True, exist_ok=True)
+        else:
+            records[name] = {"attempts": 1}
+    dlq.state(records)
+    used = dlq.ytq.names_in_use()
+    assert dlq.ui._occupied(set()) == used
+    mover = next(row for row in dlq.sched.items() if row["name"] == "40-mover.py")
+    source = (dlq.root / "queue" / "40-mover.py").read_text()
+    for key in (10, 20, 30):
+        for slug in ("one", "two", "Song"):
+            name = f"{key:02d}-{slug}.py"
+            refused = dlq.ui.refuse_rename(mover, name)
+            assert (refused is not None) == (name in used), name
+            written = dlq.ytq.write_item(key, slug, source, again=True)
+            try:
+                assert written.name not in used
+                assert (written.name == name) == (refused is None), (name, written.name)
+            finally:
+                written.unlink()
+
+
 def test_a_stray_in_the_queue_neither_moves_nor_stops_a_move(dlq):
     """``20-holiday.png`` is listed as a queued row so that it can be
     explained. Moving its neighbours past it must work, and nothing may spell
@@ -406,7 +454,8 @@ def test_everything_an_item_owns_moves_with_it(dlq):
     dlq.state({"10-thing.py": {"attempts": 2, "part_bytes": 1234}})
 
     row = dlq.sched.items()[0]
-    assert dlq.ui.do_rename(row, "10-other.py") == "now 10-other"
+    said, renamed = dlq.ui.do_rename(row, "10-other.py")
+    assert renamed and said
 
     assert queued(dlq) == ["10-other.py"]
     assert (dlq.root / "work" / "10-other.py" / "file.part").is_file()
@@ -470,8 +519,8 @@ def test_removing_keeps_what_was_paid_for(dlq):
     (out / "thing.iso").write_bytes(b"finished")
 
     row = dlq.sched.items()[0]
-    said = dlq.ui.do_remove(row)
-    assert said.startswith("removed")
+    said, removed = dlq.ui.do_remove(row)
+    assert removed and said
     assert dlq.sched.items() == []
     assert (dlq.root / "work" / "10-thing.py" / "file.part").is_file()
     assert (out / "thing.iso").is_file()
@@ -554,13 +603,14 @@ def test_a_removal_never_deletes_bytes_its_question_did_not_name(
             handle.write(b"y" * grown)
     there = dlq.sched._payload_bytes(work)
 
-    said = dlq.ui.do_remove(row, bytes_too=bytes_too)
+    said, removed = dlq.ui.do_remove(row, bytes_too=bytes_too)
     assert said
     lost = there - dlq.sched._payload_bytes(work)
     assert lost <= (then if bytes_too else 0)
     gone = not (dlq.root / "queue" / "10-film.py").exists()
-    # Refused only where deleting would have taken more than it named.
-    assert gone == (not bytes_too or not grown)
+    # Refused only where deleting would have taken more than it named, and
+    # what the verb says it did is what it did.
+    assert gone == (not bytes_too or not grown) == removed
 
 
 def test_the_keys_the_remove_screen_answers_to_never_vary(dlq):
@@ -655,7 +705,8 @@ def test_a_failed_item_comes_back_with_its_nights_and_its_bytes(dlq):
     dlq.state({"10-thing.py": {"attempts": 3, "stalls": 2, "retired": "failed"}})
 
     row = dlq.sched.items()[0]
-    assert dlq.ui.do_requeue(row).endswith("is queued again")
+    said, put_back = dlq.ui.do_requeue(row)
+    assert put_back and said
     assert queued(dlq) == ["10-thing.py"]
     record = json.loads((dlq.root / "state.json").read_text())["items"]["10-thing.py"]
     assert record["attempts"] == 0 and record["stalls"] == 0
@@ -663,15 +714,49 @@ def test_a_failed_item_comes_back_with_its_nights_and_its_bytes(dlq):
     assert (work / "file.part").stat().st_size == 2048
 
 
+@pytest.mark.parametrize("verb", ["put it back", "clear its tries"])
+def test_a_download_given_its_nights_back_gets_its_grace_back_too(dlq, monkeypatch, verb):
+    """A direct download's streaks start again with its attempts.
+
+    Three answers in a row that were not the file make every answer after
+    them a strike; given its nights back with that streak still counted, the
+    first page the server sent was a strike again. What the meta knows about
+    the file — its size, validators, that its server ignores Range — is not a
+    streak, and stays, as do the bytes."""
+    dlq.item("10-thing.iso.py", where="failed" if verb == "put it back" else "queue")
+    work = dlq.root / "work" / "10-thing.iso.py"
+    work.mkdir(parents=True)
+    part = work / "thing.iso.part"
+    part.write_bytes(b"x" * 2048)
+    known = {"total": 10 * MiB, "etag": '"abc"', "no_range": True, "at_least": 5,
+             "restarts": 1}
+    dlq.dl._save_meta(part, {**known, "refused": 7, "range_200s": 1})
+    dlq.state({"10-thing.iso.py": {"attempts": 3, "stalls": 1}})
+
+    row = dlq.sched.items()[0]
+    act = dlq.ui.do_requeue if verb == "put it back" else dlq.ui.do_clear_tries
+    said, worked = act(row)
+    assert worked, said
+    assert dlq.dl._load_meta(part) == known
+    assert part.stat().st_size == 2048
+    # And the next answer that is not the file is "not tonight", not a strike.
+    monkeypatch.setenv("EXPIRE_WORK", str(work))
+    status = dlq.dl.Status(dlq.dl.Env(), 0, 2048)
+    answer = dlq.dl._refused(part, dlq.dl._load_meta(part), status, "a sign-in page")
+    assert answer == dlq.dl.DECLINED
+
+
 def test_clearing_the_tries_of_a_queued_item(dlq):
     dlq.item("10-thing.py")
     dlq.state({"10-thing.py": {"attempts": 2}})
     row = dlq.sched.items()[0]
-    assert dlq.ui.do_clear_tries(row).endswith("cleared")
+    said, cleared = dlq.ui.do_clear_tries(row)
+    assert cleared and said
     assert json.loads((dlq.root / "state.json").read_text())["items"]["10-thing.py"][
         "attempts"
     ] == 0
-    assert dlq.ui.do_clear_tries(dlq.sched.items()[0]) == "it has no failed tries"
+    said, cleared = dlq.ui.do_clear_tries(dlq.sched.items()[0])
+    assert said and not cleared
 
 
 def test_nothing_may_be_changed_while_the_queue_is_busy(dlq):
@@ -690,15 +775,15 @@ def test_nothing_may_be_changed_while_the_queue_is_busy(dlq):
     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
         assert dlq.ui.busy_problem()
-        said = [
-            dlq.ui.do_reorder(rows, rows[0]["name"], 1)[0],
+        answers = [
+            dlq.ui.do_reorder(rows, rows[0]["name"], 1),
             dlq.ui.do_rename(rows[0], "40-new.py"),
             dlq.ui.do_remove(rows[0]),
             dlq.ui.do_clear_tries(rows[0]),
             dlq.ui.do_requeue(rows[0]),
-            dlq.ui.refuse_rename(rows[0], "40-new.py"),
         ]
-        assert all(answer == dlq.ui.busy_problem() for answer in said)
+        assert all(answer == (dlq.ui.busy_problem(), False) for answer in answers)
+        assert dlq.ui.refuse_rename(rows[0], "40-new.py") == dlq.ui.busy_problem()
         assert dlq.ui.forget_gone(rows) == []
     finally:
         fcntl.flock(handle, fcntl.LOCK_UN)
@@ -716,11 +801,8 @@ def test_nothing_may_be_changed_while_the_queue_is_busy(dlq):
 def test_a_name_survives_being_taken_apart_and_put_back(dlq, number, words):
     """The number, the slug and the suffix, and back again.
 
-    A rename goes through ytq's slugify because that half was typed by a
-    person and the rule for what an item may be called is ytq's — one spelling
-    of it, or the two front ends produce names that sort against each other
-    differently. A move does not, because it must not silently shorten a long
-    name as well as move it.
+    A move changes the number and nothing else: it must not silently shorten
+    a long name as well as move it.
     """
     slug = dlq.ytq.slugify(words)
     assume(slug and dlq.ui.NAME_RE.match(f"{number:02d}-{slug}.py"))
@@ -728,7 +810,6 @@ def test_a_name_survives_being_taken_apart_and_put_back(dlq, number, words):
 
     assert dlq.ui.parse_name(name) == (number, slug)
     assert dlq.ui.renumber(name, number) == name
-    assert dlq.ui.reslug(name, slug) == name
     assert dlq.ui._slug_of(name) == slug
     # And moving it keeps the slug whatever the number becomes.
     assert dlq.ui.parse_name(dlq.ui.renumber(name, 99))[1] == slug
@@ -844,19 +925,9 @@ def test_the_word_the_job_row_uses_is_the_word_the_key_reads(dlq):
     assert dlq.ui.armed([]) is False
 
 
-def test_the_confirm_that_stops_the_nightly_job_names_the_key_that_starts_it(dlq):
-    """A confirm can be wrong about its own screen, and this is the one line
-    where being wrong costs the nightly job.
-
-    It said ``a`` for as long as the queue had a screen of its own with arming
-    on it, and went on saying ``a`` after the key moved — by which time ``a``
-    was the switch that stops the queue downloading at all.
-    """
-    lines = dlq.ui.cancel_note()
-    assert lines and all(line.strip() for line in lines)
-    # It names the row that arms it again, which is a row on More now.
-    assert "nightly job" in lines[-1]
-    sheet = None
+def test_stopping_the_nightly_job_is_asked_first_and_never_the_default(dlq):
+    """The nightly job armed, its row on More asks before it stops it: one
+    confirm, the stop in the danger style, No last."""
     app = dlq.app.App(None, 4, size=(40, 24))
     app.tabs[4].job_rows = [("job", f"{dlq.sched.ARMED}, fires every 15m", "32")]
     app.tabs[4].act(app, ("job",))

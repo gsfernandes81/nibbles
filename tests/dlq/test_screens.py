@@ -151,6 +151,20 @@ def test_put_here_by_tapping_the_buttons(opened):
     assert order_on_disk(app.root) == ["bravo", "alpha", "charlie"]
 
 
+def test_a_drag_takes_a_held_download_the_way_the_finger_goes(opened):
+    """"A swipe drags it" (``k-place``), as Termux sends a swipe: a finger
+    going down the screen a row (two lines) takes the held download down one
+    place, and Put here renames it there."""
+    app = opened()
+    app.tap_on("alpha")
+    app.tap_on("Move")
+    assert "moving alpha" in app.header
+    x, y = app.find("alpha")
+    app.drag(-2, x, y)  # the finger moves down two lines
+    app.tap_on("Put here")
+    assert order_on_disk(app.root) == ["bravo", "alpha", "charlie"]
+
+
 def test_a_move_that_is_thought_better_of_costs_nothing(opened):
     """Cancel leaves it where it was, and nothing was renamed to find that out."""
     app = opened()

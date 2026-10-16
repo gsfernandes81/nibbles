@@ -290,8 +290,8 @@ def test_the_cut_line_is_emitted_as_a_heading(dlq, width):
     """An entry the cursor cannot stop on and no tap can open, with no name.
 
     That is the whole of how it stays computed rather than becoming an item:
-    the cursor skips it, :func:`landed_index` cannot land on it, and no row
-    moves because it is there.
+    the cursor skips it, no tap can open it, and no row moves because it is
+    there.
     """
     three(dlq)
     rows = dlq.sched.items()
@@ -314,18 +314,6 @@ def test_the_cut_line_is_emitted_as_a_heading(dlq, width):
     for _ in range(len(ruled_entries) + 2):
         view.move(1)
         assert view.entries[view.cursor].selectable
-
-
-def test_the_cursor_never_lands_on_the_line(dlq):
-    """A drop puts the item at a *position* among the queued, and the line has
-    none."""
-    three(dlq)
-    rows = dlq.sched.items()
-    for pos in range(-1, len(rows) + 2):
-        landed = dlq.ui.landed_index(rows, pos)
-        assert landed is not None
-        assert rows[landed]["where"] == "queued"
-    assert dlq.ui.landed_index([], 0) is None
 
 
 # --------------------------------------------------------------------------- #

@@ -1,15 +1,18 @@
 #!/data/data/com.termux/files/usr/bin/python3
-"""The queue's management screen: reorder, rename, remove, retry, run now.
+"""What changes the queue, and what the Queue tab works out before it draws.
 
-``nibbles queue``. The queue already had two screens and neither of them changes
-anything: ``nibbles status`` says what happens next, ``nibbles list`` says where
-everything is. What neither could do is the handful of things that come up once
-an item is *in* the queue and wrong — it should go first, it is called the
+``nibbles queue`` opens the app on its Queue tab, and ``queue_screens`` draws
+it; this module is what those screens call. The handful of things that come up
+once an item is *in* the queue and wrong — it should go first, it is called the
 wrong thing, it should not run at all, it failed three nights and deserves
-another one. Those were a rename in ``queue/`` and an edit of ``state.json`` by
-hand, and doing them by hand is how the bytes get lost.
+another one — were a rename in ``queue/`` and an edit of ``state.json`` by
+hand, and doing them by hand is how the bytes get lost. Each is one verb here:
+:func:`do_reorder`, :func:`do_rename`, :func:`do_remove`, :func:`do_requeue`
+and :func:`do_clear_tries`, called alike by a button and its key, and each
+answers ``(what to say, whether it worked)``: a screen branches on the flag,
+never on the wording, which is free to change.
 
-Two rules run through this whole file, and both are about the bytes.
+Two rules run through all of them, and both are about the bytes.
 
 **Everything an item owns moves with it.** An item is not only the file in
 ``queue/``: it is also ``work/<name>/``, where a half-finished download of
@@ -18,7 +21,10 @@ delivered, and its record in ``state.json``, which holds the attempts and where
 the files went. Renaming the queue file alone leaves a paid-for partial under a
 name nothing will ever look for again, and the item starts from zero on the
 next night without a word. :func:`belongings` is the one place that decides
-what an item owns, and every move and every removal is spelled from it.
+what an item owns, and every move and every removal is spelled from it. And a
+name something still answers to is never handed to another item:
+:func:`_occupied` is the rule ``ytq.write_item`` writes by
+(:func:`ytq.names_in_use`), so a move and a write cannot disagree about one.
 
 **Nothing outside the queue's own root is ever deleted.** A delivered file sits
 in Downloads among the phone's other files and belongs to whoever asked for it,
@@ -33,30 +39,18 @@ the download or breaks the archive. Every mutating function starts at
 :func:`busy_problem`, which is checked rather than assumed — the guard lives
 with the mutation and not with the screen, so it cannot be skipped by a caller.
 
-Where the actions live is itself a safety rule: **the list picks and the item
-screen acts.** Every key that changes something is on a screen showing one item
-and nothing else, so the item being removed is the one that is on the screen.
-It also buys the room to spell each action out in words, which is what makes
-this readable at 32 columns where a row of hint keys would not be.
+**The cut line is computed and is never an item.** It has no name, no record
+and no place in the order, and it is worked out afresh on every draw from
+whatever order the items are in — including one that exists nowhere but under
+a held item (:func:`preview`). :func:`tonight_plan` is
+:func:`expire_runner.plan` over :func:`expire_runner.admit`, the rule
+``fire()`` admits items by, so the screen cannot promise bytes the night then
+refuses; :func:`cut_index` says where the line falls and, where nothing gets
+anything, why. Moving an item across the line moves the line; it never moves
+the budget.
 
-**The listing is the whole queue.** There was a second screen above it — the
-status, the job, the destinations, the settings and the key that ran the lot —
-and it is gone: what tonight would do is two header lines on the listing
-itself, ``n``, ``s`` and ``l`` are on the listing, and the destinations and the
-nightly job are rows on the settings page. What replaces the paragraph of
-figures is one line drawn *through the queued group*, after the last download
-tonight's budget reaches. **That line is computed and is never an item**: it
-has no name, no record and no place in the order, the cursor steps over it, and
-it is worked out afresh on every draw from whatever order the items are in —
-including an order that exists nowhere but under a held item. It is
-:func:`expire_runner.plan` over :func:`expire_runner.admit`, which is the same
-rule ``fire()`` admits items by, so the screen cannot promise bytes the night
-then refuses. Moving an item across the line moves the line; it never moves the
-budget.
-
-Layout follows the rest of the queue: Termux in portrait is about 40 columns,
-every line of every screen must fit down to 32, and the key hints
-are the line that must never be the one clipped — they are the way out.
+:class:`Firing` is the whole-queue run that Run now hands to a detached
+runner.
 """
 
 from __future__ import annotations
@@ -70,27 +64,14 @@ import sys
 import threading
 from pathlib import Path
 
+from nibbles import expire_dl
 from nibbles import expire_sched as sched
 from nibbles import ytq
 import contextlib
 
-#: What a row says is said the same way ``nibbles list`` says it, by calling the
-#: same functions rather than by respelling them: the state, the progress, the
-#: colour it is worth and the name with its extension dropped. This screen owns
-#: only the *arrangement*, which differs because a cursor needs rows of a fixed
-#: height that can be reversed whole — ``compose_list``'s tight shape separates
-#: downloads with blank lines, and a blank line cannot be highlighted.
+#: A name with its extension dropped, as ``nibbles list`` says it: called rather
+#: than respelled, so the two cannot come out different.
 _display_name = sched._display_name
-_state_of = sched._state_of
-_progress_of = sched._progress_of
-_tone = sched._tone
-_fit = ytq.fit
-_wrap = sched._wrap
-
-#: The width at which the description column and the long labels fit. Shared
-#: with the other two screens so that one terminal does not get two answers
-#: about whether it is wide.
-WIDE = sched.WIDE
 
 
 # --------------------------------------------------------------------------- #
@@ -135,8 +116,7 @@ def _slug_of(name: str) -> str:
     picking it up and putting it where you want it, not by working out what
     integer lives between two others.
 
-    Nothing needs it typed back any more either. ``nibbles now`` and ``dlq open``
-    are gone from the command line, and ``nibbles path`` takes any unambiguous
+    Nothing needs it typed back either: ``nibbles path`` takes any unambiguous
     part of a name, which a slug is.
     """
     parsed = parse_name(name)
@@ -153,17 +133,6 @@ def renumber(name: str, number: int) -> str:
     """
     _, slug = parse_name(name) or (0, name)
     return f"{max(0, min(99999, number)):02d}-{slug}.py"
-
-
-def reslug(name: str, text: str) -> str:
-    """The same item under a new name, at the priority it already has.
-
-    Through :func:`ytq.slugify`, because this half *was* typed by a person and
-    the rule for what an item may be called is ytq's — one spelling of it, or
-    the two front ends produce names that sort against each other differently.
-    """
-    number, _ = parse_name(name) or (0, "")
-    return f"{number:02d}-{ytq.slugify(text)}.py"
 
 
 # --------------------------------------------------------------------------- #
@@ -329,21 +298,17 @@ def _occupied(moving: set[str]) -> set[str]:
     overwritten or inherited, the finished one drops out of the listing, and
     the queued one adopts bytes it never downloaded and may never run again.
 
+    **The rule is :func:`ytq.names_in_use`**, the one :func:`ytq.write_item`
+    writes by, and not a second walk of the same folders: two copies were two
+    answers, and a name one of them missed was a name a move took and a write
+    stepped round, or the other way about.
+
     What *moving* own goes with them — their queue files, scratch, outboxes
-    and records — so their names are taken out of that half. Never out of
-    ``failed/`` and ``done/``, which no queued item owns.
+    and records — so their names are taken out of it. Never a name a finished
+    or failed item answers to, which no queued item owns.
     """
-    theirs: set[str] = set()
-    for root in (sched.QUEUE, sched.WORK, sched.OUT):
-        with contextlib.suppress(OSError):
-            theirs.update(entry.name for entry in root.iterdir())
-    with contextlib.suppress(Exception):
-        theirs.update(sched._runner().load_state().get("items") or {})
-    held: set[str] = set()
-    for root in (sched.FAILED, sched.DONE):
-        with contextlib.suppress(OSError):
-            held.update(path.name for path in root.rglob("*"))
-    return (theirs - moving) | held
+    held = {path.name for where, path in ytq.items() if where != "queued"}
+    return (ytq.names_in_use() - moving) | held
 
 
 def _fresh_keys(names: list[str], occupied: set[str]) -> list[int] | None:
@@ -428,21 +393,6 @@ def _reindex(order: list[str]) -> str | None:
             if failure:
                 return failure
     return None
-
-
-def landed_index(rows: list[dict], pos: int) -> int | None:
-    """Where the cursor lands after a drop: the row at queued position *pos*.
-
-    By position and never by name, because :func:`do_reorder` *renamed* the
-    item — its number is its place — so the name that was picked up finds
-    nothing in the re-read list. The drop's whole meaning is "put it at
-    *pos* among the queued", so the row now at that position is the one that
-    moved, whatever it is called now.
-    """
-    queued = [index for index, row in enumerate(rows) if row["where"] == "queued"]
-    if not queued:
-        return None
-    return queued[max(0, min(pos, len(queued) - 1))]
 
 
 def do_reorder(rows: list[dict], name: str, pos: int) -> tuple[str, bool]:
@@ -643,21 +593,51 @@ def _edit_record(name: str, changes: dict, drop: tuple[str, ...] = ()) -> None:
     runner.save_state(state)
 
 
-def do_rename(row: dict, new_name: str) -> str:
-    """Rename the item and everything it owns. Returns what to say about it."""
+#: What a direct download's ``.part.meta.json`` counts *in a row*
+#: (``expire_dl``): answers that were not the file (``refused``, a strike from
+#: the :data:`expire_dl.MAX_REFUSALS`-th on) and 200s to a ranged request
+#: (``range_200s``, the part kept once and the server doubted only the second
+#: time). Streaks, like the attempts in ``state.json``: what the meta knows
+#: about the file and its server — its size, its validators, ``no_range``,
+#: ``at_least``, ``restarts`` — is not one, and stays.
+STREAKS = ("refused", "range_200s")
+
+
+def _fresh_streaks(name: str) -> None:
+    """Start the item's :data:`STREAKS` again, with its attempts.
+
+    A download given its nights back with a streak still counted was given
+    none: its third answer that was not the file had made every answer after
+    it a strike, so the first page the server sent the item put back was a
+    strike again, with no grace of "not tonight" before it.
+    """
+    for meta in sorted((sched.WORK / name).glob("*.part.meta.json")):
+        part = meta.with_name(meta.name.removesuffix(".meta.json"))
+        found = expire_dl._load_meta(part)
+        if isinstance(found, dict) and any(key in found for key in STREAKS):
+            for key in STREAKS:
+                found.pop(key, None)
+            expire_dl._save_meta(part, found)
+
+
+def do_rename(row: dict, new_name: str) -> tuple[str, bool]:
+    """Rename the item and everything it owns: ``(what to say, renamed)``."""
     problem = refuse_rename(row, new_name)
     if problem:
-        return problem
+        return problem, False
     failure = _apply(rename_moves(row, new_name))
     if failure:
-        return failure
+        return failure, False
     _move_record(row["name"], new_name)
     _note(f"renamed {row['name']} -> {new_name}")
-    return f"now {_display_name(new_name)}"
+    return f"now {_display_name(new_name)}", True
 
 
-def do_remove(row: dict, bytes_too: bool = False, why: str = "removed") -> str:
-    """Take the item off the list, keeping every byte unless told otherwise.
+def do_remove(
+    row: dict, bytes_too: bool = False, why: str = "removed"
+) -> tuple[str, bool]:
+    """Take the item off the list, keeping every byte unless told otherwise:
+    ``(what to say, removed)``.
 
     *row* is what the question was asked about, and the answer can come hours
     later — a confirm stays up across a firing, and one that bought part of
@@ -669,11 +649,11 @@ def do_remove(row: dict, bytes_too: bool = False, why: str = "removed") -> str:
     """
     problem = busy_problem()
     if problem:
-        return problem
+        return problem, False
     have = sched._payload_bytes(sched.WORK / row["name"])
     if bytes_too and have > row["have"]:
         grown = ytq.human(have - row["have"])
-        return f"it has downloaded {grown} more since you asked; nothing was removed"
+        return f"it has downloaded {grown} more since you asked; nothing was removed", False
     row = {**row, "have": have}
     goes, kept = removal(row, bytes_too)
     for path in goes:
@@ -683,7 +663,7 @@ def do_remove(row: dict, bytes_too: bool = False, why: str = "removed") -> str:
             else:
                 path.unlink()
         except OSError as exc:
-            return f"could not remove {path.name}: {exc.strerror or exc}"
+            return f"could not remove {path.name}: {exc.strerror or exc}", False
     runner, state, _ = _record(row["name"])
     if (state.get("items") or {}).pop(row["name"], None) is not None:
         runner.save_state(state)
@@ -709,7 +689,7 @@ def do_remove(row: dict, bytes_too: bool = False, why: str = "removed") -> str:
         [f"{len(left)} kept in out/"] if left else []
     )
     said = f"removed {_slug_of(row['name'])}"
-    return f"{said}; {', '.join(parts)}" if parts else said
+    return (f"{said}; {', '.join(parts)}" if parts else said), True
 
 
 def forget_gone(rows: list[dict]) -> list[str]:
@@ -737,48 +717,53 @@ def forget_gone(rows: list[dict]) -> list[str]:
         if row["where"] != "done" or row.get("lost") != "gone" or not row["recorded"]:
             continue
         folder = row["recorded"][0].parent
-        said = do_remove(row, why=f"forgot (nothing of it left in {folder})")
-        if said.startswith("removed"):
+        _, removed = do_remove(row, why=f"forgot (nothing of it left in {folder})")
+        if removed:
             forgotten.append(_slug_of(row["name"]))
     return forgotten
 
 
-def do_requeue(row: dict) -> str:
-    """Put a failed item back in the queue, with its attempts wiped.
+def do_requeue(row: dict) -> tuple[str, bool]:
+    """Put a failed item back in the queue, with its attempts wiped:
+    ``(what to say, put back)``.
 
     The wipe is not a courtesy: an item is set aside once its attempts reach
     ``MAX_ATTEMPTS``, so one put back with them still on the clock is given up
     on again by the first firing that touches it — a retry that retries
-    nothing. What is deliberately kept is ``work/<name>/``, so the retry
-    resumes from whatever the three failed nights did manage to buy.
+    nothing. A direct download's streaks go with them (:func:`_fresh_streaks`).
+    What is deliberately kept is ``work/<name>/`` and what its meta knows of
+    the file, so the retry resumes from whatever the three failed nights did
+    manage to buy.
     """
     problem = busy_problem()
     if problem:
-        return problem
+        return problem, False
     if row["where"] != "failed":
-        return f"it is in {row['where']}, not failed"
+        return f"it is in {row['where']}, not failed", False
     # Not :func:`_taken`, which would find this very item sitting in failed/.
     # The one collision that matters here is a queued item of the same name.
     if (sched.QUEUE / row["name"]).exists():
-        return f"the queue already has a {_display_name(row['name'])}"
+        return f"the queue already has a {_display_name(row['name'])}", False
     failure = _apply([(row["path"], sched.QUEUE / row["name"])])
     if failure:
-        return failure
+        return failure, False
     _edit_record(row["name"], {"attempts": 0, "stalls": 0}, drop=("retired",))
+    _fresh_streaks(row["name"])
     _note(f"put {row['name']} back in the queue, attempts cleared")
-    return f"{_display_name(row['name'])} is queued again"
+    return f"{_display_name(row['name'])} is queued again", True
 
 
-def do_clear_tries(row: dict) -> str:
-    """Give a queued item its three nights back."""
+def do_clear_tries(row: dict) -> tuple[str, bool]:
+    """Give a queued item its three nights back: ``(what to say, cleared)``."""
     problem = busy_problem()
     if problem:
-        return problem
+        return problem, False
     if not row["attempts"]:
-        return "it has no failed tries"
+        return "it has no failed tries", False
     _edit_record(row["name"], {"attempts": 0, "stalls": 0})
+    _fresh_streaks(row["name"])
     _note(f"cleared {row['attempts']} failed tries on {row['name']}")
-    return f"{row['attempts']} failed tries cleared"
+    return f"{row['attempts']} failed tries cleared", True
 
 
 # --------------------------------------------------------------------------- #
@@ -1214,20 +1199,6 @@ def reachable() -> bool:
     worker.start()
     worker.join(2.0)
     return bool(answer and answer[0])
-
-
-def cancel_note() -> list[str]:
-    """What the unregister confirm says — out here so it can be checked.
-
-    The last line is the way back, and it names the row on the More tab that
-    arms it again rather than a key: a confirm can be wrong about its own
-    screen, and this is the one line where being wrong costs the nightly job.
-    """
-    return [
-        "stop the nightly job?",
-        "nothing downloads by itself after this",
-        "nightly job on More arms it again; the queue is untouched either way",
-    ]
 
 
 # --------------------------------------------------------------------------- #

@@ -279,12 +279,33 @@ def test_a_home_that_is_nobodys_reads_as_the_default(dlq):
 
 
 def test_a_destination_that_is_not_a_folder_opens_its_own_screens(dlq):
-    """The More tab and the destinations sheet, which is where it is mended."""
-    dlq.config({"video_dir": ["/sdcard/Movies"], "file_dir": True})
+    """The More tab and the destinations sheet, which is where it is mended.
+
+    A stored value declined for the default reads exactly as nothing stored
+    does — never as a folder that is set — and says why it was declined, in
+    the runner's own sentence (``dest_state``)."""
     app = dlq.app.App(None, 4, size=(40, 24))
-    app.compose()
-    app.sheets[:] = [dlq.qs.DestSheet()]
-    app.compose()
+
+    def drawn(config):
+        dlq.config(config)
+        app.sheets[:] = [dlq.qs.DestSheet()]
+        app.compose()
+        return app.sheets[-1].body(app, 76, 24).block.plain().split("\n")
+
+    unset = drawn({})
+    declined = drawn({"video_dir": ["/sdcard/Movies"], "file_dir": True})
+    whys = [dlq.runner.dest_state(kind)[1] for kind in ("video", "file")]
+    said = [line.strip() for line in declined if line not in unset]
+    assert len(said) == len(whys)
+    for why, line in zip(whys, said, strict=True):
+        assert why and why in line
+    assert [line for line in declined if line in unset] == unset
+
+    folder = dlq.root / "Movies"
+    folder.mkdir()
+    chosen = drawn({"video_dir": str(folder)})
+    assert dlq.runner.dest_state("video") == (folder, None)
+    assert chosen != unset and len(chosen) == len(unset)
 
 
 # --------------------------------------------------------------------------- #
@@ -555,6 +576,27 @@ def test_every_setting_is_reachable_and_has_a_sentence(dlq):
     for name in dlq.runner.SETTINGS:
         said = dlq.sched._setting_said(name, dlq.runner.settings()[name])
         assert said.startswith(f"{name}:") and len(said) > len(name) + 2
+
+
+@pytest.mark.parametrize(("budget", "keep_when_paid", "rows"), [
+    ("zwana", True, ["window", "reserve", "reserve-when-paid", "budget", "auto",
+                     "notify-blocked"]),
+    ("zwana", False, ["window", "reserve", "reserve-when-paid", "paid-min", "budget",
+                      "auto", "notify-blocked"]),
+    ("manual", True, ["window", "reserve", "budget", "allowance", "reset", "auto",
+                      "notify-blocked"]),
+    ("manual", False, ["window", "reserve", "budget", "allowance", "reset", "auto",
+                       "notify-blocked"]),
+])
+def test_more_shows_the_rows_that_apply_to_the_source_in_its_order(
+    dlq, budget, keep_when_paid, rows
+):
+    """Which settings apply to the budget source is the runner's one answer
+    (``settings_shown``); More adds only its order and the waiver's row."""
+    dlq.config({"budget": budget, "reserve_when_paid": keep_when_paid})
+    values = dlq.runner.settings()
+    assert dlq.qs.shown_settings(values) == rows
+    assert set(rows) <= set(dlq.runner.settings_shown(budget))
 
 
 def test_the_keys_that_set_are_never_the_keys_that_leave(dlq):

@@ -51,11 +51,6 @@ def size(n: float) -> str:
     return f"{n:.2f} {unit}"
 
 
-def mb(n: float) -> str:
-    """``~0.3 MB``-style figures for what a fetch costs (decimal, one place)."""
-    return f"{n / 1e6:.1f} MB"
-
-
 def left(seconds: float | None) -> str:
     """Time left in one unit, the largest that is at least 1, rounded:
     ``35s``, ``5m``, ``1h`` — never ``1h11m``. ``""`` for no time at all."""

@@ -135,8 +135,7 @@ def api_problem() -> str | None:
     """Why the scheduler cannot be reached, or ``None`` if it can.
 
     Returned rather than exited on, because the screen asks this question too
-    and a screen cannot be answered with ``sys.exit``. :func:`require_api` is
-    the command line's half of it.
+    and a screen cannot be answered with ``sys.exit``.
     """
     try:
         if api("--pending", timeout=20).returncode != 0:
@@ -158,13 +157,6 @@ def _api_failure(exc: Exception) -> str:
     if isinstance(exc, subprocess.TimeoutExpired):
         return "Termux:API did not respond - is the Termux:API app installed?"
     return f"termux-job-scheduler failed: {exc}"
-
-
-def require_api() -> None:
-    """Fail clearly rather than hanging when Termux:API is not usable."""
-    problem = api_problem()
-    if problem:
-        sys.exit(f"error: {problem}")
 
 
 def shebang_problem() -> str | None:
@@ -2177,29 +2169,6 @@ def show_path(row: dict) -> int:
     for path in files:
         print(path)
     return 0
-
-
-def _open(target: Path, quiet: bool = False) -> int:
-    """Hand the file to Android, or to a desktop if this is not the phone.
-
-    *quiet* is for ``nibbles queue``, which calls this from inside the app: an opener
-    writing to the terminal there draws over a screen it does not own, and
-    nothing redraws it away. The caller reports the exit code instead.
-    """
-    for opener in ("termux-open", "xdg-open"):
-        if shutil.which(opener) is None:
-            continue
-        try:
-            return subprocess.run(
-                [opener, str(target)], timeout=60, capture_output=quiet
-            ).returncode
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            if not quiet:
-                print(f"error: {opener} failed: {exc}", file=sys.stderr)
-            return 1
-    if not quiet:
-        print(f"error: no termux-open or xdg-open to open {target}", file=sys.stderr)
-    return 1
 
 
 # --------------------------------------------------------------------------- #

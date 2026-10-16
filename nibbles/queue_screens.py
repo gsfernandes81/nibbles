@@ -375,7 +375,15 @@ class QueueModel:
         if ytq.queue_busy():
             return ["the queue is busy", "a nightly firing or another download holds it",
                     f"{display(name)} is queued and will run in the window"]
-        self.running.start(name)
+        try:
+            self.running.start(name)
+        except OSError as exc:
+            # The log that will not open, the interpreter that is not there:
+            # a refusal like the others, said on the screen. Raised, it took
+            # the app down from the yes, with the download never started.
+            ui._note(f"could not start {name} now: {exc}")
+            return ["it could not be started", str(exc),
+                    f"{display(name)} is queued and will run in the window"]
         ui._note(f"started {name} now, outside the window")
         self.read()
         return None
@@ -809,7 +817,12 @@ class QueueTab(Screen):
 
     def scroll(self, app, event) -> None:
         if self.holding is not None:
-            self.hold_acc += event.dy
+            # "A swipe drags it" (``k-place``): the held row goes the way the
+            # finger goes, a place per row of travel (a row is two lines).
+            # Termux scrolls naturally — a finger going down the screen sends
+            # the wheel up, ``dy`` -1 — so the place moves against ``dy``;
+            # stepped by ``dy`` itself, the row ran away from the finger.
+            self.hold_acc -= event.dy
             while abs(self.hold_acc) >= 2:
                 step = 1 if self.hold_acc > 0 else -1
                 self.hold_acc -= 2 * step
@@ -851,6 +864,7 @@ class QueueTab(Screen):
             return
         self.group = 0
         self.holding = (name, queued.index(name))
+        self.hold_acc = 0  # half a row left over from the last hold is not this one's
         app.sheets.clear()
         app.guard.opened_by(app.last_tap)
 
@@ -1002,6 +1016,26 @@ def format_label(desc: str) -> str:
     return found.group(1) if found else ""
 
 
+def open_refused(said: str) -> bool:
+    """Whether the one opener's answer (``ytq.open_file``) is anything but its
+    success, ``opened <name>`` — the sentence ytq's own tests pin, and the
+    one answer that fits a line. Every other answer is a refusal, and a
+    refusal says what to do about it: that Termux shares no file until
+    ``termux.properties`` allows it and the settings are reloaded, or where
+    to move the file. On a phone that is a paragraph, and clipped to one line
+    the half that went was the fix."""
+    return not said.startswith("opened ")
+
+
+def said_opening(app, said: str) -> None:
+    """Open it's answer: the success on the line above the tabs, and a
+    refusal whole, in a notice in the error tone, which wraps and scrolls."""
+    if open_refused(said):
+        app.open(Notice("Not opened", [said], border=T.error))
+    else:
+        app.say(said)
+
+
 class ItemSheet(Sheet):
     """One download, its facts, and ``actions_for()``'s actions as a grid."""
 
@@ -1069,9 +1103,12 @@ class ItemSheet(Sheet):
 
     def done(self, app, job) -> None:
         """Open it has come back from Android: the one opener's own sentence
-        (``ytq.open_file``, which Open it when done says too)."""
+        (``ytq.open_file``, which Open it when done says too). Its success is
+        a line above the tabs; a refusal is a notice, whole (:func:`said_opening`)."""
         self.opening = None
-        app.say(job.result if job.error is None else f"could not open {job.key.name}")
+        said = (job.result if job.error is None
+                else f"could not open {job.key.name}: {job.error}")
+        said_opening(app, said)
 
     def key(self, app, key: str) -> bool:
         row = self.row(app)
@@ -1117,8 +1154,7 @@ class ItemSheet(Sheet):
                         tui.Job(lambda t=target: ytq.open_file(t), "opening it",
                                 key=target, quiet=True), self)
         elif key in ("t", "u"):
-            said = ui.do_clear_tries(row) if key == "t" else ui.do_requeue(row)
-            worked = said.endswith("cleared") or said.endswith("is queued again")
+            said, worked = ui.do_clear_tries(row) if key == "t" else ui.do_requeue(row)
             if worked:
                 app.receipt(said)
             app.say(said)
@@ -1194,8 +1230,8 @@ def remove_sheet(app, row: dict, item: ItemSheet) -> Confirm:
 
     def answer(bytes_too: bool):
         def go() -> None:
-            said = ui.do_remove(row, bytes_too=bytes_too)
-            if said.startswith("removed"):
+            said, removed = ui.do_remove(row, bytes_too=bytes_too)
+            if removed:
                 app.receipt(said)
                 app.close(item)
             app.say(said)
@@ -1268,8 +1304,7 @@ class DownloadSheet(Sheet):
             # Following a run that has not started an item: the status bar's
             # own words for it, and Pause while there is a run to pause.
             said = "starting the queue" if model.mine() else "the run has ended"
-            return w.vstack(w.text(said, width, T.fg_base), w.gap(width),
-                            self.buttons(app, width), width=width)
+            return w.vstack(w.text(said, width, T.fg_base), w.gap(width), width=width)
         have, total, rate = model.progress(self.name)
         short = height < SHORT
         live = self.live(app)
@@ -1303,11 +1338,22 @@ class DownloadSheet(Sheet):
         if r.askable and r.name == self.name:
             parts.append(w.checkbox("Open it when done", r.open_when_done, width, id="open"))
         elif self.asked(app) and not live:
-            # Where the checkbox was: what opening it came to.
-            parts.append(w.text(r.opened or "opening it…", width,
-                                T.fg_more_subtle if r.opened else T.info))
-        parts.append(self.buttons(app, width))
+            # Where the checkbox was: what opening it came to. A refusal is
+            # said whole, wrapped, in the error tone — it names the fix, and
+            # one line kept only the start of it (:func:`open_refused`).
+            if not r.opened:
+                parts.append(w.text("opening it…", width, T.info))
+            elif open_refused(r.opened):
+                parts.append(w.wrapped(r.opened, width, T.error))
+            else:
+                parts.append(w.text(r.opened, width, T.fg_more_subtle))
         return w.vstack(*parts, width=width)
+
+    def footer(self, app, width: int, height: int) -> Piece:
+        """Pause and Back, pinned: a refusal long enough to scroll the body
+        never takes the way out with it. Drawn where they were whenever the
+        body fits."""
+        return self.buttons(app, width)
 
     def buttons(self, app, width: int) -> Piece:
         if app.queue.mine():
@@ -1447,8 +1493,8 @@ class RenameSheet(FieldSheet):
         if not new or new == self.row["name"]:
             app.close(self)
             return
-        said = ui.do_rename(self.row, new)
-        if said.startswith("now "):
+        said, renamed = ui.do_rename(self.row, new)
+        if renamed:
             app.receipt(said)
             app.say(said)
             app.queue.changed()
@@ -1529,19 +1575,16 @@ ORDER = ("window", "reserve", "reserve-when-paid", "paid-min", "budget", "allowa
 def shown_settings(values: dict) -> list[str]:
     """Which settings are rows, in order: ``paid-min`` only while the waiver
     is on, ``allowance`` and ``reset`` only while the budget is manual."""
-    r = runner()
-    shown = getattr(r, "settings_shown", None)
-    # The runner's own answer for which settings apply to the source, where it
-    # has one (``only`` on each spec); the ordering and the waiver are More's.
-    applies = set(shown(values.get("budget"))) if shown else set(values)
+    # Which settings apply to the source is the runner's one answer (``only``
+    # on each spec), never a second copy of it; the ordering and the waiver
+    # are More's.
+    applies = set(runner().settings_shown(values.get("budget")))
     names = [n for n in ORDER if n in values] + [n for n in values if n not in ORDER]
     out = []
     for name in names:
         if name not in applies:
             continue
         if name == "paid-min" and values.get("reserve-when-paid", True):
-            continue
-        if name in ("allowance", "reset") and values.get("budget", "manual") != "manual":
             continue
         out.append(name)
     return out
@@ -1837,13 +1880,17 @@ class DestSheet(Sheet):
         config = r.load_config()
         parts = []
         for kind, where in r.dests().items():
-            note = "set" if config.get(f"{kind}_dir") else "default"
-            problem = r.dest_problem(where)
+            # "set" only of a folder that is the one in force: the runner's
+            # own answer (``dest_state``), which also says why a stored value
+            # that cannot be a folder was declined for the default.
+            chosen, declined = r.dest_state(kind, config)
+            note = "set" if chosen is not None else "default"
             block = w.row_item(f"{kind} · {sched._short(where)}", width,
                                subtitle=f"{note}, used by {sched.FILLED_BY[kind]}")
             parts.append(w.piece(block, f"dest:{kind}", kind))
-            if problem:
-                parts.append(w.wrapped(f"× {problem}", width, T.error, limit=2))
+            for problem in (declined, r.dest_problem(where)):
+                if problem:
+                    parts.append(w.wrapped(f"× {problem}", width, T.error, limit=2))
         return w.vstack(*parts, width=width)
 
     def tap(self, app, hit, event) -> None:

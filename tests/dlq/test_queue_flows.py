@@ -452,12 +452,11 @@ def test_open_it_never_holds_the_app(dlq, monkeypatch):
 
     release = threading.Event()
     opened = []
-    answer = "what the opener said about it"
 
     def slow(target):
         release.wait(5)
         opened.append(target)
-        return answer
+        return f"opened {target.name}"
 
     monkeypatch.setattr(dlq.ytq, "open_file", slow)
     film = finished(dlq)
@@ -471,7 +470,7 @@ def test_open_it_never_holds_the_app(dlq, monkeypatch):
     release.set()
     heard(app)
     assert opened == [film]
-    assert app.said == answer
+    assert app.said == f"opened {film.name}"
 
 
 def test_open_it_opens_the_file_as_it_is_now_and_not_as_last_read(dlq, monkeypatch):
@@ -479,7 +478,8 @@ def test_open_it_opens_the_file_as_it_is_now_and_not_as_last_read(dlq, monkeypat
     somewhere else since is the one opened, and one deleted since is never
     handed to Android at all."""
     opened = []
-    monkeypatch.setattr(dlq.ytq, "open_file", lambda target: opened.append(target) or "")
+    monkeypatch.setattr(dlq.ytq, "open_file",
+                        lambda target: opened.append(target) or f"opened {target.name}")
     film = finished(dlq)
     app = headless(dlq)
     row = next(r for r in app.queue.rows if r["name"] == "10-film.py")
@@ -513,12 +513,112 @@ def test_an_opener_that_raises_is_said_and_never_called_opened(dlq, monkeypatch)
     app.open(sheet)
     sheet.act(app, "o")
     heard(app)
-    worked = "the opener's own sentence"
-    assert film.name in app.said and app.said != worked
+    notice = app.sheets[-1]
+    assert isinstance(notice, dlq.qs.Notice) and notice.border == dlq.qs.T.error
+    assert any(film.name in line and "no such opener" in line for line in notice.lines)
+    assert not app.said
+    app.close(notice)
+    worked = f"opened {film.name}"
     monkeypatch.setattr(dlq.ytq, "open_file", lambda target: worked)
     sheet.act(app, "o")
     heard(app)
-    assert app.said == worked
+    assert app.said == worked and app.sheets[-1] is sheet
+
+
+class Phone:
+    """Termux as the one opener sees it (``ytq.open_file``, the real one):
+    the queue root is internal storage, a ``termux-open`` that exits 0, and
+    ``termux.properties`` as *shares* says — nothing, so Termux shares no
+    file with another app until it is told to, or the line that tells it."""
+
+    def __init__(self, dlq, monkeypatch, shares=False):
+        monkeypatch.setenv("EXTERNAL_STORAGE", os.path.realpath(dlq.root))
+        monkeypatch.setattr(dlq.ytq.shutil, "which", lambda name: (
+            "/data/data/com.termux/files/usr/bin/termux-open"
+            if name == "termux-open" else None))
+        self.sent = []
+        monkeypatch.setattr(dlq.ytq.subprocess, "run", lambda argv, **kw: (
+            self.sent.append(argv) or subprocess.CompletedProcess(argv, 0, b"", b"")))
+        props = dlq.ytq.termux_properties_paths()[0]
+        props.parent.mkdir(parents=True, exist_ok=True)
+        props.unlink(missing_ok=True)
+        if shares:
+            props.write_text(f"{dlq.ytq.SHARE_LINE}\n")
+
+
+def sheet_words(app) -> str:
+    """Everything the sheet on top shows, inside its border and padding, as
+    one string with no white space: a sentence wrapped across its rows reads
+    back whole wherever the rows broke it."""
+    lines = app.compose().plain().split("\n")
+    inside = [line[2:-2] for line in lines[app.sheets[-1].layout.y + 1:]]
+    return "".join("".join(inside).split())
+
+
+@pytest.mark.parametrize("width", [32, 40, 80])
+def test_a_refusal_to_open_is_said_whole_and_the_fix_with_it(dlq, monkeypatch, width):
+    """The owner's case: Termux shares no file until termux.properties allows
+    it. The opener's refusal names the fix, and every word of it is on the
+    screen at every width, in a notice in the error tone, whether Open it was
+    tapped on a finished download's sheet or asked of a download as it ran."""
+    Phone(dlq, monkeypatch)
+    film = finished(dlq, file="Crust of Rust - Subtyping and Variance.mp4")
+    refusal = dlq.ytq.open_file(film)
+    assert dlq.qs.open_refused(refusal)
+    whole = "".join(refusal.split())
+
+    app = headless(dlq, size=(width, 24))
+    row = next(r for r in app.queue.rows if r["name"] == "10-film.py")
+    app.open(dlq.qs.ItemSheet(row))
+    key(app, "o")
+    heard(app)
+    notice = app.sheets[-1]
+    assert isinstance(notice, dlq.qs.Notice) and notice.border == dlq.qs.T.error
+    assert whole in sheet_words(app)
+    assert not notice.layout.scrolls
+
+    # Open it when done, on the download's own sheet once it has ended.
+    class Run:
+        alive = askable = stopped = False
+        child = None
+        name, open_when_done, opened, settled = "10-film.py", True, refusal, True
+
+    app = headless(dlq, size=(width, 24))
+    app.queue.running = Run()
+    app.open(dlq.qs.DownloadSheet("10-film.py"))
+    assert whole in sheet_words(app)
+    assert not app.sheets[-1].layout.scrolls
+
+
+def test_opened_stays_one_line_and_a_refusal_never_loses_the_way_out(dlq, monkeypatch):
+    """The real opener's success is the line above the tabs, no notice; and
+    however short the screen, a refusal on a download's sheet leaves its Back
+    on it, the sheet scrolling under it rather than over it."""
+    Phone(dlq, monkeypatch, shares=True)
+    film = finished(dlq)
+    app = headless(dlq)
+    row = next(r for r in app.queue.rows if r["name"] == "10-film.py")
+    sheet = dlq.qs.ItemSheet(row)
+    app.open(sheet)
+    key(app, "o")
+    heard(app)
+    assert app.sheets[-1] is sheet and film.name in app.said
+    assert not dlq.qs.open_refused(app.said)
+
+    class Run:
+        alive = askable = stopped = False
+        child = None
+        name, open_when_done, settled = "10-film.py", True, True
+        opened = "could not open film.mp4: " + "a reason that goes on " * 12
+
+    app.queue.running = Run()
+    app.sheets[:] = [dlq.qs.DownloadSheet("10-film.py")]
+    for width in (32, 40, 80):
+        for height in range(11, 31):
+            app.width, app.height = width, height
+            app.compose()
+            back = app.hits.find("back")
+            assert back is not None and back.y + back.h <= height, (width, height)
 
 
 def test_a_download_started_now_ends_on_its_sheet_and_opens_as_asked(dlq, monkeypatch):
@@ -872,3 +972,96 @@ def test_the_tiny_header_says_the_figure_in_its_own_unit(dlq):
         app.queue.facts, app.queue.note = None, "no /data/route/here"
         header = app.compose().plain().split("\n")[0]
         assert not re.search(r"(MiB|GiB)", header), header
+
+
+# --------------------------------------------------------------------------- #
+# What a verb said it did, and what the screen does about it
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("worked", [True, False])
+def test_the_screens_act_on_whether_a_verb_worked_never_on_its_words(
+    dlq, monkeypatch, worked
+):
+    """Remove, Rename, Queue again and Clear tries each answer ``(what to say,
+    whether it worked)``: a receipt, and the sheet that asked closing, follow
+    the flag whatever the sentence says — reworded, a verb that worked still
+    leaves its receipt, and one that did not still keeps its sheet."""
+    words = "anything at all" if worked else "removed, renamed, now, cleared, queued again"
+    for verb in ("do_remove", "do_rename", "do_requeue", "do_clear_tries"):
+        monkeypatch.setattr(dlq.ui, verb, lambda *a, **kw: (words, worked))
+    dlq.item("10-queued.py")
+    dlq.item("20-failed.py", where="failed")
+    dlq.state({"10-queued.py": {"attempts": 2}})
+    app = headless(dlq)
+
+    open_row(app, "10-queued.py")
+    item = app.sheets[-1]
+    key(app, "d")
+    tap(app, "answer:0")
+    assert (item in app.sheets) != worked and bool(app.receipts) == worked
+
+    app.sheets[:], app.receipts[:] = [], []
+    open_row(app, "10-queued.py")
+    key(app, "r")
+    rename = app.sheets[-1]
+    key(app, "x")
+    key(app, "enter")
+    assert (rename in app.sheets) != worked and bool(app.receipts) == worked
+    assert bool(rename.problem) != worked
+
+    for name, verb in (("10-queued.py", "t"), ("20-failed.py", "u")):
+        app.sheets[:], app.receipts[:] = [], []
+        row = next(r for r in app.queue.rows if r["name"] == name)
+        app.open(dlq.qs.ItemSheet(row))
+        key(app, verb)
+        assert bool(app.receipts) == worked and app.said == words
+
+
+def test_a_download_that_cannot_be_started_is_a_refusal_on_the_screen(dlq, monkeypatch):
+    """Download now's yes, with ``nibbles now`` that cannot be started (an
+    interpreter that is not there): said on a notice like every other reason
+    not to start, the app still up and the download still queued."""
+    monkeypatch.setattr(dlq.ytq, "now_argv", lambda name: [str(dlq.root / "no-python")])
+    dlq.item("10-thing.py", cap=200 * MiB)
+    app = headless(dlq)
+    app.queue.reached, app.queue.reached_at = True, time.monotonic()
+    open_row(app, "10-thing.py")
+    key(app, "n")
+    key(app, "y")
+    notice = app.sheets[-1]
+    assert isinstance(notice, dlq.qs.Notice) and len(notice.lines) > 1
+    assert not app.queue.running.alive
+    assert (dlq.root / "queue" / "10-thing.py").exists()
+    assert not app.receipts
+    app.compose()
+
+
+@given(drags=st.lists(st.integers(-5, 5).filter(bool), min_size=1, max_size=6))
+def test_a_held_download_follows_the_finger(dlq, drags):
+    """Move's "a swipe drags it": a place per row of finger travel, the way
+    the finger goes — Termux scrolls naturally, so a finger going down the
+    screen arrives as the wheel going up (``Scroll(-1)``) — and never past
+    either end. Put here puts it where it was dragged to."""
+    from nibbles import tui
+
+    for path in (dlq.root / "queue").glob("*.py"):
+        path.unlink()
+    letters = "abcde"
+    for i, letter in enumerate(letters):
+        dlq.item(f"{10 * (i + 1)}-{letter}.py")
+    app = headless(dlq)
+    open_row(app, "30-c.py")
+    key(app, "m")
+    tab = app.tabs[3]
+    place, travel = 2, 0
+    for rows in drags:  # the finger's travel: + down the screen, - up it
+        for _ in range(abs(rows)):
+            app.handle(tui.Scroll(-1 if rows > 0 else 1, 5, 12))
+            travel += 1 if rows > 0 else -1
+            if abs(travel) == 2:
+                place = max(0, min(len(letters) - 1, place + travel // 2))
+                travel = 0
+        assert tab.holding == ("30-c.py", place), drags
+    key(app, "enter")
+    assert slugs_queued(dlq).index("c") == place
