@@ -12,6 +12,7 @@ tier; a download is named after its title.
 from __future__ import annotations
 
 import time
+import unicodedata
 
 import pytest
 from hypothesis import given
@@ -267,6 +268,87 @@ def test_a_name_is_never_refused_and_never_too_long(title):
     assert name and len(name.encode("utf-8")) <= ytq.NAME_BYTES
     assert not set(name) & set('/\\:*?"<>|')
     assert ytq.ITEM_RE.match(ytq.item_name(10, name))
+
+
+#: A word: printable, no space, nothing refused, and no dash or dot, which a
+#: name sheds at its ends.
+WORDS = st.text(
+    alphabet=st.characters(
+        blacklist_categories=("Cc", "Cf", "Cs", "Co", "Cn", "Zs", "Zl", "Zp"),
+        blacklist_characters='/\\:*?"<>|-.',
+    ),
+    min_size=1, max_size=12,
+)
+#: Every way a title can separate two words: any space at all, a line break,
+#: a tab, and the separators that are neither.
+GAPS = st.text(
+    alphabet=st.one_of(
+        st.characters(whitelist_categories=("Zs", "Zl", "Zp")),
+        st.sampled_from("\t\n\r\x0b\x0c\x85"),
+    ),
+    min_size=1, max_size=3,
+)
+
+
+@given(words=st.lists(WORDS, min_size=1, max_size=8),
+       gaps=st.lists(GAPS, min_size=7, max_size=7))
+def test_words_are_never_glued_together_in_a_name(words, gaps):
+    """A non-breaking space, an ideographic space or a line break between two
+    words was dropped as unprintable, gluing the words in the file name."""
+    title = words[0] + "".join(
+        gap + word for gap, word in zip(gaps[: len(words) - 1], words[1:], strict=True)
+    )
+    if len(" ".join(words).encode("utf-8")) <= ytq.NAME_BYTES:
+        assert ytq.title_name(title).split(" ") == words
+    assert ytq.title_name("one\ntwo") == ytq.title_name("one two")
+
+
+#: What may be drawn: nothing a terminal acts on, and nothing bewitch and
+#: Termux count differently — every control, every format character but the
+#: joiners, every line and paragraph separator, and every space but one.
+UNDRAWABLE = ("Cc", "Cf", "Cs", "Zl", "Zp")
+
+
+def drawable(text):
+    return all(
+        ch in ytq.JOINERS
+        or (unicodedata.category(ch) not in UNDRAWABLE and (ch == " " or not ch.isspace()))
+        for ch in text
+    )
+
+
+OUTSIDE = st.text(
+    alphabet=st.one_of(
+        st.characters(blacklist_categories=("Cs",)),
+        st.sampled_from("\n\r\t\x00\x1b\x07\x7f\x85\xad\ufeff\u2028\u2066\u200d"),
+    ),
+    max_size=60,
+)
+
+
+@given(text=OUTSIDE)
+def test_outside_words_come_in_on_one_line_and_drawable(text):
+    """What yt-dlp hands on as a title is the site's: a caption with line
+    breaks, an ``og:title`` holding an escape. One line, nothing a terminal
+    acts on, nothing two width tables disagree about — and cleaning it again
+    changes nothing, so every place may."""
+    once = ytq.one_line(text)
+    assert drawable(once)
+    assert ytq.one_line(once) == once
+    assert once == once.strip() and "  " not in once
+
+
+@given(title=OUTSIDE, channel=OUTSIDE)
+def test_every_listing_and_every_probe_is_cleaned_where_it_comes_in(title, channel):
+    hits = ytq.entries({"entries": [{"id": "x", "title": title, "channel": channel}]})
+    info = ytq.cleaned({"title": title, "uploader": channel, "id": "x"})
+    for words in (hits[0].title, hits[0].channel, info["title"], info["uploader"]):
+        assert drawable(words)
+    # The row and the sheet show the same words the item is named from (a
+    # listing's row says "(untitled)" for a title with none).
+    if ytq.one_line(title):
+        assert ytq.title_name(hits[0].title) == ytq.title_name(info["title"]) \
+            == ytq.title_name(title)
 
 
 def choice(label, size, codecs, kind="merge"):

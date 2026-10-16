@@ -9,16 +9,19 @@ number, the header the runner parses, and the place the picker asks for.
 
 from __future__ import annotations
 
+import ast
+import errno
 import fcntl
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import types
 
 import pytest
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from nibbles import ytq
@@ -73,13 +76,16 @@ def test_a_json_spelling_of_nothing_never_reaches_the_item():
     assert json.loads(ytq.literal('a "quoted" title')) == 'a "quoted" title'
 
 
-#: What a yt-dlp title is: any text on one line. Line breaks are excluded
-#: deliberately and not idly — a title carrying one ends up in the ``DESC``
-#: comment and takes the item's syntax with it. Nothing observed produces one,
-#: so this pins the domain that exists rather than asserting a behaviour the
-#: code does not have.
+#: What a title is: any text at all. TikTok's is its caption, line breaks
+#: kept, and a page's ``og:title`` decodes ``&#10;`` and ``&#27;`` — so the
+#: line breaks, the controls and the separators are drawn on purpose, beside
+#: the quotes and backslashes that end a docstring.
 TITLES = st.text(
-    alphabet=st.characters(blacklist_categories=("Cc", "Cs")), max_size=120
+    alphabet=st.one_of(
+        st.characters(blacklist_categories=("Cs",)),
+        st.sampled_from('\n\r\x00\x0b\x0c\x1b\x85\u2028\u2029"\\#'),
+    ),
+    max_size=120,
 )
 
 
@@ -90,6 +96,40 @@ def test_any_title_at_all_still_writes_an_item_that_parses(title):
     source = an_item(title=title)
     compile(source, "<item>", "exec")
     assert ytq.source_of(source) == "youtube:abc123"
+
+
+def statements(source):
+    """What an item runs, by kind: its docstring, then the five lines of code
+    that hand it to ``ytdl_item``."""
+    return [type(node).__name__ for node in ast.parse(source).body]
+
+
+@given(title=TITLES, ident=TITLES.filter(str.strip), url=TITLES)
+def test_no_title_ever_reaches_the_item_as_code(title, ident, url):
+    """A line break in the title ended the ``# DESC:`` comment, and whatever
+    followed it was Python: an item that never compiled, or one whose second
+    line ran at the firing. Whatever the title, the id and the link, the item
+    is its docstring and its own five lines, and its header reads back the
+    key it was written with."""
+    key = ytq.source_key({"id": ident, "ie_key": "Generic"})
+    source = ytq.render(url, ytq.title_name(title), a_choice(), title,
+                        "2026-09-02", "video", key)
+    assert statements(source) == ["Expr", "Import", "Expr", "ImportFrom", "Expr"]
+    assert ytq.source_of(source) == key
+    head = [line for line in source.splitlines() if line.startswith("# DESC:")]
+    assert len(head) == 1
+    # The words are kept: on one line, not lost.
+    assert re.sub(r"\W", "", ytq.one_line(title))[:20] in re.sub(r"\W", "", head[0])
+
+
+def test_a_caption_that_spells_code_is_still_only_a_caption(queued):
+    """The runner reads headers and never compiles, so an item like this was
+    queued without a word and then ran its second line every night."""
+    caption = "dance\nprint('ran')\n#"
+    path = ytq.write_item(10, ytq.title_name(caption), an_item(title=caption))
+    source = path.read_text(encoding="utf-8")
+    assert statements(source) == ["Expr", "Import", "Expr", "ImportFrom", "Expr"]
+    assert "\nprint(" not in source
 
 
 def test_a_title_full_of_quotes_cannot_write_a_broken_item():
@@ -174,18 +214,78 @@ def test_the_number_leaves_room_to_insert_ahead(queued):
 
 
 def test_the_number_never_grows_a_third_digit(queued):
+    """At the cap the queue is dealt fresh keys first, so the new item still
+    goes last, and still in two digits."""
     queued(f"{ytq.MAX_PRIORITY}-talk.py")
-    assert ytq.next_number() == ytq.MAX_PRIORITY
+    number = ytq.next_number()
+    assert 0 <= number <= ytq.MAX_PRIORITY
+    [held] = ytq.queued_names()
+    assert ytq.item_slug(held) == "talk"
+    assert ytq.item_name(number, "a") > held
 
 
 def test_a_day_directory_is_not_an_item(queued):
     """``done/2026-08-08/`` matches an item's number-and-dash exactly as well
-    as an item does, and counting one takes the next number to 2036."""
+    as an item does, and counting one took the next number to 2036."""
     day = ytq.DONE / "2026-08-08"
     day.mkdir(parents=True)
     (day / "10-talk.py").write_text("# EXPIRE: v1\n")
-    assert ytq.next_number() == 20
     assert [where for where, _ in ytq.items()] == ["done"]
+    # And the number is counted from what is waiting, which is nothing.
+    assert ytq.next_number() == 10
+
+
+def wipe_queue_root():
+    for folder in (ytq.QUEUE, ytq.DONE, ytq.FAILED, ytq.HERE / "work", ytq.HERE / "out"):
+        shutil.rmtree(folder, ignore_errors=True)
+    (ytq.HERE / "state.json").unlink(missing_ok=True)
+
+
+@settings(max_examples=25)
+@given(
+    history=st.lists(
+        st.tuples(st.sampled_from(["done", "failed"]),
+                  st.integers(min_value=0, max_value=ytq.MAX_PRIORITY),
+                  st.sampled_from(["Talk", "talk", "Talk: Two", "東京 散歩"])),
+        max_size=30,
+    ),
+    titles=st.lists(st.sampled_from(["Talk", "talk", "Talk: Two", "Talk/Two", "東京 散歩"]),
+                    min_size=1, max_size=40),
+)
+def test_downloads_run_in_the_order_they_were_queued(history, titles):
+    """ytq queues last, whatever ``done/`` and ``failed/`` already hold.
+    Counting them put every item from the tenth download ever at ``99``, and
+    the runner, which sorts names, ran those by title. And nothing written is
+    written over: the titles here collide on purpose, with each other and
+    with the history, and every write is still its own item."""
+    wipe_queue_root()
+    for where, number, title in history:
+        folder = ytq.DONE / "2026-10-01" if where == "done" else ytq.FAILED
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / ytq.item_name(number, ytq.title_name(title))).write_text("# EXPIRE: v1\n")
+    written = []
+    for index, title in enumerate(titles):
+        path = ytq.write_item(ytq.next_number(), ytq.title_name(title),
+                              an_item(title=title, key=f"test:{index}"), again=True)
+        written.append(ytq.item_slug(path.name))
+    names = ytq.queued_names()
+    assert [ytq.item_slug(name) for name in names] == written
+    assert all(re.match(r"^\d{2}-", name) for name in names)
+    sources = {ytq.source_of((ytq.QUEUE / name).read_text()) for name in names}
+    assert sources == {f"test:{index}" for index in range(len(titles))}
+    wipe_queue_root()
+
+
+def test_a_queue_a_download_holds_is_not_renamed_underneath_it(queued, clean_queue):
+    """A firing or a ``nibbles now`` renames its item into ``done/`` when it
+    finishes; the new item shares the last key rather than move anything."""
+    held = queued(f"{ytq.MAX_PRIORITY}-talk.py")
+    with (clean_queue / "runner.lock").open("w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        path = ytq.write_item(ytq.next_number(), "another",
+                              an_item(title="another", key="youtube:other"))
+    assert held.exists() and path.exists()
+    assert sorted(ytq.queued_names()) == sorted([held.name, path.name])
 
 
 def test_a_slug_is_safe_to_be_a_file_name():
@@ -243,6 +343,75 @@ def test_a_download_already_made_is_told_apart_from_one_still_waiting(queued):
 def test_a_new_video_is_not_a_duplicate_of_anything(queued):
     queued("10-talk.py", source="youtube:one")
     assert ytq.find_duplicate("youtube:other", "another talk") is None
+
+
+def test_a_title_named_item_still_answers_to_its_name(queued):
+    """Items are named after their titles now, and the name fallback looked
+    for a slug: it matched nothing, and the second "Official Trailer" was
+    written over the first."""
+    first = ytq.write_item(99, ytq.title_name("Official Trailer"),
+                           an_item(title="Official Trailer", key="youtube:one"))
+    with pytest.raises(ytq.Duplicate) as raised:
+        ytq.write_item(99, ytq.title_name("Official Trailer"),
+                       an_item(title="Official Trailer", key="youtube:two"))
+    assert raised.value.how == "name" and raised.value.path == first
+    # Meant anyway: both are queued, each still the video it was.
+    second = ytq.write_item(99, ytq.title_name("Official Trailer"),
+                            an_item(title="Official Trailer", key="youtube:two"), again=True)
+    assert first != second and first.exists() and second.exists()
+    assert ytq.source_of(first.read_text()) == "youtube:one"
+    assert ytq.source_of(second.read_text()) == "youtube:two"
+
+
+def test_titles_in_another_script_are_not_all_one_name(queued):
+    """A slug keeps ``a-z0-9`` and nothing else, so every Japanese title was
+    the slug ``video`` and the same name as every other."""
+    queued("10-東京散歩.py", source="youtube:one")
+    assert ytq.find_duplicate("youtube:two", "大阪散歩") is None
+    assert ytq.find_duplicate("youtube:two", "東京散歩").how == "name"
+
+
+@pytest.mark.parametrize("left", ["queued", "done", "failed", "work", "out", "record"])
+def test_a_name_something_still_answers_to_is_never_reused(queued, clean_queue, left):
+    """Whatever answers to a name next inherits what is kept under it: another
+    download's partial in ``work/`` resumed into this one, a file left in
+    ``out/`` delivered as this one, or a finished record's "nothing left to
+    fetch" every night for ever."""
+    name = ytq.item_name(10, "Talk")
+    if left in ("queued", "done", "failed"):
+        queued(name, where=left, source="youtube:old")
+    elif left == "record":
+        (clean_queue / "state.json").write_text(json.dumps(
+            {"items": {name: {"retired": "done", "part_bytes": 600 * MiB}}}))
+    else:
+        (clean_queue / left / name).mkdir(parents=True)
+    path = ytq.write_item(10, "Talk", an_item(title="Talk", key="youtube:new"), again=True)
+    assert path.exists() and path.name != name
+    assert ytq.ITEM_RE.match(path.name).group(1) == "10"
+    assert ytq.item_slug(path.name).startswith("Talk")
+    for folder in ("work", "out"):
+        assert not (clean_queue / folder / path.name).exists()
+    if left == "queued":
+        assert ytq.source_of((ytq.QUEUE / name).read_text()) == "youtube:old"
+
+
+def test_a_write_that_fails_leaves_nothing_half_written(queued, monkeypatch):
+    """A full disk mid-write: the item is not queued, and nothing is left in
+    ``.staging`` to be mistaken for one."""
+    real = ytq.Path.write_text
+
+    def full(self, *args, **kwargs):
+        if self.parent == ytq.STAGING:
+            real(self, "#!/half", encoding="utf-8")
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(ytq.Path, "write_text", full)
+    with pytest.raises(OSError):
+        ytq.write_item(10, "talk", an_item())
+    monkeypatch.undo()
+    assert ytq.queued_names() == []
+    assert [p.name for p in ytq.STAGING.iterdir() if not p.name.startswith(".")] == []
 
 
 def test_the_verdict_fits_the_narrowest_screen(queued):

@@ -274,7 +274,7 @@ def probe(url: str, timeout: int = 180) -> dict:
     )
     if info.get("_type") == "playlist":
         raise ProbeError("that URL is a playlist; queue one video at a time")
-    return info
+    return cleaned(info)
 
 
 # --------------------------------------------------------------------------- #
@@ -437,12 +437,69 @@ def search_argv(query: str, count: int = SEARCH_RESULTS) -> list[str]:
     ]
 
 
+#: The two format characters :func:`one_line` keeps: the zero-width non-joiner
+#: and joiner, which Persian and Indic words and emoji sequences are spelled
+#: with, and which bewitch and Termux both count as no columns at all.
+JOINERS = "\u200c\u200d"
+
+
+def one_line(text: object) -> str:
+    """Somebody else's words — a title, a channel — as one line that a screen
+    can draw and an item can hold.
+
+    The one cleaning for text from outside, done where it comes in
+    (:func:`entries`, :func:`cleaned`) so that the row, the sheet, the item
+    and the file name are all made from the same string, and done again by the
+    two that must hold whoever calls them (:func:`render`, :func:`title_name`).
+    yt-dlp hands a title on as the site gave it, and the sites promise no
+    single line: TikTok's title is the caption with its line breaks, and a
+    page's ``og:title`` decodes ``&#10;`` and ``&#27;`` to the real thing.
+
+    Every space and every line break becomes one space: a break written into
+    an item's ``# DESC:`` comment ends the comment, and what follows it is
+    Python, run at the firing. Every other control goes — an ``ESC`` that
+    reaches the terminal starts a sequence Termux acts on (the clipboard,
+    mouse reporting off) — and so does every format character but
+    :data:`JOINERS`: a soft hyphen, a byte-order mark or a bidi isolate is no
+    columns to bewitch and one to Termux, and a row one column wider than the
+    screen wraps its last cell onto the next and leaves it there. A lone
+    surrogate goes too, because it cannot be written as UTF-8 at all.
+    """
+    kept = []
+    for ch in "" if text is None else str(text):
+        if ch.isspace():
+            kept.append(" ")
+        elif ch in JOINERS or unicodedata.category(ch) not in ("Cc", "Cf", "Cs"):
+            kept.append(ch)
+    return " ".join("".join(kept).split())
+
+
+#: The fields of a video's metadata that are somebody else's words and are
+#: drawn or written: the title, and the byline's two spellings of who made it.
+OUTSIDE_WORDS = ("title", "channel", "uploader")
+
+
+def cleaned(info: dict) -> dict:
+    """*info*, with :data:`OUTSIDE_WORDS` put through :func:`one_line`.
+
+    Asked where metadata comes in — the probe and a saved dump — so that every
+    screen and the item read the cleaned words and none has to remember to.
+    """
+    out = dict(info)
+    for key in OUTSIDE_WORDS:
+        if isinstance(out.get(key), str):
+            out[key] = one_line(out[key])
+    return out
+
+
 def entries(info: dict) -> list[Result]:
     """The videos in a search answer, tolerating every field being absent.
 
     A search can also come back holding channels and playlists, and neither has
     a format to pick from — they are dropped here rather than at the moment
     someone selects one and gets an error about a playlist.
+
+    Titles and channels go through :func:`one_line` here, where they come in.
     """
     out: list[Result] = []
     for raw in info.get("entries") or []:
@@ -461,8 +518,8 @@ def entries(info: dict) -> list[Result]:
         view_count = raw.get("view_count")
         out.append(
             Result(
-                title=(raw.get("title") or "(untitled)").strip() or "(untitled)",
-                channel=(raw.get("channel") or raw.get("uploader") or "").strip(),
+                title=one_line(raw.get("title")) or "(untitled)",
+                channel=one_line(raw.get("channel") or raw.get("uploader")),
                 url=str(url),
                 duration=int(duration) if isinstance(duration, (int, float)) else None,
                 timestamp=int(timestamp)
@@ -1558,6 +1615,10 @@ def source_key(info: dict) -> str:
     Empty when there is no id to key on, which is not an error: it means this
     item can only be recognised again by its name, and :func:`find_duplicate`
     says as much when it matches one that way.
+
+    One line (:func:`one_line`), because it is written into the item's header:
+    the generic extractor's id is the link's own file name, unquoted, so a
+    ``%0A`` in a link is a line break in the id.
     """
     ident = info.get("id")
     if not ident:
@@ -1568,7 +1629,7 @@ def source_key(info: dict) -> str:
         or info.get("extractor")
         or "video"
     )
-    return f"{str(who).lower()}:{ident}"
+    return one_line(f"{str(who).lower()}:{ident}")
 
 
 def source_of(text: str) -> str:
@@ -1655,8 +1716,12 @@ def find_duplicate(key: str, slug: str) -> Duplicate | None:
 
     The queue is searched in the order the answer matters: still waiting, then
     already downloaded, then given up on.
+
+    Names are compared as :func:`same_name` spells them, which is what lets a
+    title-named item (``10-Crust of Rust.py``) and one written under a slug
+    (``10-crust-of-rust.py``) both answer to the same title.
     """
-    tail = f"-{slugify(slug)}.py" if slug else ""
+    want = same_name(slug) if slug else ""
     named: Duplicate | None = None
     for where, path in items():
         if key:
@@ -1666,32 +1731,91 @@ def find_duplicate(key: str, slug: str) -> Duplicate | None:
                 text = ""
             if text and source_of(text) == key:
                 return Duplicate(path, where, "source")
-        if tail and named is None and path.name.endswith(tail):
+        if want and named is None and same_name(item_slug(path.name)) == want:
             named = Duplicate(path, where, "name")
     return named
 
 
-def next_number() -> int:
-    """Ten past the highest number ever used, leaving room to insert ahead.
+def same_name(name: str) -> str:
+    """*name* as two names are compared: letters and digits in any script,
+    case set aside, and every run of anything else one dash.
 
-    Files only. ``done/`` is a tree of day directories named ``2026-08-08``,
-    which matches an item's number-and-dash exactly as well as an item does —
-    counting one takes the next number to 2036 and every item after it with no
-    sign that anything went wrong.
+    Not :func:`slugify`, which keeps only ``a-z0-9``: every title written in
+    another script would come out ``video`` and be the same name as every
+    other one.
+    """
+    return re.sub(r"[\W_]+", "-", name.casefold()).strip("-")
+
+
+def queued_names() -> list[str]:
+    """The items waiting in ``queue/``, in the order the runner takes them:
+    their file names, sorted."""
+    try:
+        return sorted(path.name for path in QUEUE.iterdir()
+                      if ITEM_RE.match(path.name) and path.is_file())
+    except OSError:
+        return []
+
+
+def _last_key() -> int | None:
+    keys = [int(ITEM_RE.match(name).group(1)) for name in queued_names()]
+    return max(keys) if keys else None
+
+
+def next_number() -> int:
+    """The number a new item is written under: ten past the last one queued,
+    so it runs after everything already waiting. ytq queues last.
+
+    Counted from ``queue/`` alone. ``done/`` and ``failed/`` keep the numbers
+    their items ran under, and counting them reached :data:`MAX_PRIORITY` by
+    the tenth download ever and stayed there: every item after that shared
+    ``99``, and the runner, which sorts file names, took them in the order of
+    their titles — a download queued second ran first whenever its title
+    sorted first.
 
     Never past :data:`MAX_PRIORITY`, because the tenth item queued would
     otherwise be ``100``, which sorts *before* ``20``: a new download would go
     to the head of the queue rather than the tail, and the only symptom would
-    be things running in the wrong order. At the cap new items share the last
-    key and are ordered by their slugs; ``nibbles queue``'s reorder is what spreads
-    them out again.
+    be things running in the wrong order. So when the last queued item already
+    holds it, the queue is first dealt fresh keys in its own order, the way
+    Move does when the room between two items runs out (:func:`_make_room`).
+    Only a queue that may not be touched — a firing or a download holds it —
+    or that has no key left at all shares the last one, ordered by name until
+    a Move spreads it out.
     """
-    highest = 0
-    for _, path in items():
-        found = ITEM_RE.match(path.name)
-        if found:
-            highest = max(highest, int(found.group(1)))
-    return min(highest + 10, MAX_PRIORITY) if highest else 10
+    last = _last_key()
+    if last is not None and last >= MAX_PRIORITY:
+        _make_room()
+        last = _last_key()
+    return 10 if last is None else min(last + 10, MAX_PRIORITY)
+
+
+def _make_room() -> None:
+    """Deal every queued item a fresh key, in the order they already run.
+
+    ``nibbles queue``'s own reindex (:func:`expire_ui._reindex`), so the item,
+    its partial in ``work/``, anything in ``out/`` and its record all move
+    together; and only past :func:`expire_ui.busy_problem`, because a firing
+    or a ``nibbles now`` renaming an item into ``done/`` underneath a rename
+    loses the download. Imported here and not at the top: ``expire_ui``
+    imports ``expire_sched``, which imports this module.
+    """
+    try:
+        from nibbles import expire_ui
+
+        if expire_ui.busy_problem() is not None:
+            return
+        if expire_ui._reindex(queued_names()) is None:
+            expire_ui._note("dealt the queue fresh keys to queue a download last")
+    except Exception:  # noqa: BLE001 - a better place for one item, never a blocker
+        pass
+
+
+def _in_docstring(text: object) -> str:
+    """*text* as it may stand in an item's comments and docstring: one line
+    (:func:`one_line`), no backslash to begin an escape and no triple quote to
+    end the string."""
+    return one_line(text).replace("\\", "/").replace('"""', "'''")
 
 
 def render(
@@ -1704,23 +1828,31 @@ def render(
     key: str = "",
 ) -> str:
     """The item source. Strings go through :func:`json.dumps` so that a title
-    full of quotes cannot produce a file that does not parse."""
-    safe_title = title.replace("\\", "/").replace('"""', "'''").strip()
-    desc = f"{safe_title} [{choice.label}] ({human(choice.size)} via yt-dlp)"
+    full of quotes cannot produce a file that does not parse.
+
+    What is not code — the header comments and the docstring — is written from
+    :func:`_in_docstring`'s spelling, whoever called: a title is somebody
+    else's words, and one that ended the ``DESC`` comment or the docstring
+    would be an item that never compiles, or one whose second line runs."""
+    safe_title = _in_docstring(title)
+    desc = _in_docstring(f"{title} [{choice.label}] ({human(choice.size)} via yt-dlp)")
     margin = "3%" if choice.exact else "12%"
     sizing = textwrap.fill(
-        f"Format {choice.fmt} — {choice.detail}. yt-dlp reported "
-        f"{choice.size:,} bytes "
-        f"{'exactly' if choice.exact else 'approximately'} when this was queued "
-        f"on {probed}; EXPECT_BYTES is that figure plus a {margin} margin and "
-        f"{human(OVERHEAD_FIXED)} for the per-firing metadata extractions, "
-        f"retries and container overhead.",
+        _in_docstring(
+            f"Format {choice.fmt} — {choice.detail}. yt-dlp reported "
+            f"{choice.size:,} bytes "
+            f"{'exactly' if choice.exact else 'approximately'} when this was queued "
+            f"on {probed}; EXPECT_BYTES is that figure plus a {margin} margin and "
+            f"{human(OVERHEAD_FIXED)} for the per-firing metadata extractions, "
+            f"retries and container overhead."
+        ),
         78,
     )
     # SOURCE is what this item is a download *of*, and it is written whether or
     # not anything reads it today: an item queued now is what tomorrow's
     # duplicate check has to recognise, and it cannot be added to a file that
     # has already been written.
+    key = one_line(key)
     source = f"\n# SOURCE: {key}" if key else ""
     return f'''{SHEBANG}
 # EXPIRE: v1
@@ -1731,7 +1863,7 @@ def render(
 # DESC: {desc[:160]}
 """{safe_title}
 
-{url}
+{_in_docstring(url)}
 
 {sizing}
 
@@ -1784,6 +1916,19 @@ def write_item(number: int, slug: str, source: str, again: bool = False) -> Path
     each of them could be written around. It raises :class:`Duplicate` rather
     than deciding anything — what to say and whether to override is the
     screen's business, and *again* is that override coming back.
+
+    **Nothing already there is ever replaced.** Two videos can share a title,
+    the same one can be queued twice on purpose (*again*), and a name stays
+    spoken for after its item has gone (:func:`names_in_use`) — and whatever
+    answers to a name next inherits its partial, its outbox and its record:
+    another video's bytes resumed into this one, or a finished download's
+    "nothing left to fetch" on every night for ever. So a name in use takes
+    ``(2)``, ``(3)``… after the title, never another number, because the
+    number is the place this item was given; the path returned is the name it
+    got. The choosing and the moving in happen under one lock, so two writers
+    at once cannot both find the same name free.
+
+    A write that fails leaves nothing half-written behind in ``.staging``.
     """
     if not again:
         found = find_duplicate(source_of(source), slug)
@@ -1791,17 +1936,48 @@ def write_item(number: int, slug: str, source: str, again: bool = False) -> Path
             raise found
     STAGING.mkdir(parents=True, exist_ok=True)
     QUEUE.mkdir(parents=True, exist_ok=True)
-    name = item_name(number, slug)
-    staged = STAGING / name
-    # Written as UTF-8 because that is how the runner reads it. A title can
-    # hold anything, and an item that decodes differently at midnight than it
-    # did when it was queued is an item the runner refuses for no visible
-    # reason.
-    staged.write_text(source, encoding="utf-8")
-    staged.chmod(0o755)
-    final = QUEUE / name
-    staged.replace(final)
+    with (STAGING / ".lock").open("w") as door:
+        fcntl.flock(door, fcntl.LOCK_EX)
+        used = names_in_use()
+        name, copy = item_name(number, slug), 1
+        while name in used:
+            copy += 1
+            name = item_name(number, f"{slug} ({copy})")
+        staged, final = STAGING / name, QUEUE / name
+        try:
+            # Written as UTF-8 because that is how the runner reads it. A
+            # title can hold anything, and an item that decodes differently at
+            # midnight than it did when it was queued is an item the runner
+            # refuses for no visible reason.
+            staged.write_text(source, encoding="utf-8")
+            staged.chmod(0o755)
+            staged.rename(final)
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            raise
     return final
+
+
+def names_in_use() -> set[str]:
+    """Every item name that something still answers to.
+
+    The items in ``queue/``, ``done/`` and ``failed/``; a ``work/`` or
+    ``out/`` directory, which an item removed with its bytes kept leaves
+    behind; and every record in ``state.json``, which outlives its item
+    (:func:`delivered_file` says the same) and which the runner hands, attempts
+    and bytes and all, to whatever is queued under that name next.
+    """
+    used = {path.name for _, path in items()}
+    for folder in ("work", "out"):
+        with contextlib.suppress(OSError):
+            used.update(os.listdir(HERE / folder))
+    try:
+        records = json.loads((HERE / "state.json").read_text(encoding="utf-8"))["items"]
+    except (OSError, ValueError, KeyError, TypeError):
+        records = {}
+    if isinstance(records, dict):
+        used.update(records)
+    return used
 
 
 #: The two destinations ytq queues into, and the one it uses when nothing is
@@ -2183,8 +2359,8 @@ MARQUEE_HOLD = 5
 MARQUEE_GAP = "   ·   "
 
 
-def marquee(text: str, width: int, tick: int) -> str:
-    """*width* characters of *text*, scrolled to step *tick*.
+def marquee(text: str, width: int, tick: int, measure=len) -> str:
+    """*width* columns of *text*, scrolled to step *tick*.
 
     Text that fits is returned whole and unmoved, which is what makes this
     safe to call on every row: the motion is a property of the title being too
@@ -2198,15 +2374,31 @@ def marquee(text: str, width: int, tick: int) -> str:
     Deliberately *not* :func:`fit`: no ellipsis. The ellipsis is how a clipped
     line says something was lost, and a line that is visibly moving has
     already said it.
+
+    *measure* is what a column is: the screens pass bewitch's
+    ``string_width``, the same measure that decides whether a title moves at
+    all, since a CJK character or an emoji is one character and two columns.
+    Counted in characters, a title whose characters fit and whose columns did
+    not was never moved, only clipped, while the loop woke three times a
+    second to draw it again; a longer one moved under an ellipsis, cut at up
+    to twice its room. The window is filled a character at a time to the
+    room, and a wide one that would straddle the edge leaves a space instead.
     """
     if width <= 0:
         return ""
-    if len(text) <= width:
+    if measure(text) <= width:
         return text
     loop = text + MARQUEE_GAP
     phase = max(0, tick) % (len(loop) + MARQUEE_HOLD)
     offset = 0 if phase < MARQUEE_HOLD else phase - MARQUEE_HOLD
-    return (loop + loop)[offset : offset + width]
+    shown, used = [], 0
+    for ch in (loop + loop)[offset:]:
+        cols = measure(ch)
+        if used + cols > width:
+            break
+        shown.append(ch)
+        used += cols
+    return "".join(shown) + " " * (width - used)
 
 
 def wide_tail(result: Result) -> str:
@@ -2461,10 +2653,15 @@ def title_name(title: str) -> str:
     shared storage refuses (``/ \\ : * ? " < > |``) and capped well under 255
     bytes. ``Crust of Rust: Subtyping and Variance`` becomes ``Crust of Rust -
     Subtyping and Variance``: the same name in the queue (behind ``NN-``) and
-    in Downloads. One name everywhere (design §6)."""
-    name = REFUSED.sub(" - ", title or "")
-    name = re.sub(r"\s+", " ", "".join(ch for ch in name if ch.isprintable()))
-    name = name.strip(" -.")
+    in Downloads. One name everywhere (design §6).
+
+    Made from :func:`one_line`'s spelling of the title, the one the screens
+    draw: a line break, a tab or a non-breaking space between two words is a
+    space between them, where dropping it as unprintable glued the words
+    together — a Japanese title spaced with U+3000 lost every space it had."""
+    name = REFUSED.sub(" - ", one_line(title))
+    name = "".join(ch for ch in name if ch.isprintable() or ch in JOINERS)
+    name = re.sub(" +", " ", name).strip(" -.")
     while len(name.encode("utf-8")) > NAME_BYTES:
         name = name[:-1]
     name = name.rstrip(" -.")
@@ -2664,11 +2861,12 @@ def already_queued(hits: list[Result]) -> set[int]:
 
 
 def load_json(path: str) -> dict:
-    """A saved ``yt-dlp -J`` dump, so a re-pick costs no data."""
+    """A saved ``yt-dlp -J`` dump, so a re-pick costs no data. Its words are
+    :func:`cleaned` on the way in, as the probe's are."""
     info = json.loads(Path(path).read_text())
     if not isinstance(info, dict):
         raise ProbeError(f"{path} is not a yt-dlp metadata object")
-    return info
+    return cleaned(info)
 
 
 def list_results(hits: list[Result], width: int) -> int:

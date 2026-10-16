@@ -228,7 +228,8 @@ def video_entries(hits: list[ytq.Result], held: set[int]) -> list[Entry]:
             title = r.title
             # The selected title scrolls; nothing else does.
             if selected and overflows(title, width):
-                title = ytq.marquee(title, width - TITLE_PAD, marquee_tick())
+                title = ytq.marquee(title, width - TITLE_PAD, marquee_tick(),
+                                    measure=w.string_width)
             return w.row_item(title, width, subtitle=byline(r), selected=selected,
                               mark=mark, mark_color=T.success if mark else None,
                               dimmed=bool(mark) and not selected)

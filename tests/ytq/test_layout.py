@@ -10,10 +10,17 @@ the content a phone actually gets.
 
 from __future__ import annotations
 
+import unicodedata
+
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from nibbles import app as nibbles
+from nibbles import widgets as w
+from nibbles import yt_screens as ys
 from nibbles import ytq
+from conftest import search_info, video_info
 
 #: The narrowest terminal these screens promise to work on, and a comfortable
 #: desk-sized one. Everything below is measured across the lot.
@@ -207,6 +214,112 @@ def test_drawing_and_waking_agree_about_which_titles_move():
             assert ytq.scrolls(result, width) == (len(title) > room)
             # And what is drawn is exactly the room that decision was made on.
             assert len(ytq.marquee(title, room, 7)) == min(room, len(title))
+
+
+#: Titles as YouTube has them: Latin, CJK at two columns a character, emoji.
+MIXED = st.text(
+    alphabet=st.one_of(
+        st.characters(min_codepoint=32, max_codepoint=126),
+        st.characters(min_codepoint=0x4E00, max_codepoint=0x4E80),
+        st.sampled_from("🔥😀🎉、。"),
+    ),
+    min_size=1, max_size=80,
+)
+
+
+@given(text=MIXED, width=st.integers(min_value=1, max_value=60),
+       tick=st.integers(min_value=-5, max_value=500))
+def test_a_wide_title_fills_its_room_in_columns(text, width, tick):
+    """Measured in columns, which is what the room is: cut by characters, a
+    window of CJK was up to twice its room and clipped under an ellipsis."""
+    drawn = ytq.marquee(text, width, tick, measure=w.string_width)
+    assert w.string_width(drawn) == min(width, w.string_width(text))
+
+
+@given(text=MIXED, width=st.integers(min_value=4, max_value=60))
+def test_a_wide_title_too_long_for_its_room_moves_through_all_of_it(text, width):
+    """Whatever decides that a title moves is what moves it. A title whose
+    characters fit and whose columns did not was never moved — only clipped,
+    and drawn again three times a second for ever."""
+    if w.string_width(text) <= width:
+        return
+    lap = len(text + ytq.MARQUEE_GAP) + ytq.MARQUEE_HOLD
+    frames = [ytq.marquee(text, width, tick, measure=w.string_width) for tick in range(lap)]
+    assert len(set(frames)) > 1
+    # Every character of it reaches the front of the window once a lap.
+    assert set(text) <= {frame[:1] for frame in frames}
+
+
+def listing(titles, size, channel="Jon Gjengset"):
+    """The real app, headless, on its Search tab with *titles* landed."""
+    app = nibbles.App(None, 0, size=size)
+    app.guard.opened = -10.0
+    info = search_info(titles)
+    for entry in info["entries"]:
+        entry["channel"] = channel
+    app.yt.landed("k", ytq.entries(info))
+    app.tabs[0].show("k")
+    return app
+
+
+def test_a_selected_wide_title_moves_rather_than_being_drawn_clipped(monkeypatch):
+    """The loop wakes to move a title too long for its row, so every frame
+    it wakes for has to be a different one — and none clipped."""
+    title = "日本語のタイトルです、とても長い動画の名前"  # 21 characters, 42 columns
+    app = listing([title, "short"], (40, 24))
+    app.yt.view("k").cursor = 0
+    app.compose()
+    _, row, _ = app.yt.view("k").shown[0]
+    assert app.next_wake() is not None
+    frames = set()
+    for tick in range(len(title + ytq.MARQUEE_GAP) + ytq.MARQUEE_HOLD):
+        monkeypatch.setattr(ys, "marquee_tick", lambda tick=tick: tick)
+        line = app.compose().plain().split("\n")[row]
+        assert "…" not in line and w.string_width(line) == 40
+        frames.add(line)
+    assert len(frames) > 1
+
+
+#: Text a terminal acts on, or that bewitch and Termux count differently.
+NOT_DRAWN = ("Cc", "Cf", "Zl", "Zp")
+
+#: What a site can hand on as a title: a caption's line breaks, an
+#: ``og:title``'s decoded escape and bell, a soft hyphen, a byte-order mark,
+#: a bidi isolate, a tab.
+HOSTILE = [
+    "POV: it's monday\nsend help\n#fyp #relatable",
+    "\x1b]52;c;aGk=\x07copied \x1b[?1000lno taps",
+    "Six\xadNations \ufeffhighlights \u2066isolated\u2069",
+    "tab\there\rand\u2028there",
+]
+
+
+def drawn_plainly(line):
+    return all(
+        ch in ytq.JOINERS or unicodedata.category(ch) not in NOT_DRAWN for ch in line
+    )
+
+
+@pytest.mark.parametrize("width", [32, 40, 80])
+def test_a_title_from_outside_is_drawn_on_its_own_row(width, monkeypatch):
+    """A line break moved the cursor down a row, an escape was a sequence
+    Termux carried out, and a format character was a column bewitch never
+    counted: each one a row that is not the row the frame thinks it drew."""
+    app = listing(HOSTILE, (width, 24), channel="chan\nnel\x1b[2J")
+    lines = app.compose().plain().split("\n")
+    assert len(lines) == 24
+    assert all(w.string_width(line) == width and drawn_plainly(line) for line in lines)
+    # And the video sheet, from what the probe hands on.
+    raw = video_info(title=HOSTILE[0])
+    raw["uploader"] = "up\nloader"
+    monkeypatch.setattr(ytq, "ask", lambda argv, timeout: raw)
+    url = raw["webpage_url"]
+    info = ytq.probe(url)
+    app.yt.probed[url] = (info, *ytq.choices(info))
+    app.open(ys.VideoSheet(app, url, url, ""))
+    lines = app.compose().plain().split("\n")
+    assert len(lines) == 24
+    assert all(w.string_width(line) == width and drawn_plainly(line) for line in lines)
 
 
 # --------------------------------------------------------------------------- #
