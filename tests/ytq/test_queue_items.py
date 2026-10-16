@@ -808,7 +808,9 @@ def test_open_it_opens_the_file_the_queue_tab_would(tmp_path):
     kept = ytq.HERE / "out" / "10-talk.py"
     kept.mkdir(parents=True)
     (kept / "talk.mp4").write_bytes(b"x" * 10)
-    (kept / "talk.mp4.part").write_bytes(b"x" * 100)
+    # The one thing out/ can hold that is not the download: the mover's
+    # hidden copy, still being made (expire_dl.move_file).
+    (kept / ".nibbles-123.part").write_bytes(b"x" * 100)
     _state({"10-talk.py": {"retired": "done", "delivered": [str(tmp_path / "gone.mp4")]}})
     record = expire_sched._state_items()["10-talk.py"]
     assert ytq.delivered_file("10-talk.py") == kept / "talk.mp4"
