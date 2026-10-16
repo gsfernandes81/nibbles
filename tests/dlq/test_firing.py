@@ -24,6 +24,7 @@ queue looking free while its item writes.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import shutil
@@ -32,6 +33,8 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -447,6 +450,92 @@ def test_a_delivered_name_that_is_taken_is_never_overwritten(firing):
     assert target.suffix == ".iso"
 
 
+@pytest.fixture
+def shared(firing, monkeypatch):
+    """``landing/`` as Android's shared storage is to Termux's home.
+
+    Another filesystem, so a rename into it from anywhere else fails with
+    EXDEV (one beside the target, within it, still works); and it refuses
+    times and modes with EPERM, which it does after every byte has landed.
+    """
+    landing = firing.root / "landing"
+    real = os.rename
+
+    def rename(src, dst, *args, **kw):
+        if Path(dst).parent == landing and Path(src).parent != landing:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real(src, dst, *args, **kw)
+
+    def refusing(real_call):
+        def call(path, *args, **kw):
+            if landing in Path(os.fspath(path)).parents:
+                raise PermissionError(errno.EPERM, "Operation not permitted")
+            return real_call(path, *args, **kw)
+
+        return call
+
+    monkeypatch.setattr(os, "rename", rename)
+    for name in ("utime", "chmod"):
+        monkeypatch.setattr(os, name, refusing(getattr(os, name)))
+    return landing
+
+
+def test_a_file_delivered_onto_shared_storage_is_there_once_and_recorded_there(
+    firing, monkeypatch, shared
+):
+    """Across filesystems, and onto one that refuses times and modes: the file
+    is in the folder, whole, once — not left in ``out/`` as well — and the
+    record says where it went, because after the move nothing else can."""
+    landing = _finishing(firing, monkeypatch, 7 * MiB)
+    assert landing == shared
+    assert firing.runner.fire(force=True) == 0
+
+    out = firing.root / "out" / "10-one.py"
+    assert [path.name for path in landing.iterdir()] == ["thing.iso"]
+    assert (landing / "thing.iso").read_bytes() == b"x" * 4096
+    assert not (out / "thing.iso").exists()
+    record = firing.runner.load_state()["items"]["10-one.py"]
+    assert record["retired"] == "done"
+    assert record["delivered"] == [str(landing / "thing.iso")]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [OSError(errno.ENOSPC, "No space left on device"), OSError(errno.EIO, "I/O error")],
+    ids=["ENOSPC", "EIO"],
+)
+@pytest.mark.parametrize("landed", [0, 1, 2048])
+def test_a_delivery_that_fails_partway_leaves_the_folder_as_it_was(
+    firing, monkeypatch, shared, failure, landed
+):
+    """Never a truncated file under the real name for the gallery to index:
+    the folder is as it was, the paid-for file whole in ``out/`` and recorded
+    there, and the phone told — the item is done either way, and nothing else
+    would ever mention a file that did not arrive."""
+    landing = _finishing(firing, monkeypatch, 7 * MiB)
+    posted: list[str] = []
+    monkeypatch.setattr(
+        firing.runner, "notify", lambda title, content, tag: posted.append(tag)
+    )
+
+    def copyfile(src, dst, **kw):
+        with open(dst, "wb") as handle:
+            handle.write(b"x" * landed)
+        raise failure
+
+    monkeypatch.setattr(shutil, "copyfile", copyfile)
+    assert firing.runner.fire(force=True) == 0
+
+    kept = firing.root / "out" / "10-one.py" / "thing.iso"
+    assert list(landing.iterdir()) == []
+    assert kept.read_bytes() == b"x" * 4096
+    record = firing.runner.load_state()["items"]["10-one.py"]
+    assert record["retired"] == "done"
+    assert record["delivered"] == [str(kept)]
+    # Under an id of its own: the night's summary must not replace it.
+    assert [tag for tag in posted if tag != firing.runner.NOTICE]
+
+
 def test_three_failed_nights_set_an_item_aside(firing, monkeypatch):
     """And the attempt history is kept, because it is the evidence."""
     firing.item("10-one.py", cap=MiB)
@@ -660,6 +749,101 @@ def test_an_item_holds_the_lock_it_was_started_under(firing, monkeypatch, how):
     assert told["lock"] is True
     # Released with the run: nothing is left holding the queue.
     assert not firing.ytq.queue_busy()
+
+
+#: What a run is handed that is the run's own: its slice (twice, for the older
+#: contract), its stop time, and its id.
+RUN_OWN = {
+    "EXPIRE_SLICE_BYTES", "EXPIRE_BUDGET_BYTES", "EXPIRE_STOP_EPOCH", "EXPIRE_RUN_ID"
+}
+
+
+def test_a_firing_and_nibbles_now_hand_an_item_the_same_contract(firing, monkeypatch):
+    """The environment an item is started with is the whole interface between
+    it and the runner, and it was spelled twice. Started by a firing and by
+    ``nibbles now``, an item is told the same things — every name, every value
+    but the run's own — and ``nibbles now``'s "no stop time" is the contract's;
+    and both write the log the Queue tab finds for it."""
+    said = firing.root / "told.json"
+    firing.script(
+        "10-told.py",
+        f"import json, os\njson.dump(dict(os.environ), open({str(said)!r}, 'w'))\n"
+        "raise SystemExit(75)\n",
+    )
+    monkeypatch.setattr(firing.runner, "admit", lambda *a, **kw: (MiB, ""))
+    told = {}
+    for how in ("firing", "now"):
+        if how == "firing":
+            assert firing.runner.main(["--force"]) == 0
+        else:
+            assert firing.sched.run_one(firing.sched.items()[0], assume_yes=True) == 0
+        told[how] = json.loads(said.read_text())
+        said.unlink()
+        log = firing.runner.log_path("10-told.py")
+        assert firing.ui.item_log("10-told.py") == log
+        assert log.read_text()
+
+    night, now = told["firing"], told["now"]
+    assert night.keys() == now.keys()
+    assert {key: value for key, value in night.items() if key not in RUN_OWN} == {
+        key: value for key, value in now.items() if key not in RUN_OWN
+    }
+    assert int(night["EXPIRE_STOP_EPOCH"]) > 0
+    endless = firing.runner.spawn_plan(firing.runner.NO_DEADLINE)[1]
+    assert now["EXPIRE_STOP_EPOCH"] == endless
+
+
+def test_nibbles_now_refuses_a_disk_the_night_would_refuse_before_naming_a_price(
+    firing, monkeypatch, capsys
+):
+    """``nibbles now`` asks the disk what a firing asks it — what is left to
+    fetch, a second copy for an item that is delivered, and the spare — and
+    refuses in the firing's own sentence, before it says what it would spend:
+    a download with no room to merge or deliver in is found out once its
+    bytes are spent, and that is no less true in the morning."""
+    ran = firing.root / "ran"
+    firing.script("10-big.py", f"open({str(ran)!r}, 'w').write('yes')\n", dest="file")
+    row = firing.sched.items()[0]
+    needed = firing.runner.disk_needed(row, row["have"])
+    short = needed - 1
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=short))
+
+    assert firing.sched.run_one(row, assume_yes=True) != 0
+    said = capsys.readouterr()
+    assert not ran.exists()
+    assert said.out == ""
+    _, refusal = firing.runner.admit(
+        row, {"part_bytes": row["have"]}, 10 * needed, 50 * MiB, 3600, False, short
+    )
+    assert refusal and refusal in said.err
+
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=needed))
+    assert firing.sched.run_one(firing.sched.items()[0], assume_yes=True) == 0
+    assert ran.read_text() == "yes"
+
+
+class _Downloading:
+    """A run that has not ended: Pause is still on the screen."""
+
+    pid = 4242
+
+    def poll(self):
+        return None
+
+
+def test_pause_tapped_twice_interrupts_once(dlq, monkeypatch):
+    """A run told to stop is closing its file — the runner unwinding past its
+    item, or yt-dlp closing its part — and a second interrupt lands in the
+    middle of that. So the second tap is the stop already under way: one
+    interrupt, from the item's Pause and from the whole queue's."""
+    sent = []
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(os, "killpg", lambda pgid, number: sent.append((pgid, number)))
+    for running in (dlq.ytq.Running(), dlq.ui.Firing()):
+        running.child = _Downloading()
+        running.stop()
+        running.stop()
+    assert sent == [(4242, signal.SIGINT)] * 2
 
 
 def test_the_rate_is_learned_only_from_transfers_big_enough_to_mean_something(

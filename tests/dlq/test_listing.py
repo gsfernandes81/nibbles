@@ -559,3 +559,50 @@ def test_of_two_fresh_progress_files_the_one_still_writing_is_downloading(dlq):
     assert dlq.sched._running_now(["10-before.py"]) == "10-before.py"
     assert dlq.sched._running_now(["10-before.py"], exited=4242) == ""
     assert dlq.sched._running_now(["20-now.py"], exited=4242) == "20-now.py"
+
+
+@pytest.mark.parametrize(
+    "text", ["[1, 2]", "42", '"progress"', "null", "{half", ""],
+    ids=["list", "number", "string", "null", "torn", "empty"],
+)
+def test_a_progress_file_that_is_not_a_report_is_no_report_to_every_reader(dlq, text):
+    """``work/<item>/.status.json`` has one reader, beside its writer, and
+    every place that asks goes through it — so a file holding something that
+    is not a report reads as no report everywhere, rather than as nothing in
+    one place and a traceback out of the listing in another. A fresh one is
+    still something being written, which is all it says."""
+    name = "10-thing.py"
+    dlq.item(name)
+    work = dlq.root / "work" / name
+    work.mkdir(parents=True)
+    (work / ".status.json").write_text(text)
+
+    assert dlq.dl.read_status(work) is None
+    assert dlq.dl.read_status(work, "run-1") is None
+    assert dlq.runner.read_status(work, "run-1", MiB) is None
+    assert dlq.runner.Meter(work, dlq.root / "out" / name, "run-1").claimed() is None
+    assert dlq.ytq.now_progress(name) is None
+    assert dlq.sched._stated_total(name) == 0
+    assert [row["stated"] for row in dlq.sched.items()] == [0]
+    assert dlq.sched._running_now([name]) == name
+
+
+@given(
+    title=st.text(max_size=80),
+    number=st.integers(0, 99),
+    now=st.booleans(),
+)
+def test_whatever_the_title_its_log_is_found_where_it_was_written(
+    dlq, title, number, now
+):
+    """An item's log has one spelling, ``expire_runner.log_path``, and the
+    Queue tab's reader finds what it writes for any name a title can make —
+    the night's log and Download now's both — brackets, stars and all."""
+    import shutil
+
+    name = dlq.ytq.item_name(number, dlq.ytq.title_name(title))
+    shutil.rmtree(dlq.root / "logs", ignore_errors=True)
+    written = dlq.runner.log_path(name, now=now)
+    written.parent.mkdir(parents=True, exist_ok=True)
+    written.write_text("x\n")
+    assert dlq.ui.item_log(name) == written

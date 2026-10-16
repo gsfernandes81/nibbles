@@ -436,6 +436,12 @@ def command(
     never stopped and the finished file arrives under ``[MoveFiles]``, after
     the meter has frozen. Empty is yt-dlp's own default: beside the finished
     file.
+
+    ``--part`` for the same reason: a ``--no-part`` line in that config has
+    yt-dlp write straight to the final name, and the :class:`Meter` reads a
+    download in flight by its ``.part`` files — a partial started over is a
+    ``.part`` come back smaller, and a name without one is a finished file.
+    Said here, it is said after the config, and yt-dlp takes the last word.
     """
     argv = [
         *ytdl_argv(),
@@ -444,6 +450,7 @@ def command(
         "--newline",
         "--progress",
         "--continue",
+        "--part",
         "--retries",
         "3",
         "--fragment-retries",
@@ -621,11 +628,18 @@ def delivered_name(filename: str, name: str) -> str:
 
 
 def deliver(source: Path, out: Path, status: expire_dl.Status, name: str) -> str:
-    """Move the finished file to ``$EXPIRE_OUT``, per the queue contract."""
+    """Move the finished file to ``$EXPIRE_OUT``, per the queue contract.
+
+    By :func:`expire_dl.move_file`, the one move: a rename where ``out/`` is
+    on the download's filesystem (it is, under the queue root), and where it
+    is not, a copy that is whole under its name or not there at all —
+    never ``shutil.move``, whose copy of the times and mode a shared folder
+    refuses after the last byte, leaving the file in both places.
+    """
     out.mkdir(parents=True, exist_ok=True)
     dest = out / delivered_name(source.name, name)
     size = source.stat().st_size
-    shutil.move(str(source), str(dest))
+    expire_dl.move_file(source, dest)
     log(f"complete: {dest} ({size:,} bytes)")
     status.state = COMPLETE
     status.part = size

@@ -167,11 +167,16 @@ def _atomic(path: Path, payload: str) -> None:
     temp.replace(path)
 
 
+#: The progress report's name in an item's work directory: written by
+#: :class:`Status`, read by :func:`read_status`.
+STATUS_NAME = ".status.json"
+
+
 class Status:
     """The progress report the runner reads back."""
 
     def __init__(self, env: Env, total: int, part_bytes: int) -> None:
-        self.path = env.work / ".status.json"
+        self.path = env.work / STATUS_NAME
         self.run_id = env.run_id
         self.total = total
         self.part = part_bytes
@@ -204,6 +209,31 @@ class Status:
                     }
                 ),
             )
+
+
+def read_status(work: Path, run_id: str | None = None) -> dict | None:
+    """The report :class:`Status` left in *work*, or ``None`` for no report.
+
+    The one reader, beside the one writer, for every place that asks: the
+    runner's ledger and its meter, ``nibbles now``'s progress line, the
+    listing's stated size, the status screen's "downloading now" and the
+    app's progress bar. They used to parse it six ways, and two disagreed
+    about a file that was not a report — one read a JSON list as nothing, the
+    other raised out of the listing. So *no report* is one answer here: a file
+    that is not there, will not parse, or holds JSON that is not an object.
+
+    Given *run_id*, a report another run wrote is no report either: it is what
+    an item left behind before it died, not what tonight's has done.
+    """
+    try:
+        report = json.loads((work / STATUS_NAME).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(report, dict):
+        return None
+    if run_id is not None and report.get("run_id") != run_id:
+        return None
+    return report
 
 
 def _meta_path(part: Path) -> Path:

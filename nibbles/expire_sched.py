@@ -783,10 +783,12 @@ def _stated_total(name: str) -> int:
     reach 100% — which is the one thing someone asking "is it nearly done"
     must not be told.
     """
+    from nibbles import expire_dl
+
+    report = expire_dl.read_status(WORK / name) or {}
     try:
-        report = json.loads((WORK / name / ".status.json").read_text())
         return int(report.get("total_bytes") or 0)
-    except (OSError, ValueError, TypeError):
+    except (ValueError, TypeError):
         return 0
 
 
@@ -1258,21 +1260,22 @@ def _running_now(names: list[str], exited: int | list[int] | None = None) -> str
     Of the rest, the freshest: in a firing the item before this one may
     have stopped a moment ago, and the one downloading is the one writing.
     """
+    from nibbles import expire_dl
+
     gone = [exited] if isinstance(exited, int) else list(exited or ())
     found: list[tuple[float, str]] = []
     for name in names:
-        status = WORK / name / ".status.json"
+        status = WORK / name / expire_dl.STATUS_NAME
         try:
             age = time.time() - status.stat().st_mtime
         except OSError:
             continue
         if not 0 <= age < LIVE_SECONDS:
             continue
-        try:
-            report = json.loads(status.read_text())
-        except (OSError, ValueError):
-            report = None
-        if isinstance(report, dict):
+        # A fresh file that is no report (half there, or not an object) is
+        # still something writing: only what a report says can rule it out.
+        report = expire_dl.read_status(status.parent)
+        if report is not None:
             if report.get("state") in _ENDED:
                 continue
             if any(str(report.get("run_id", "")).endswith(f"-{pid}") for pid in gone):
@@ -2256,6 +2259,14 @@ def run_one(row: dict, assume_yes: bool = False) -> int:
             file=sys.stderr,
         )
         return 1
+    # The disk, as a firing asks it (expire_runner.disk_problem), and before
+    # the price is named: a download with no room to merge or deliver in fails
+    # once its bytes are spent, and that is no less true in the morning.
+    free = shutil.disk_usage(str(ROOT)).free
+    problem = runner.disk_problem(row, row["have"], free)
+    if problem:
+        print(f"error: {row['name']} cannot finish here: {problem}", file=sys.stderr)
+        return 1
 
     paint = _paint()
     width = _width()
@@ -2417,36 +2428,16 @@ def _run_item(runner, row: dict, slice_bytes: int) -> int:
     import contextlib
     import io
 
-    work, out = WORK / row["name"], OUT / row["name"]
-    for directory in (work, out, LOGS):
-        directory.mkdir(parents=True, exist_ok=True)
+    from nibbles import expire_dl
 
-    run_id = f"{int(time.time())}-{os.getpid()}"
-    # What the nightly runner gives an item, the package first on PYTHONPATH:
-    # the path an item was written with names wherever the package was then,
-    # and an upgrade can have moved it.
-    env = home.child_env()
-    env.update(
-        {
-            "EXPIRE_BUDGET_BYTES": str(slice_bytes),
-            "EXPIRE_SLICE_BYTES": str(slice_bytes),
-            "EXPIRE_TOTAL_BYTES": str(row["cap"]),
-            "EXPIRE_RUN_ID": run_id,
-            # No stop time. The 00:00 UTC deadline exists to land inside the
-            # expiring grant, and this run is deliberately outside it.
-            "EXPIRE_STOP_EPOCH": "0",
-            "EXPIRE_WORK": str(work),
-            "EXPIRE_OUT": str(out),
-        }
+    # What the nightly runner gives an item, built by the runner's own
+    # item_spawn so the two cannot drift. No stop time: the deadline exists to
+    # land inside the expiring grant, and this run is deliberately outside it —
+    # said as spawn_plan says "no deadline", the one place that decides it.
+    spawn = runner.item_spawn(
+        row, slice_bytes, runner.spawn_plan(runner.NO_DEADLINE)[1]
     )
-
-    day = time.strftime("%Y-%m-%d", time.gmtime())
-    log_path = LOGS / f"{day}-{row['name']}.log"
-    launch = (
-        [str(row["path"])]
-        if os.access(row["path"], os.X_OK)
-        else ["bash", str(row["path"])]
-    )
+    work, out, run_id, log_path = spawn.work, spawn.out, spawn.run_id, spawn.log_path
     if _width() < WIDE:
         # The path is never clipped — it is the thing you would paste at a
         # pager — so it gets a line to itself rather than a label and a wrap.
@@ -2476,22 +2467,22 @@ def _run_item(runner, row: dict, slice_bytes: int) -> int:
             meter = runner.Meter(work, out, run_id)
             began = runner.iface_bytes()
             child = subprocess.Popen(
-                launch,
+                spawn.launch,
                 stdout=sink,
                 stderr=subprocess.STDOUT,
-                env=env,
+                env=spawn.env,
                 cwd=str(work),
                 # The lock run_one took, held by the download for as long as it
                 # runs (expire_runner.holding).
                 pass_fds=runner.lock_fds(),
             )
-            code = _follow(child, work / ".status.json", run_id, row, stop)
+            code = _follow(child, work, run_id, row, stop)
             moved = max(0, runner.iface_bytes() - began) if counted else meter.moved()
 
         state = runner.load_state()
         runner.note_spent(state, moved)
         record = state.setdefault("items", {}).setdefault(row["name"], {"attempts": 0})
-        report = _report(work / ".status.json", run_id)
+        report = expire_dl.read_status(work, run_id)
         if report:
             record["part_bytes"] = int(report.get("part_bytes") or 0)
         record["last"] = stamp()
@@ -2551,25 +2542,14 @@ def stamp() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime())
 
 
-def _report(path: Path, run_id: str) -> dict | None:
-    """The item's status file, but only if it is about this run.
-
-    The run id is what tells tonight's report from one an item left behind
-    before it died last week.
-    """
-    try:
-        report = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(report, dict) or report.get("run_id") != run_id:
-        return None
-    return report
-
-
 def _follow(
-    child: subprocess.Popen, status: Path, run_id: str, row: dict, stop=()
+    child: subprocess.Popen, work: Path, run_id: str, row: dict, stop=()
 ) -> int:
     """Draw the item's own progress while it runs, and wait for it.
+
+    The progress is this run's report in *work*
+    (:func:`expire_dl.read_status`): the run id is what tells it from one
+    the item left behind before it died last week.
 
     *stop* turns true once a ctrl-c has come (``_run_item`` holds it as an
     :class:`expire_runner.Interrupts`). The child already got the same one
@@ -2584,6 +2564,8 @@ def _follow(
     """
     import contextlib
 
+    from nibbles import expire_dl
+
     live = sys.stdout.isatty()
     paint = _paint()
     # One column in hand: a line drawn right up to the last cell wraps, and a
@@ -2597,7 +2579,7 @@ def _follow(
             with contextlib.suppress(OSError):
                 print("\ninterrupted; letting it close the file cleanly")
             break
-        report = _report(status, run_id)
+        report = expire_dl.read_status(work, run_id)
         moment = time.time()
         if report is None or (not live and moment - last < 30):
             continue

@@ -94,8 +94,9 @@ import sys
 import time
 import datetime as dt
 from pathlib import Path
+from typing import NamedTuple
 
-from nibbles import home
+from nibbles import expire_dl, home
 
 #: The queue root (:func:`home.root`). The nightly job starts the runner through
 #: ``expire_runner.py`` at the root, which names its own directory as
@@ -619,7 +620,9 @@ def parse_setting(name: str, text: str) -> object:
     number, and a unit somebody bothered to type should never be the reason a
     setting does not take. The message on a refusal is the one
     :func:`setting_problem` would give, so a value typed and the same value
-    found in the config file are complained about in the same words.
+    found in the config file are complained about in the same words — asked of
+    it, never copied: for something that is not a value at all it is
+    ``setting_problem(name, None)``, which every kind refuses with what it takes.
 
     The word ``default`` is *not* handled here: putting a setting back is
     removing the key, which is the caller's business, and parsing it into a
@@ -632,11 +635,11 @@ def parse_setting(name: str, text: str) -> object:
             return True
         if said in ("off", "no", "false", "0"):
             return False
-        raise ValueError(f"{name} is {spec['words'][0]} or {spec['words'][1]}")
+        raise ValueError(setting_problem(name, None))
     if spec["kind"] == "choice":
         if said in spec["words"]:
             return said
-        raise ValueError(f"{name} is {' or '.join(spec['words'])}")
+        raise ValueError(setting_problem(name, None))
     if spec["kind"] == "clock":
         return _typed_clock(name, said)
 
@@ -647,8 +650,7 @@ def parse_setting(name: str, text: str) -> object:
         said,
     )
     if not match:
-        unit = "minutes" if spec["kind"] == "minutes" else "MB"
-        raise ValueError(f"{name} is a whole number of {unit}")
+        raise ValueError(setting_problem(name, None))
     value = int(match.group(1))
     if spec["kind"] == "minutes" and (match.group(2) or "").startswith("h"):
         value *= 60
@@ -712,10 +714,10 @@ def _typed_clock(name: str, said: str) -> str:
     """
     match = re.fullmatch(r"(\d{1,2})(?:[:.h]?(\d{2}))?\s*(z|utc)?", said)
     if not match:
-        raise ValueError(f"{name} is a time of day, like 04:00")
+        raise ValueError(setting_problem(name, None))
     hours, minutes = int(match.group(1)), int(match.group(2) or 0)
     if hours > 23 or minutes > 59:
-        raise ValueError(f"{name} is a time of day, like 04:00")
+        raise ValueError(setting_problem(name, None))
     if match.group(3):
         return f"{hours:02d}:{minutes:02d}"
     local = dt.datetime.now().astimezone().replace(
@@ -1162,7 +1164,7 @@ def _tree_bytes(*roots: Path) -> int:
     total = 0
     for root in roots:
         for path in root.rglob("*") if root.is_dir() else ():
-            if path.name == ".status.json":
+            if path.name == expire_dl.STATUS_NAME:
                 continue
             with contextlib.suppress(OSError):
                 if path.is_file():
@@ -1195,11 +1197,8 @@ class Meter:
 
     def claimed(self) -> int | None:
         """The item's own count of this run's payload, or ``None``."""
-        try:
-            report = json.loads((self.work / ".status.json").read_text())
-        except (OSError, ValueError):
-            return None
-        if not isinstance(report, dict) or report.get("run_id") != self.run_id:
+        report = expire_dl.read_status(self.work, self.run_id)
+        if report is None:
             return None
         claim = report.get("payload_bytes_this_slice")
         return max(0, int(claim)) if isinstance(claim, (int, float)) else None
@@ -1302,8 +1301,15 @@ def portal_now() -> tuple[dict | None, str]:
         qw = _qw()
     except ImportError as exc:
         # The zwana source chosen by name with no checkout to read it through.
-        # A missing reading like any other, said in words that name the fix.
-        return None, f"zwana-quota cannot be imported ({exc}); clone it or set ZWANA_HOME"
+        # A missing reading like any other, said in words that name the fix —
+        # and not "or set ZWANA_HOME", which mends the shell it is typed in and
+        # nothing else: the nightly job is not started from a shell and never
+        # sees it (expire_sched.job_problem). A clone beside the queue root is
+        # found by every process that works out of the root.
+        return None, (
+            f"zwana-quota cannot be imported ({exc}); "
+            f"clone it beside the queue root, at {ROOT.parent / 'zwana-quota'}"
+        )
     try:
         data = qw.gather(qw.stale())
         # The cache is the widget's. A write to it that fails — the disk this
@@ -1795,6 +1801,21 @@ def disk_needed(item: dict, done_already: int) -> int:
     return rest + second + DISK_SPARE
 
 
+def disk_problem(item: dict, done_already: int, free_disk: int) -> str | None:
+    """Why *free_disk* cannot finish *item* from *done_already*, or ``None``.
+
+    The one refusal for a disk too full, asked by :func:`admit` for a firing
+    and by ``nibbles now`` before it says what it will spend: a download that
+    the night would refuse for want of room is no more finishable in the
+    morning, and finding out at the merge or the delivery is finding out once
+    the data is spent.
+    """
+    needed = disk_needed(item, done_already)
+    if free_disk < needed:
+        return f"only {human(free_disk)} disk free, {human(needed)} needed"
+    return None
+
+
 def admit(
     item: dict,
     record: dict,
@@ -1824,14 +1845,14 @@ def admit(
     time. *free_disk* is optional because a projection works its one reading
     down the night while a firing takes a fresh one per item: ``None`` means
     the disk was not asked about, which is not a reason to refuse an item.
-    What it is asked against is :func:`disk_needed`.
+    What it is asked against is :func:`disk_problem`.
     """
     if remaining_time < 45:
         return 0, NO_TIME
     if free_disk is not None:
-        needed = disk_needed(item, int(record.get("part_bytes") or 0))
-        if free_disk < needed:
-            return 0, f"only {human(free_disk)} disk free, {human(needed)} needed"
+        problem = disk_problem(item, int(record.get("part_bytes") or 0), free_disk)
+        if problem:
+            return 0, problem
 
     slice_min = item.get("slice_min")
     if slice_min is None:
@@ -2085,18 +2106,124 @@ def read_status(work: Path, run_id: str, ceiling: int) -> dict | None:
     it as absent. And the count itself is a *claim*: an item that under-reports
     would make the runner's ledger optimistic, so it is clamped to the interface
     delta, which cannot be under the truth.
+
+    Read by :func:`expire_dl.read_status`, the one reader of the file; what is
+    added here is only the claim and its clamp.
     """
-    try:
-        report = json.loads((work / ".status.json").read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(report, dict) or report.get("run_id") != run_id:
+    report = expire_dl.read_status(work, run_id)
+    if report is None:
         return None
     claim = report.get("payload_bytes_this_slice")
     if not isinstance(claim, (int, float)):
         return None
     report["spent"] = min(max(0, int(claim)), ceiling)
     return report
+
+
+def _day() -> str:
+    """Today in UTC, ``2026-10-16``: what an item's log is dated by."""
+    return dt.datetime.fromtimestamp(now(), dt.UTC).strftime("%Y-%m-%d")
+
+
+def log_path(name: str, now: bool = False) -> Path:
+    """Where today's output of *name* goes: ``logs/<day>-<name>.log``.
+
+    *now* is the log a ``nibbles now`` started from a screen writes its own
+    lines to (``<day>-now-<name>.log``), and a whole-queue run from the screen
+    is *name* ``queue``. The one spelling, for the four places that write one
+    — :func:`run_item`, ``nibbles now``, the app's Download now and Run now —
+    because ``expire_ui.item_log`` finds an item's log by its name, and a
+    writer spelling the name its own way is a failure whose log the Queue tab
+    says was never written.
+    """
+    return LOGS / f"{_day()}-{'now-' if now else ''}{name}.log"
+
+
+def spawn_logged(
+    argv: list[str], log_file: Path, env: dict[str, str] | None = None
+) -> subprocess.Popen:
+    """Start *argv* from a screen, detached, its output appended to *log_file*.
+
+    Detached because what it starts — one download, or the whole queue — has
+    to outlive the screen that started it, and the screen has to stay usable
+    meanwhile: a session of its own, so the terminal's hangup and the app's
+    exit do not reach it, and nothing to read from. Run in the queue root,
+    with *env* (``None`` is this process's own).
+    """
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with log_file.open("a", encoding="utf-8") as handle:
+        return subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            cwd=str(ROOT),
+            env=env,
+        )
+
+
+class ItemSpawn(NamedTuple):
+    """What an item is started with (:func:`item_spawn`); how is its caller's."""
+
+    #: The item itself: by its shebang when it is executable, else by bash.
+    launch: list[str]
+    #: The package first on ``PYTHONPATH``, and the contract's ``EXPIRE_*``.
+    env: dict[str, str]
+    #: Whose ``.status.json`` is this run's (:func:`expire_dl.read_status`).
+    run_id: str
+    work: Path
+    out: Path
+    #: Where its output goes: :func:`log_path`.
+    log_path: Path
+
+
+def item_spawn(item: dict, slice_bytes: int, stop_epoch: str) -> ItemSpawn:
+    """An item's start, built in one place for a firing and for ``nibbles now``.
+
+    The item contract is the whole interface between the runner and a
+    download, and it was spelled twice — once in :func:`run_item` and once in
+    ``expire_sched._run_item`` — key for key, so the two could drift: a
+    variable renamed at one is an item that spends its default from the
+    other, which is no slice at all or no deadline at all, with nothing to
+    say so. What differs between the two is handed in — the slice, and the
+    stop time as :func:`spawn_plan` spells it, which is also where "no stop
+    time" is decided — and how each starts the item stays with its caller: a
+    firing gives it a session of its own, ``nibbles now`` keeps it in the
+    terminal's group so ctrl-c reaches it.
+
+    Makes the item's ``work/`` and ``out/`` directories and the log
+    directory, so the spawn that follows has somewhere to run and to write.
+    """
+    work = WORK / item["name"]
+    out = OUT / item["name"]
+    for directory in (work, out, LOGS):
+        directory.mkdir(parents=True, exist_ok=True)
+    run_id = f"{int(now())}-{os.getpid()}"
+    # With this package first on PYTHONPATH: an item imports `nibbles` through
+    # the path it was written with, and an upgrade that moved the package (a
+    # Python bump reinstalls a uv tool somewhere new) left every queued item
+    # naming a directory that is gone — failing each night with
+    # ModuleNotFoundError while Download now still worked.
+    env = home.child_env()
+    env.update(
+        {
+            # BUDGET is kept equal to SLICE for items written against the older
+            # contract: a slice is never larger than the cap they expect there.
+            "EXPIRE_BUDGET_BYTES": str(slice_bytes),
+            "EXPIRE_SLICE_BYTES": str(slice_bytes),
+            "EXPIRE_TOTAL_BYTES": str(item["cap"]),
+            "EXPIRE_RUN_ID": run_id,
+            "EXPIRE_STOP_EPOCH": stop_epoch,
+            "EXPIRE_WORK": str(work),
+            "EXPIRE_OUT": str(out),
+        }
+    )
+    # Honour the shebang when the item is executable, so a .py item runs as
+    # Python rather than being fed to bash; fall back to bash otherwise.
+    path = str(item["path"])
+    launch = [path] if os.access(path, os.X_OK) else ["bash", path]
+    return ItemSpawn(launch, env, run_id, work, out, log_path(item["name"]))
 
 
 def spawn_plan(stop_by: float) -> tuple[list[str], str, str]:
@@ -2261,55 +2388,21 @@ def run_item(
     item then runs until it is done. Everything that is not the clock is
     unchanged: the session, the byte cap, and the interruption path below.
     """
-    work = WORK / item["name"]
-    out = OUT / item["name"]
-    for directory in (work, out):
-        directory.mkdir(parents=True, exist_ok=True)
-
     endless = stop_by == NO_DEADLINE
     wrapper, stop_epoch, until = spawn_plan(stop_by)
-    run_id = f"{int(now())}-{os.getpid()}"
-    # With this package first on PYTHONPATH, as `nibbles now` has it: an item
-    # imports `nibbles` through the path it was written with, and an upgrade
-    # that moved the package (a Python bump reinstalls a uv tool somewhere
-    # new) left every queued item naming a directory that is gone — failing
-    # each night with ModuleNotFoundError while Download now still worked.
-    env = home.child_env()
-    env.update(
-        {
-            # BUDGET is kept equal to SLICE for items written against the older
-            # contract: a slice is never larger than the cap they expect there.
-            "EXPIRE_BUDGET_BYTES": str(cap),
-            "EXPIRE_SLICE_BYTES": str(cap),
-            "EXPIRE_TOTAL_BYTES": str(item["cap"]),
-            "EXPIRE_RUN_ID": run_id,
-            "EXPIRE_STOP_EPOCH": stop_epoch,
-            "EXPIRE_WORK": str(work),
-            "EXPIRE_OUT": str(out),
-        }
-    )
-
-    day = dt.datetime.fromtimestamp(now(), dt.UTC).strftime("%Y-%m-%d")
-    log_path = LOGS / f"{day}-{item['name']}.log"
+    spawn = item_spawn(item, cap, stop_epoch)
 
     log(f"start {item['name']}  cap {human(cap)}  {until}")
     # For the ledger on the one path fire() never hears back from: a run
     # interrupted on its way through watch() returns nothing to be counted.
     began_iface = iface_bytes()
     counted = iface_readable()
-    meter = Meter(work, out, run_id)
+    meter = Meter(spawn.work, spawn.out, spawn.run_id)
     if not counted:
         log("interface counters cannot be read; counting from the item's report")
-    with log_path.open("a") as sink:
+    with spawn.log_path.open("a") as sink:
         sink.write(f"\n===== {stamp()} cap={cap} stop_in={until} =====\n")
         sink.flush()
-        # Honour the shebang when the item is executable, so a .py item runs as
-        # Python rather than being fed to bash; fall back to bash otherwise.
-        launch = (
-            [str(item["path"])]
-            if os.access(item["path"], os.X_OK)
-            else ["bash", str(item["path"])]
-        )
         # ``start_new_session`` rather than an external ``setsid``, and the
         # difference is a race that only bites the process group being killed.
         # Python calls ``setsid()`` in the child between fork and exec, so the
@@ -2321,11 +2414,11 @@ def run_item(
         # later ``killpg`` signals the runner and whatever else shares its
         # group, and leaves the download running.
         child = subprocess.Popen(
-            wrapper + launch,
+            wrapper + spawn.launch,
             stdout=sink,
             stderr=subprocess.STDOUT,
-            env=env,
-            cwd=str(work),
+            env=spawn.env,
+            cwd=str(spawn.work),
             start_new_session=True,
             # The runner's lock, held by the download for as long as it runs,
             # whatever becomes of this process: see holding().
@@ -2373,7 +2466,7 @@ def run_item(
             )
             save_state(state)
         raise
-    report = read_status(work, run_id, spent)
+    report = read_status(spawn.work, spawn.run_id, spent)
 
     state.pop("active_pgid", None)
     state.pop("active_stop_by", None)
@@ -2561,6 +2654,16 @@ def hand_over(item: dict, state: dict) -> list[Path]:
       unmounted, no space. Failing here leaves the file sitting in ``out/``,
       already paid for and still there, instead of half-written into Downloads.
 
+    Each file goes by :func:`expire_dl.move_file`, which is what keeps that
+    promise: the whole file at its final name or nothing there, and the copy
+    in ``out/`` until the other one is whole. ``shutil.move`` kept neither —
+    a copy failing partway (the disk full, the card gone) left a truncated
+    file under the real name for the gallery to index, and shared storage
+    refusing the times and the mode after the last byte left a whole copy in
+    both places, recorded as never delivered. A file that stays in ``out/`` is
+    still handed back as where it is, and said on the phone as well as in the
+    log: the item is done either way, and nothing else would ever mention it.
+
     Returns where the files ended up, which is what ``nibbles path`` reports.
     """
     where = dest_of(item)
@@ -2588,19 +2691,25 @@ def hand_over(item: dict, state: dict) -> list[Path]:
         return files
 
     landed: list[Path] = []
+    stayed: list[str] = []
     for path in files:
         target = free_name(where, path.name)
         try:
-            # shutil, never Path.replace: the destination is usually on shared
-            # storage, and a rename across filesystems fails with EXDEV.
-            shutil.move(str(path), str(target))
-        except (OSError, shutil.Error) as exc:
+            expire_dl.move_file(path, target)
+        except OSError as exc:
             log(f"WARNING could not move {path.name} to {where}: {exc}")
             landed.append(path)
+            stayed.append(f"{path.name} ({exc.strerror or exc})")
             continue
         if target.name != path.name:
             log(f"{path.name} was taken, saved as {target.name}")
         landed.append(target)
+    if stayed:
+        notify(
+            "Download queue: a file stayed in out/",
+            f"{item['name']}: {', '.join(stayed)} stayed in out/, not {where}",
+            f"{NOTICE}-dest:{item['name']}",
+        )
     return landed
 
 
@@ -2619,6 +2728,19 @@ def archive(item: dict, state: dict) -> None:
         record["delivered"] = [str(path) for path in landed]
     tidy(item)
     log(f"done {item['name']} -> {landed[0] if landed else target}")
+
+
+def _strike(item: dict, record: dict, state: dict, why: str) -> None:
+    """Count one of the item's :data:`MAX_ATTEMPTS` nights against it, saying *why*.
+
+    One spelling for both ways a night is lost — a failure, and stalls enough
+    to amount to one — so that the count, the line that says it and the
+    setting aside at the last of them cannot come to differ between the two.
+    """
+    record["attempts"] = int(record.get("attempts") or 0) + 1
+    log(f"{item['name']} {why}, attempt {record['attempts']}/{MAX_ATTEMPTS}")
+    if record["attempts"] >= MAX_ATTEMPTS:
+        give_up(item, state)
 
 
 def give_up(item: dict, state: dict) -> None:
@@ -2808,6 +2930,23 @@ def gate(
     return "go", "window open"
 
 
+def night_budget(
+    verdict: str, items: list[dict], state: dict, doc: dict | None
+) -> int:
+    """What the night may spend, given what the gate said: the one figure.
+
+    A blind run spends what the items declared (:func:`blind_budget`), any
+    other the reading's spendable figure, and no reading nothing. Asked by
+    :func:`snapshot`, whose figure the screens draw the cut line and the
+    window card from, and by :func:`fire`, which spends it — one expression,
+    because a screen projecting from one budget while the firing admits
+    against another is a line promising bytes the night then refuses.
+    """
+    if verdict == "blind":
+        return blind_budget(items, state)
+    return spendable_bytes(doc) if doc else 0
+
+
 def snapshot(force: bool = False, blind: bool = False) -> dict:
     """Everything the status screen says, gathered without touching the queue.
 
@@ -2877,13 +3016,7 @@ def snapshot(force: bool = False, blind: bool = False) -> dict:
         "expiring": (
             None if is_manual(doc) or not doc else doc["free"]["left_bytes"]
         ),
-        "spendable": (
-            blind_budget(items, state)
-            if verdict == "blind"
-            else spendable_bytes(doc)
-            if doc
-            else 0
-        ),
+        "spendable": night_budget(verdict, items, state, doc),
         # The reserve as it applies to *this* reading, not as it is set: with
         # ``reserve-when-paid`` off and paid data there, the floor tonight's
         # run is flying against is nothing, and a screen still saying 100 MB
@@ -2960,13 +3093,7 @@ def fire(force: bool = False, blind: bool = False) -> int:
         log(detail)
         return 1
 
-    budget = (
-        blind_budget(items, state)
-        if verdict == "blind"
-        else spendable_bytes(doc)
-        if doc
-        else 0
-    )
+    budget = night_budget(verdict, items, state, doc)
     if verdict in GATE_GO or verdict == "spent":
         # Logged for all of them, because "the window opened and there was
         # nothing to spend" is a different night from "the window never
@@ -3118,24 +3245,12 @@ def fire(force: bool = False, blind: bool = False) -> int:
                 )
                 if record["stalls"] >= MAX_STALLS:
                     record["stalls"] = 0
-                    record["attempts"] += 1
-                    log(
-                        f"{item['name']} counted a strike for repeated stalls, "
-                        f"attempt {record['attempts']}/{MAX_ATTEMPTS}"
-                    )
-                    if record["attempts"] >= MAX_ATTEMPTS:
-                        give_up(item, state)
+                    _strike(item, record, state, "counted a strike for repeated stalls")
             else:
                 record["stalls"] = 0
                 log(f"{item['name']} made progress but is not finished; left queued")
         else:
-            record["attempts"] += 1
-            log(
-                f"{item['name']} failed (exit {code}), "
-                f"attempt {record['attempts']}/{MAX_ATTEMPTS}"
-            )
-            if record["attempts"] >= MAX_ATTEMPTS:
-                give_up(item, state)
+            _strike(item, record, state, f"failed (exit {code})")
         save_state(state)
 
         # Only where there was a reading to begin with. On a blind run there is

@@ -342,6 +342,34 @@ def test_a_switch_is_never_a_number(dlq):
         dlq.runner.parse_setting("auto", "45")
 
 
+@pytest.mark.parametrize("typed", ["bad", "", "12:99", "-1", "on and off"])
+def test_what_is_no_value_at_all_is_refused_as_the_file_would_be(dlq, typed):
+    """Typed at the prompt or found in ``config.json``, a value of no use is
+    refused in the one sentence :func:`setting_problem` gives — asked of it,
+    so there is no second copy of any setting's refusal to drift."""
+    for name in dlq.runner.SETTINGS:
+        with pytest.raises(ValueError) as refused:
+            dlq.runner.parse_setting(name, typed)
+        assert str(refused.value) == dlq.runner.setting_problem(name, None), name
+
+
+def test_a_zwana_budget_with_no_checkout_names_where_a_clone_is_found(
+    dlq, monkeypatch
+):
+    """The advice is a clone beside the queue root, the one place every process
+    working out of the root finds it — never ``ZWANA_HOME``, which mends the
+    shell it is typed in and not the nightly job, which has no shell."""
+
+    def missing():
+        raise ImportError("No module named 'quota_widget'")
+
+    monkeypatch.setattr(dlq.runner, "_qw", missing)
+    reading, why = dlq.runner.portal_now()
+    assert reading is None
+    assert str(dlq.root.parent / "zwana-quota") in why
+    assert "ZWANA_HOME" not in why
+
+
 def test_the_window_is_a_multiple_of_the_scheduler_floor(dlq):
     """15 minutes is JobScheduler's own floor for a periodic job.
 

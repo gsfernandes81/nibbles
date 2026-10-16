@@ -68,7 +68,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 
 from nibbles import expire_sched as sched
@@ -1097,28 +1096,24 @@ class Firing:
     def __init__(self) -> None:
         self.child: subprocess.Popen | None = None
         self.blind = False
+        #: Set by :meth:`stop`, so a run is interrupted once (see there).
+        self.stopped = False
 
     @property
     def alive(self) -> bool:
         return self.child is not None and self.child.poll() is None
 
     def start(self, blind: bool) -> Path:
-        """Spawn the runner and return the file its output is going to."""
-        sched.LOGS.mkdir(parents=True, exist_ok=True)
-        log = sched.LOGS / f"{time.strftime('%Y-%m-%d', time.gmtime())}-now-queue.log"
-        handle = log.open("a", encoding="utf-8")
-        try:
-            self.child = subprocess.Popen(
-                sched.queue_run_argv(blind),
-                stdin=subprocess.DEVNULL,
-                stdout=handle,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                cwd=str(sched.ROOT),
-            )
-        finally:
-            handle.close()
+        """Spawn the runner and return the file its output is going to.
+
+        The log and the spawn are the runner's (``log_path``,
+        ``spawn_logged``), which the item screen's Download now uses too.
+        """
+        runner = sched._runner()
+        log = runner.log_path("queue", now=True)
+        self.child = runner.spawn_logged(sched.queue_run_argv(blind), log)
         self.blind = blind
+        self.stopped = False
         return log
 
     #: **SIGINT, not SIGTERM.** The download is not in the runner's process
@@ -1140,9 +1135,14 @@ class Firing:
         The part file stays on disk and the item stays in the queue, so the
         nightly window carries on from where this stopped — the same bargain
         the item-level stop makes, and the reason stopping one is cheap.
+
+        Once. The runner answers the first by unwinding — the item's tree
+        killed, the ledger charged, the state saved — and a second is only
+        that same stop asked for again while it is being carried out.
         """
-        if self.child is None:
+        if self.child is None or self.stopped:
             return
+        self.stopped = True
         with contextlib.suppress(OSError):
             os.killpg(os.getpgid(self.child.pid), self.SIGNAL)
 

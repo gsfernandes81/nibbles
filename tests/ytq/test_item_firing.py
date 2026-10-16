@@ -161,6 +161,18 @@ def test_a_temp_path_in_the_config_cannot_move_the_partials(tmp_path):
     assert where(argv, dl, "f137.mp4.part").parent == dl
 
 
+def test_a_no_part_line_in_the_config_cannot_take_the_part_files_away(tmp_path):
+    """The meter reads a download in flight by its ``.part`` files, and the
+    person's config is read first and on purpose: a ``--no-part`` there would
+    have yt-dlp write straight to the final name. yt-dlp takes the last word,
+    and the last word is ours."""
+    dl = tmp_path / "dl"
+    ours = ytdl_item.command("u", "137", dl, tmp_path / ".produced", None, 1)
+    argv = ["--no-part", *ours]
+    said = [arg for arg in argv if arg in ("--part", "--no-part")]
+    assert said[-1] == "--part"
+
+
 def test_a_merge_is_only_asked_for_when_there_is_one(tmp_path):
     merged = ytdl_item.command("u", "137+140", tmp_path, tmp_path / "p", "mkv", 1)
     single = ytdl_item.command("u", "18", tmp_path, tmp_path / "p", None, 1)
@@ -269,6 +281,41 @@ def test_delivery_moves_the_file_and_says_it_is_complete(tmp_path, monkeypatch):
     report = json.loads((env.work / ".status.json").read_text())
     assert report["state"] == ytdl_item.COMPLETE
     assert report["part_bytes"] == 4321
+
+
+def test_a_delivery_across_filesystems_is_the_file_once(tmp_path, monkeypatch):
+    """``$EXPIRE_OUT`` on another mount, which refuses times and modes once
+    the bytes are there: the file arrives whole under its one name and leaves
+    the download directory — not a copy in both places and a failure."""
+    import errno
+
+    work, out = tmp_path / "work", tmp_path / "elsewhere" / "out"
+    monkeypatch.setenv("EXPIRE_WORK", str(work))
+    monkeypatch.setenv("EXPIRE_OUT", str(out))
+    work.mkdir()
+    source = work / f"{ytdl_item.STEM}.mp4"
+    source.write_bytes(os.urandom(5000))
+    data = source.read_bytes()
+    real_rename = os.rename
+
+    def rename(src, dst, *args, **kw):
+        if Path(src) == source:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_rename(src, dst, *args, **kw)
+
+    def refuse(*args, **kw):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "rename", rename)
+    monkeypatch.setattr(os, "utime", refuse)
+    monkeypatch.setattr(os, "chmod", refuse)
+    env = expire_dl.Env()
+    status = expire_dl.Status(env, len(data), 0)
+
+    assert ytdl_item.deliver(source, env.out, status, "talk") == ytdl_item.COMPLETE
+    assert not source.exists()
+    assert [path.name for path in out.iterdir()] == ["talk.mp4"]
+    assert (out / "talk.mp4").read_bytes() == data
 
 
 def test_a_delivery_from_an_earlier_firing_is_recognised(tmp_path):

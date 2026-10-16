@@ -2155,24 +2155,13 @@ def start_now(name: str) -> tuple[subprocess.Popen, Path]:
     ``run_one``'s own choice: that avoids ``setsid`` so ctrl-c reaches the
     download through the terminal's process group. Here the screen goes back to
     the results and ytq later exits, and the download must not go with it.
+    The log and the spawn are the runner's (``log_path``, ``spawn_logged``),
+    which Run now's whole-queue run is started by too.
     """
-    logs = HERE / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    log = logs / f"{time.strftime('%Y-%m-%d', time.gmtime())}-now-{name}.log"
-    handle = log.open("a", encoding="utf-8")
-    try:
-        child = subprocess.Popen(
-            now_argv(name),
-            stdin=subprocess.DEVNULL,
-            stdout=handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            cwd=str(HERE),
-            env=home.child_env(),
-        )
-    finally:
-        handle.close()
-    return child, log
+    from nibbles import expire_runner
+
+    log = expire_runner.log_path(name, now=True)
+    return expire_runner.spawn_logged(now_argv(name), log, home.child_env()), log
 
 
 def now_progress(name: str) -> tuple[int, int] | None:
@@ -2182,13 +2171,12 @@ def now_progress(name: str) -> tuple[int, int] | None:
     for the runner anyway — a local file, so watching a download costs nothing.
     Half-written or absent reads as "no report yet" rather than raising: this
     is drawn on a timer, and a screen must not die because it looked a
-    millisecond early.
+    millisecond early. Read by :func:`expire_dl.read_status`, the one reader.
     """
-    try:
-        report = json.loads((HERE / "work" / name / ".status.json").read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(report, dict):
+    from nibbles import expire_dl
+
+    report = expire_dl.read_status(HERE / "work" / name)
+    if report is None:
         return None
     have = report.get("part_bytes")
     if not isinstance(have, (int, float)):
@@ -2615,8 +2603,12 @@ class Running:
         The part-file stays on disk and the item stays in the queue, so the
         nightly window carries on from where this stopped — the property that
         made ctrl-c cheap, kept now that there is no ctrl-c to press.
+
+        Once. A run already told to stop is closing its file, and a second
+        interrupt reaches yt-dlp in the middle of that — the stop it would
+        repeat is the one already under way.
         """
-        if self.child is None:
+        if self.child is None or self.stopped:
             return
         # Stopped is not done, and resuming later is a different run.
         self.stopped = True
