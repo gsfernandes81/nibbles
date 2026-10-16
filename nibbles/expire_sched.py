@@ -81,7 +81,7 @@ import sys
 import time
 from pathlib import Path
 
-from nibbles import home, ytq
+from nibbles import home, ytdl_item, ytq
 from nibbles.expire_dl import COMPLETE, DECLINED, FATAL
 
 #: The queue root, never this file's directory. Installed from PyPI, this
@@ -613,7 +613,7 @@ def _is_payload(name: str) -> bool:
     return not (
         name.startswith(".")
         or name.endswith((".ytdl", ".meta.json"))
-        or ".temp." in name
+        or ytdl_item.scaffolding(name)
     )
 
 

@@ -25,20 +25,24 @@ resumable ``.part`` and a SIGKILL mid-write may not.
 
 Byte metering
 -------------
-Bytes taken this slice are measured from ``.part`` files on disk, not from
+Bytes taken this slice are measured from the files yt-dlp writes, not from
 yt-dlp's progress output. Two consequences worth naming, because both are the
 reason the rule is shaped this way:
 
-* **Only names containing** ``.part`` **are counted.** Merging writes a new file
-  the size of both inputs; metering the directory would read that as a second
+* **Counting stops when postprocessing starts.** Merging writes a new file the
+  size of both inputs; metering the directory would read that as a second
   download of the whole video and stop the item mid-merge, every night, forever.
-* **Sizes are per-file high-water marks.** A finished stream is renamed out of
-  ``x.part`` to ``x``, and a plain sum would read that as bytes being handed
-  back.
+* **Sizes are per-stream high-water marks.** A finished stream is renamed out
+  of ``x.part`` to ``x``, and a plain sum would read that as bytes being handed
+  back — but a ``.part`` that comes back smaller was started over, and what it
+  holds now is new (:class:`Meter` has the whole set of rules).
 
 Postprocessing (merge, fixup, thumbnail embed) does no network I/O, so when a
 postprocessor announces itself the byte budget stops being enforced — otherwise
 a video that finished downloading at the slice edge could never be merged.
+
+yt-dlp is never told the video's name: it writes :data:`STEM` into ``dl/``,
+and :func:`deliver` puts the title on (:func:`command` says why).
 
 Usage from a queue item::
 
@@ -53,6 +57,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import shutil
 import signal
@@ -158,6 +163,17 @@ STOP_REACTION = 1.5
 RATE_WINDOW = 3.0
 
 #: Output lines that mean the network phase is over and CPU work has started.
+#:
+#: Each must name a postprocessor yt-dlp runs only *after* the download
+#: (``post_process`` or ``after_move``), never one that can run before it
+#: (``pre_process``, ``after_filter``, ``video``, ``before_dl``). A line printed
+#: before the first media byte freezes the meter at nought and lifts the slice
+#: ceiling for the whole firing: the video is fetched whole and reported as
+#: nothing, which on a phone is what the runner charges. That is what
+#: ``[SponsorBlock]`` (``after_filter``: it fetches the segments) and
+#: ``[ThumbnailsConvertor]`` (``before_dl``) did, from a ``--sponsorblock-mark``
+#: or ``--convert-thumbnails`` line in the person's own config — which is read
+#: on purpose. SponsorBlock's post-download step is ``[ModifyChapters]``.
 PP_MARKERS = (
     "[Merger]",
     "[Fixup",
@@ -167,8 +183,6 @@ PP_MARKERS = (
     "[Metadata]",
     "[EmbedSubtitle]",
     "[VideoRemuxer]",
-    "[ThumbnailsConvertor]",
-    "[SponsorBlock]",
     "[ModifyChapters]",
 )
 
@@ -190,21 +204,67 @@ def _on_term(signum, frame) -> None:
 # --------------------------------------------------------------------------- #
 
 
-#: ``x.mp4.part`` and ``x.mp4.part-Frag7`` are both the stream ``x.mp4``.
-PART_SUFFIX_RE = re.compile(r"\.part(-Frag\d+)?$")
+#: ``x.mp4.part``, a fragment ``x.mp4.part-Frag7``, and that fragment while it
+#: is still being fetched, ``x.mp4.part-Frag7.part``, are all the stream
+#: ``x.mp4``: yt-dlp names a fragment after the stream's ``.part``, and fetches
+#: it through a downloader that adds a ``.part`` of its own.
+PART_SUFFIX_RE = re.compile(r"\.part(?:-Frag\d+)?(?:\.part)?$")
+
+#: ffmpeg's target while a postprocessor works, where yt-dlp puts it — at the
+#: end of the name: ``prepend_extension(path, "temp")``, so ``x.temp.mp4``. An
+#: extension holds no dot, so a name with ``.temp.`` inside it is not one.
+MERGE_TEMP_RE = re.compile(r"\.temp\.[^.]+$")
+
+
+def scaffolding(filename: str) -> bool:
+    """Whether a file in a download directory is yt-dlp's bookkeeping rather
+    than downloaded bytes: ``.ytdl``, its fragment index, or ``x.temp.mp4``, a
+    merge or a fixup in progress — a new file the size of inputs that were paid
+    for once already.
+
+    The one rule for everything that reads a download directory: the meter,
+    :func:`fetched_bytes`, :func:`produced`, and ``expire_sched``'s listing.
+    Anchored at the end of the name because that is where yt-dlp puts both, and
+    the start of a name was once the video's title: ``".temp." in name`` read a
+    video called "Clearing the .temp. cache" as nothing at all, so its slice
+    was never stopped, its bytes were never charged, and Remove took its
+    partial for scratch.
+    """
+    return filename.endswith(".ytdl") or MERGE_TEMP_RE.search(filename) is not None
 
 
 class Meter:
     """Bytes fetched during this slice, measured from the files on disk.
 
-    Three rules, each of which exists because the naive version is wrong:
+    Five rules, each of which exists because the naive version is wrong:
 
     * **A stream is keyed by its finished name.** yt-dlp downloads to
       ``x.mp4.part`` and renames it to ``x.mp4`` when it is done. Keying by the
       name on disk would count that stream twice, once under each name.
+    * **A stream is the sum of its files at one look.** A fragmented download
+      (HLS, DASH) fetches each fragment into ``x.mp4.part-Frag7.part``, renames
+      it ``x.mp4.part-Frag7``, appends it to ``x.mp4.part`` and deletes it.
+      Until the append those bytes are in the fragment alone. Keyed as a stream
+      of its own, every fragment counted twice and the slice stopped at half;
+      the larger of the two files instead would miss a fragment a stop left
+      behind, which is the direction the runner cannot afford. The sum is high
+      only between the append and the delete — as long as yt-dlp takes to
+      write its index — and then by one fragment a stream, never by more
+      however many there are.
     * **Sizes are high-water marks.** A file disappearing — renamed away, or
       deleted after a merge consumed it — must not read as bytes being handed
       back.
+    * **A** ``.part`` **that comes back smaller was started over.** yt-dlp
+      resumes a partial when the server honours a range, and otherwise opens
+      it ``wb`` and fetches from byte 0 ("Unable to resume"): everything the
+      file held was thrown away and everything it holds now is new. Under the
+      high-water mark alone none of that counted until it passed the old size,
+      so the slice stop let the old partial and a whole slice through, and the
+      report said only the excess. What the file held goes on the stream's
+      account, and the stream keeps counting from there. Only a ``.part`` is
+      asked: a finished file is replaced by postprocessing, never fetched into.
+      (A partial smaller than one poll's worth can be refetched past its old
+      size between two looks, and reads as growth: the error is under a poll.)
     * **Counting stops when postprocessing starts.** Merging writes a new file
       the size of both its inputs, and counting it would read as a second
       download of the whole video. ffmpeg's target is a ``.temp.`` name until
@@ -214,6 +274,11 @@ class Meter:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.high: dict[str, int] = {}
+        #: Every file's size at the last look, by its path under *root*: what
+        #: tells a partial started over from one renamed away.
+        self.sizes: dict[str, int] = {}
+        #: Per stream, what its partials held when they were started over.
+        self.lost: dict[str, int] = {}
         self.frozen: int | None = None
         self.last = 0
         self.sample()
@@ -226,16 +291,25 @@ class Meter:
             found = list(self.root.rglob("*"))
         except OSError:
             return
+        sizes: dict[str, int] = {}
         for path in found:
-            if path.name.endswith(".ytdl") or ".temp." in path.name:
+            if scaffolding(path.name):
                 continue
             try:
                 if not path.is_file():
                     continue
-                size = path.stat().st_size
+                sizes[str(path.relative_to(self.root))] = path.stat().st_size
             except OSError:
                 continue
-            key = PART_SUFFIX_RE.sub("", str(path.relative_to(self.root)))
+        streams: dict[str, int] = {}
+        for rel, size in sizes.items():
+            key = PART_SUFFIX_RE.sub("", rel)
+            if rel.endswith(".part") and size < self.sizes.get(rel, 0):
+                self.lost[key] = self.lost.get(key, 0) + self.sizes[rel]
+            streams[key] = streams.get(key, 0) + size
+        self.sizes = sizes
+        for key, size in streams.items():
+            size += self.lost.get(key, 0)
             if size > self.high.get(key, 0):
                 self.high[key] = size
 
@@ -265,8 +339,8 @@ class Meter:
 def fetched_bytes(dl: Path) -> int:
     """Everything downloaded so far: finished streams plus partial ones.
 
-    ``.ytdl`` is yt-dlp's fragment index and ``.temp.`` files are a merge in
-    progress — neither is downloaded payload.
+    Not the :func:`scaffolding`: yt-dlp's fragment index and a merge in
+    progress are not downloaded payload.
     """
     total = 0
     try:
@@ -274,7 +348,7 @@ def fetched_bytes(dl: Path) -> int:
     except OSError:
         return 0
     for path in found:
-        if path.name.endswith(".ytdl") or ".temp." in path.name:
+        if scaffolding(path.name):
             continue
         try:
             if path.is_file():
@@ -330,16 +404,39 @@ def ytdl_argv() -> list[str]:
     return [shutil.which("yt-dlp") or "yt-dlp"]
 
 
+#: What yt-dlp is told to call the download, whatever the video is called.
+STEM = "media"
+
+
 def command(
     url: str,
-    name: str,
     fmt: str,
     dl: Path,
     printed: Path,
     merge_ext: str | None,
     rate_limit: int,
 ) -> list[str]:
-    """The yt-dlp invocation for one firing."""
+    """The yt-dlp invocation for one firing, run in *dl*.
+
+    **Nothing yt-dlp expands names the video.** It puts the paths and the
+    output template through ``expandvars``/``expanduser`` — on POSIX there is
+    no escape for ``$`` — and the template and the print file through
+    ``%``-formatting as well, and both the title and the item's directory
+    (``work/40-<title>.py``) once went in. "What is $PATH?" sent the whole
+    video into a directory nothing meters, lists or delivers from, reported as
+    nought; "Growth 300%(2020)" was an invalid template every night. So the
+    paths are relative to the child's own directory, the file is
+    :data:`STEM`, and :func:`deliver` puts the one name on with a rename
+    nothing expands.
+
+    ``temp`` is pinned beside ``home`` because ``--paths`` is a dictionary: a
+    ``-P temp:`` line in the person's config — read on purpose, the cookies
+    and the JS runtime live there — survives a ``home`` given here and puts
+    every partial outside *dl*, where the meter cannot see it, the slice is
+    never stopped and the finished file arrives under ``[MoveFiles]``, after
+    the meter has frozen. Empty is yt-dlp's own default: beside the finished
+    file.
+    """
     argv = [
         *ytdl_argv(),
         "--no-playlist",
@@ -362,12 +459,14 @@ def command(
         "-f",
         fmt,
         "-P",
-        f"home:{dl}",
+        "home:.",
+        "-P",
+        "temp:",
         "-o",
-        f"{name}.%(ext)s",
+        f"{STEM}.%(ext)s",
         "--print-to-file",
         "after_move:filepath",
-        str(printed),
+        os.path.relpath(printed, dl),
     ]
     if merge_ext:
         argv += ["--merge-output-format", merge_ext]
@@ -461,7 +560,29 @@ def _named(directory: Path, name: str) -> list[Path]:
         return []
 
 
-def produced(dl: Path, printed: Path, name: str) -> Path | None:
+def adopt(dl: Path, name: str) -> None:
+    """Rename what an earlier firing left under the title onto :data:`STEM`.
+
+    Until 2026-10-16 yt-dlp was told to call the download after its title, so
+    a video part-way through is ``<title>.f137.mp4.part``, with its ``.ytdl``
+    index and any stream already finished beside it. yt-dlp resumes only the
+    name it would write, so left as they are those bytes would be bought
+    again. A rename in one directory moves nothing over the radio and loses
+    nothing, and a file already under the new name is never written over.
+    Not for a title that is the stem or begins with it, whose old names cannot
+    be told from the new ones.
+    """
+    if name == STEM or name.startswith(f"{STEM}."):
+        return
+    for path in _named(dl, name):
+        target = path.with_name(STEM + path.name[len(name):])
+        if target.exists():
+            continue
+        with contextlib.suppress(OSError):
+            path.rename(target)
+
+
+def produced(dl: Path, printed: Path) -> Path | None:
     """The finished file, as yt-dlp reported it, or the best guess otherwise."""
     try:
         lines = [
@@ -479,10 +600,10 @@ def produced(dl: Path, printed: Path, name: str) -> Path | None:
     # --print-to-file did not fire (an older yt-dlp, or the file was already in
     # place). Fall back to the largest thing that is not scaffolding.
     best: Path | None = None
-    for path in sorted(_named(dl, name)):
-        if ".part" in path.name or path.name.endswith(".ytdl"):
+    for path in sorted(_named(dl, STEM)):
+        if ".part" in path.name or scaffolding(path.name):
             continue
-        if ".temp." in path.name or re.search(r"\.f\d+\.", path.name):
+        if re.search(r"\.f\d+\.", path.name):
             continue
         if not path.is_file():
             continue
@@ -491,10 +612,18 @@ def produced(dl: Path, printed: Path, name: str) -> Path | None:
     return best
 
 
-def deliver(source: Path, out: Path, status: expire_dl.Status) -> str:
+def delivered_name(filename: str, name: str) -> str:
+    """``media.mp4`` as the item delivers it: ``<name>.mp4``, the one name
+    (design §6), put on here because yt-dlp is never told it."""
+    if name and filename.startswith(f"{STEM}."):
+        return name + filename[len(STEM):]
+    return filename
+
+
+def deliver(source: Path, out: Path, status: expire_dl.Status, name: str) -> str:
     """Move the finished file to ``$EXPIRE_OUT``, per the queue contract."""
     out.mkdir(parents=True, exist_ok=True)
-    dest = out / source.name
+    dest = out / delivered_name(source.name, name)
     size = source.stat().st_size
     shutil.move(str(source), str(dest))
     log(f"complete: {dest} ({size:,} bytes)")
@@ -546,6 +675,7 @@ def fetch(
         status.write(force=True)
         return COMPLETE
 
+    adopt(dl, name)
     have = fetched_bytes(dl)
     # Clamped so the runner, which computes the next slice as cap - part_bytes,
     # can never conclude that nothing is left to do and stop offering slices.
@@ -586,7 +716,7 @@ def fetch(
     meter = Meter(dl)
     started = time.time()
     try:
-        child = Child(command(url, name, fmt, dl, printed, merge_ext, rate_limit), dl)
+        child = Child(command(url, fmt, dl, printed, merge_ext, rate_limit), dl)
     except OSError as exc:
         log(f"FATAL cannot start yt-dlp: {exc}")
         status.state = FATAL
@@ -651,11 +781,11 @@ def fetch(
     status.part = min(have_now, total - 1) if total else have_now
 
     if code == 0:
-        result = produced(dl, printed, name)
+        result = produced(dl, printed)
         if result is not None:
             state.pop("zero_firings", None)
             save_state(env.work, state)
-            return deliver(result, env.out, status)
+            return deliver(result, env.out, status, name)
         # Exit 0 with nothing to show for it should never happen; treat it as a
         # failure rather than archiving the item as done and losing the video.
         log("FATAL yt-dlp reported success but produced no file")

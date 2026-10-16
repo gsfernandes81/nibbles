@@ -10,19 +10,72 @@ from __future__ import annotations
 
 import json
 import math
+import os
+from pathlib import Path
 
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
-from nibbles import expire_dl
-from nibbles import ytdl_item
+from nibbles import expire_dl, ytdl_item, ytq
 
 
 def after(argv: list[str], flag: str) -> str:
     """The value a flag was given, so a test names the pair and not an index."""
     assert flag in argv, f"{flag} is not in {argv}"
     return argv[argv.index(flag) + 1]
+
+
+# What yt-dlp does with the paths and templates it is handed, so that a test
+# can ask where a file would land rather than how a string is spelled.
+
+
+def expanded(value: str) -> str:
+    """yt-dlp's ``expand_path``: ``expanduser`` and then ``expandvars``, with
+    no escape for ``$`` on POSIX."""
+    return os.path.expandvars(os.path.expanduser(value))
+
+
+def paths_of(argv: list[str]) -> dict[str, str]:
+    """Every ``-P`` folded into the dictionary yt-dlp keeps: per key, the last
+    one wins, and a value with no key of its own is ``home``."""
+    paths: dict[str, str] = {}
+    for flag, value in zip(argv, argv[1:], strict=False):
+        if flag != "-P":
+            continue
+        key, sep, rest = value.partition(":")
+        if sep and key in ("home", "temp"):
+            paths[key] = rest
+        else:
+            paths["home"] = value
+    return paths
+
+
+def home_of(argv: list[str], cwd: Path) -> Path:
+    return Path(os.path.normpath(cwd / expanded(paths_of(argv).get("home", ""))))
+
+
+def partials_of(argv: list[str], cwd: Path) -> Path:
+    """Where yt-dlp puts a ``.part``: ``home``, then ``temp`` under it."""
+    temp = expanded(paths_of(argv).get("temp", ""))
+    return Path(os.path.normpath(home_of(argv, cwd) / temp))
+
+
+def where(argv: list[str], cwd: Path, ext: str) -> Path:
+    """Where yt-dlp writes the file whose ``%(ext)s`` is *ext*, run in *cwd*.
+
+    ``f137.mp4.part`` stands for format 137's partial, which is how yt-dlp's
+    own names come out of the template.
+    """
+    name = expanded(after(argv, "-o")) % {"ext": ext}
+    under = partials_of(argv, cwd) if ext.endswith(".part") else home_of(argv, cwd)
+    return Path(os.path.normpath(under / name))
+
+
+def printed_to(argv: list[str], cwd: Path) -> Path:
+    """The file ``--print-to-file`` appends to, as yt-dlp resolves it."""
+    target = argv[argv.index("--print-to-file") + 2]
+    return Path(os.path.normpath(home_of(argv, cwd) / (expanded(target) % {})))
 
 
 # --------------------------------------------------------------------------- #
@@ -33,7 +86,7 @@ def after(argv: list[str], flag: str) -> str:
 def test_the_firing_resumes_rather_than_restarting(tmp_path):
     """``--continue`` is the whole cross-night design: the .part is the state."""
     argv = ytdl_item.command(
-        "https://youtu.be/x", "talk", "137+140", tmp_path / "dl",
+        "https://youtu.be/x", "137+140", tmp_path / "dl",
         tmp_path / ".produced", "mp4", 5_000_000,
     )
     assert "--continue" in argv
@@ -42,31 +95,75 @@ def test_the_firing_resumes_rather_than_restarting(tmp_path):
 
 
 def test_the_format_and_the_rate_cap_are_what_was_asked_for(tmp_path):
+    dl = tmp_path / "dl"
     argv = ytdl_item.command(
-        "https://youtu.be/x", "talk", "137+140", tmp_path / "dl",
-        tmp_path / ".produced", None, 5_000_000,
+        "https://youtu.be/x", "137+140", dl, tmp_path / ".produced", None, 5_000_000,
     )
     assert after(argv, "-f") == "137+140"
     assert after(argv, "--limit-rate") == "5000000"
-    assert after(argv, "-P") == f"home:{tmp_path / 'dl'}"
-    assert after(argv, "-o") == "talk.%(ext)s"
+    # Run in dl, the download lands in dl: the meter's directory.
+    assert where(argv, dl, "mp4").parent == dl
 
 
 def test_the_finished_path_is_asked_for_after_the_move(tmp_path):
     """``produced`` reads this file; the name yt-dlp prints must be the final one."""
-    printed = tmp_path / ".produced"
-    argv = ytdl_item.command(
-        "https://youtu.be/x", "talk", "137", tmp_path / "dl", printed, None, 1
-    )
+    printed, dl = tmp_path / ".produced", tmp_path / "dl"
+    argv = ytdl_item.command("https://youtu.be/x", "137", dl, printed, None, 1)
     assert after(argv, "--print-to-file") == "after_move:filepath"
-    assert str(printed) in argv
+    assert printed_to(argv, dl) == printed
+
+
+#: Titles yt-dlp once read as something other than a name: a variable it
+#: expanded, a template field it formatted, an escape it undid, a home
+#: directory, and a merge in progress.
+TROUBLESOME = (
+    "What is $PATH?",
+    "Why $HOME matters",
+    "Linux ${HOME} explained",
+    "Growth 300%(2020-2024)",
+    "Rated 100%% real",
+    "100% Orange Juice",
+    "~root",
+    "Clearing the .temp. cache: a 4K tour",
+)
+
+
+@given(title=st.one_of(st.sampled_from(TROUBLESOME), st.text(max_size=60)))
+@example(title="What is $PATH?")
+@example(title="Growth 300%(2020-2024)")
+def test_no_title_reaches_what_yt_dlp_expands(title):
+    """yt-dlp expands ``$`` and ``~`` in its paths and templates and
+    ``%``-formats the templates; the title is in the item's own directory and
+    once was in the template too. Whatever the title, the download lands in
+    ``dl`` itself, its partials beside it and the printed path where
+    ``produced`` reads it — and none of it raises."""
+    work = Path("/queue/work") / ytq.item_name(40, ytq.title_name(title))
+    dl = work / ytdl_item.DL_DIRNAME
+    argv = ytdl_item.command(
+        "https://youtu.be/x", "137+140", dl, work / ".produced", "mkv", 1
+    )
+    assert where(argv, dl, "mkv").parent == dl
+    assert where(argv, dl, "f137.mp4.part").parent == dl
+    assert printed_to(argv, dl) == work / ".produced"
+
+
+def test_a_temp_path_in_the_config_cannot_move_the_partials(tmp_path):
+    """``--paths`` is a dictionary, and the person's config is read first and
+    on purpose: a ``temp:`` there survived the ``home`` given here and put
+    every partial where the meter does not look, the finished file arriving
+    under ``[MoveFiles]`` after the meter froze — a whole video reported as
+    nought."""
+    dl = tmp_path / "dl"
+    ours = ytdl_item.command("u", "137", dl, tmp_path / ".produced", None, 1)
+    config = ["-P", "temp:/elsewhere/tmp", "-P", "/elsewhere"]
+    argv = [*config, *ours]
+    assert partials_of(argv, dl) == dl
+    assert where(argv, dl, "f137.mp4.part").parent == dl
 
 
 def test_a_merge_is_only_asked_for_when_there_is_one(tmp_path):
-    merged = ytdl_item.command(
-        "u", "talk", "137+140", tmp_path, tmp_path / "p", "mkv", 1
-    )
-    single = ytdl_item.command("u", "talk", "18", tmp_path, tmp_path / "p", None, 1)
+    merged = ytdl_item.command("u", "137+140", tmp_path, tmp_path / "p", "mkv", 1)
+    single = ytdl_item.command("u", "18", tmp_path, tmp_path / "p", None, 1)
     assert after(merged, "--merge-output-format") == "mkv"
     assert "--merge-output-format" not in single
 
@@ -125,39 +222,49 @@ def test_the_printed_path_is_believed_when_the_file_is_there(tmp_path):
     dl.mkdir()
     (dl / "talk.mkv").write_bytes(b"x" * 10)
     printed.write_text(f"{dl / 'talk.mkv'}\n")
-    assert ytdl_item.produced(dl, printed, "talk") == dl / "talk.mkv"
+    assert ytdl_item.produced(dl, printed) == dl / "talk.mkv"
 
 
 def test_the_largest_real_file_stands_in_when_nothing_was_printed(tmp_path):
-    """Scaffolding is never the answer: parts, indexes and per-stream files."""
+    """Scaffolding is never the answer: parts, indexes, merges in progress and
+    per-stream files."""
     dl, printed = tmp_path / "dl", tmp_path / ".produced"
     dl.mkdir()
-    (dl / "talk.f137.mp4").write_bytes(b"x" * 900)
-    (dl / "talk.mp4.part").write_bytes(b"x" * 800)
-    (dl / "talk.mp4.ytdl").write_bytes(b"x" * 5)
-    (dl / "talk.mkv").write_bytes(b"x" * 100)
-    assert ytdl_item.produced(dl, printed, "talk") == dl / "talk.mkv"
+    stem = ytdl_item.STEM
+    (dl / f"{stem}.f137.mp4").write_bytes(b"x" * 900)
+    (dl / f"{stem}.mp4.part").write_bytes(b"x" * 800)
+    (dl / f"{stem}.mp4.ytdl").write_bytes(b"x" * 5)
+    (dl / f"{stem}.temp.mkv").write_bytes(b"x" * 700)
+    (dl / f"{stem}.mkv").write_bytes(b"x" * 100)
+    assert ytdl_item.produced(dl, printed) == dl / f"{stem}.mkv"
 
 
-def test_a_name_with_a_bracket_in_it_still_finds_its_file(tmp_path):
+def test_a_name_with_a_bracket_in_it_still_finds_its_files(tmp_path):
     """Matched literally: a glob would read ``[8]`` as a character class."""
-    dl = tmp_path / "dl"
+    dl, out = tmp_path / "dl", tmp_path / "out"
     dl.mkdir()
-    (dl / "talk-[8]-review.mp4").write_bytes(b"x" * 10)
-    assert ytdl_item.produced(dl, dl / "none", "talk-[8]-review") is not None
+    out.mkdir()
+    (dl / "talk-[8]-review.f137.mp4.part").write_bytes(b"x" * 10)
+    ytdl_item.adopt(dl, "talk-[8]-review")
+    assert [path.name for path in dl.iterdir()] == [
+        f"{ytdl_item.STEM}.f137.mp4.part"
+    ]
+    (out / "talk-[8]-review.mp4").write_bytes(b"x" * 10)
+    assert ytdl_item.already_delivered(out, "talk-[8]-review") is not None
 
 
 def test_delivery_moves_the_file_and_says_it_is_complete(tmp_path, monkeypatch):
     monkeypatch.setenv("EXPIRE_WORK", str(tmp_path / "work"))
     monkeypatch.setenv("EXPIRE_OUT", str(tmp_path / "out"))
     (tmp_path / "work").mkdir()
-    source = tmp_path / "talk.mp4"
+    source = tmp_path / f"{ytdl_item.STEM}.mp4"
     source.write_bytes(b"x" * 4321)
     env = expire_dl.Env()
     status = expire_dl.Status(env, 4321, 0)
 
-    assert ytdl_item.deliver(source, env.out, status) == ytdl_item.COMPLETE
+    assert ytdl_item.deliver(source, env.out, status, "talk") == ytdl_item.COMPLETE
     assert not source.exists()
+    # Under the one name (design §6), which yt-dlp is never told.
     assert (env.out / "talk.mp4").read_bytes() == b"x" * 4321
     report = json.loads((env.work / ".status.json").read_text())
     assert report["state"] == ytdl_item.COMPLETE
@@ -186,7 +293,12 @@ def test_item_state_round_trips_and_forgives_a_broken_file(tmp_path):
 
 
 class FakeChild:
-    """A yt-dlp that does what the test says and exits, without a subprocess."""
+    """A yt-dlp that does what the test says and exits, without a subprocess.
+
+    *produces* maps what yt-dlp would fill ``%(ext)s`` with to a size, and the
+    file goes where the argv says yt-dlp would put it; a finished one is
+    printed, as ``--print-to-file after_move:filepath`` does.
+    """
 
     def __init__(self, code=0, produces=None, postprocessing=False, tail=()):
         self.code = code
@@ -195,11 +307,19 @@ class FakeChild:
         self.tail = list(tail)
         self.stopped: list[str] = []
         self.argv: list[str] = []
+        self.found: dict[str, int] = {}
 
     def __call__(self, argv, cwd):
         self.argv = argv
-        for name, size in self.produces.items():
-            (cwd / name).write_bytes(b"x" * size)
+        self.found = {path.name: path.stat().st_size for path in cwd.iterdir()}
+        for ext, size in self.produces.items():
+            path = where(argv, cwd, ext)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("ab") as written:
+                written.write(b"x" * size)
+            if self.code == 0 and not ext.endswith(".part"):
+                with printed_to(argv, cwd).open("a") as printed:
+                    printed.write(f"{path}\n")
         outer = self
 
         class Process:
@@ -280,11 +400,74 @@ def test_a_file_delivered_on_an_earlier_firing_ends_the_item(firing):
 
 def test_a_finished_download_is_delivered_and_reported_complete(firing):
     work, out, install = firing
-    install(FakeChild(code=0, produces={"talk.mp4": 2048}))
+    install(FakeChild(code=0, produces={"mp4": 2048}))
     assert ytdl_item.fetch("https://youtu.be/x", "talk", fmt="137+140") \
         == ytdl_item.COMPLETE
     assert (out / "talk.mp4").stat().st_size == 2048
     assert state_of(work)["state"] == ytdl_item.COMPLETE
+
+
+@pytest.mark.parametrize("title", TROUBLESOME)
+def test_whatever_the_title_the_file_arrives_under_it(firing, title):
+    """The download is delivered as ``<title>.mp4`` and found again as this
+    item's, however the title reads to yt-dlp. A ``$PATH`` in it once sent the
+    video into a directory nothing delivered from — paid for, then failed."""
+    work, out, install = firing
+    name = ytq.title_name(title)
+    install(FakeChild(code=0, produces={"f137.mp4.part": 64, "mp4": 2048}))
+    assert ytdl_item.fetch("https://youtu.be/x", name) == ytdl_item.COMPLETE
+    assert (out / f"{name}.mp4").stat().st_size == 2048
+    assert ytdl_item.already_delivered(out, name) == out / f"{name}.mp4"
+
+
+def test_partials_left_under_the_title_are_resumed_not_bought_again(firing):
+    """An item queued before the stem holds ``<title>.f137.mp4.part``; yt-dlp
+    resumes only the name it would write, so those bytes are renamed onto it
+    before yt-dlp starts — every byte still there, none of it this slice."""
+    work, _, install = firing
+    name = "What is $PATH - 100% explained"
+    dl = work / ytdl_item.DL_DIRNAME
+    dl.mkdir(parents=True)
+    left = {
+        f"{name}.f137.mp4.part": 5000,
+        f"{name}.f137.mp4.ytdl": 40,
+        f"{name}.f140.m4a": 900,
+    }
+    for file_name, size in left.items():
+        (dl / file_name).write_bytes(b"x" * size)
+    before = ytdl_item.fetched_bytes(dl)
+    child = install(FakeChild(code=1))
+
+    assert ytdl_item.fetch("https://youtu.be/x", name) == ytdl_item.DECLINED
+    stem = ytdl_item.STEM
+    assert child.found == {
+        f"{stem}{file_name[len(name):]}": size for file_name, size in left.items()
+    }
+    assert ytdl_item.fetched_bytes(dl) == before
+    assert state_of(work)["payload_bytes_this_slice"] == 0
+
+
+def test_a_file_already_under_the_stem_is_never_written_over(tmp_path):
+    """Adopting an old partial must not cost a newer one its bytes."""
+    stem = ytdl_item.STEM
+    (tmp_path / "talk.mp4.part").write_bytes(b"o" * 10)
+    (tmp_path / f"{stem}.mp4.part").write_bytes(b"n" * 30)
+    ytdl_item.adopt(tmp_path, "talk")
+    assert (tmp_path / f"{stem}.mp4.part").read_bytes() == b"n" * 30
+    assert (tmp_path / "talk.mp4.part").read_bytes() == b"o" * 10
+
+
+@pytest.mark.parametrize("name", [ytdl_item.STEM, f"{ytdl_item.STEM}.f137"])
+def test_a_title_that_is_the_stem_is_left_as_it_is(tmp_path, name):
+    """Its old names cannot be told from the new ones, so none is renamed:
+    renaming ``media.f137.mp4.part`` for a title ``media.f137`` would hand
+    yt-dlp a partial that is not the one it is resuming."""
+    stem = ytdl_item.STEM
+    files = {f"{stem}.f137.mp4.part": 70, f"{stem}.f140.m4a.part": 30}
+    for file_name, size in files.items():
+        (tmp_path / file_name).write_bytes(b"x" * size)
+    ytdl_item.adopt(tmp_path, name)
+    assert {path.name: path.stat().st_size for path in tmp_path.iterdir()} == files
 
 
 def test_exit_zero_with_nothing_to_show_for_it_is_fatal(firing):
@@ -296,7 +479,7 @@ def test_exit_zero_with_nothing_to_show_for_it_is_fatal(firing):
 
 def test_a_firing_that_moved_bytes_is_progress(firing):
     work, _, install = firing
-    install(FakeChild(code=1, produces={"talk.f137.mp4.part": 4096}))
+    install(FakeChild(code=1, produces={"f137.mp4.part": 4096}))
     assert ytdl_item.fetch("https://youtu.be/x", "talk") == ytdl_item.PROGRESS
     report = state_of(work)
     assert report["payload_bytes_this_slice"] == 4096
@@ -318,14 +501,14 @@ def test_one_good_firing_clears_the_strikes(firing):
     install(FakeChild(code=1))
     ytdl_item.fetch("https://youtu.be/x", "talk")
     assert ytdl_item.load_state(work)["zero_firings"] == 1
-    install(FakeChild(code=1, produces={"talk.f137.mp4.part": 8192}))
+    install(FakeChild(code=1, produces={"f137.mp4.part": 8192}))
     ytdl_item.fetch("https://youtu.be/x", "talk")
     assert not ytdl_item.load_state(work).get("zero_firings")
 
 
 def test_the_exit_codes_are_the_ones_the_runner_reads(firing, monkeypatch):
     _, _, install = firing
-    install(FakeChild(code=0, produces={"talk.mp4": 16}))
+    install(FakeChild(code=0, produces={"mp4": 16}))
     assert ytdl_item.run("https://youtu.be/x", "talk") == 0
 
     def explode(*args, **kwargs):
@@ -341,7 +524,7 @@ def test_the_exit_codes_are_the_ones_the_runner_reads(firing, monkeypatch):
 def test_the_part_written_is_never_the_whole_declared_total(firing):
     """The runner asks for ``cap - part_bytes``; equal would mean nothing left."""
     work, _, install = firing
-    install(FakeChild(code=1, produces={"talk.f137.mp4.part": 5000}))
+    install(FakeChild(code=1, produces={"f137.mp4.part": 5000}))
     ytdl_item.fetch("https://youtu.be/x", "talk", total_hint=5000)
     assert state_of(work)["part_bytes"] < 5000
 
@@ -374,16 +557,17 @@ class GrowingChild:
     told the same thing.
     """
 
-    def __init__(self, per_poll: int, name: str = "talk.f137.mp4.part",
+    def __init__(self, per_poll: int, ext: str = "f137.mp4.part",
                  polls: int = 200):
         self.per_poll = per_poll
-        self.name = name
+        self.ext = ext
         self.polls = polls
         self.written = 0
         self.stopped: list[str] = []
 
     def __call__(self, argv, cwd):
         self.cwd = cwd
+        path = where(argv, cwd, self.ext)
         outer = self
 
         class Process:
@@ -394,7 +578,7 @@ class GrowingChild:
                     return 1
                 outer.polls -= 1
                 outer.written += outer.per_poll
-                (cwd / outer.name).write_bytes(b"x" * outer.written)
+                path.write_bytes(b"x" * outer.written)
                 return None
 
         self.process = Process()
@@ -505,6 +689,35 @@ def test_the_child_notices_postprocessing_and_keeps_the_last_lines(tmp_path):
     assert child.finish() == 0
     assert child.postprocessing is True
     assert any("ERROR" in line for line in child.tail)
+
+
+def test_a_postprocessor_that_runs_before_the_download_is_not_the_end_of_it(
+    tmp_path,
+):
+    """SponsorBlock fetches its segments and the thumbnail convertor runs
+    before the first media byte, from lines in the person's own config. Read
+    as postprocessing they froze the meter at nought and lifted the ceiling:
+    the whole video fetched in one firing, reported as nothing. The step
+    SponsorBlock takes after the download is the one that counts."""
+    before = (
+        "print('[SponsorBlock] Fetching SponsorBlock segments')\n"
+        "print('[info] x: Downloading 1 format(s): 18')\n"
+        "print('[ThumbnailsConvertor] There are no thumbnails to convert')\n"
+        "print('[download] Destination: media.mp4')\n"
+        "print('[download]  12.3% of 100MiB')\n"
+    )
+    child = ytdl_item.Child([ytdl_item.sys.executable, "-c", before], tmp_path)
+    while child.process.poll() is None:
+        pass
+    child.finish()
+    assert child.postprocessing is False
+
+    after_it = before + "print('[ModifyChapters] Marking chapters')\n"
+    child = ytdl_item.Child([ytdl_item.sys.executable, "-c", after_it], tmp_path)
+    while child.process.poll() is None:
+        pass
+    child.finish()
+    assert child.postprocessing is True
 
 
 def test_stopping_starts_with_an_interrupt_and_escalates_only_if_it_must(
@@ -618,7 +831,7 @@ def test_a_printed_path_is_read_relative_to_the_download_directory(tmp_path):
     dl.mkdir()
     (dl / "talk.mkv").write_bytes(b"x" * 10)
     printed.write_text("talk.mkv\n")
-    assert ytdl_item.produced(dl, printed, "talk") == dl / "talk.mkv"
+    assert ytdl_item.produced(dl, printed) == dl / "talk.mkv"
 
 
 def test_the_last_printed_path_that_is_actually_there_wins(tmp_path):
@@ -628,4 +841,4 @@ def test_the_last_printed_path_that_is_actually_there_wins(tmp_path):
     dl.mkdir()
     (dl / "talk.mkv").write_bytes(b"x" * 10)
     printed.write_text(f"{dl / 'talk.mkv'}\n\n{dl / 'gone.mkv'}\n")
-    assert ytdl_item.produced(dl, printed, "talk") == dl / "talk.mkv"
+    assert ytdl_item.produced(dl, printed) == dl / "talk.mkv"

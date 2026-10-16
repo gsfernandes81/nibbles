@@ -148,6 +148,24 @@ def test_how_much_of_it_is_here_is_counted_off_the_disk(dlq):
     assert dlq.sched._state_of(row) == "25%"
 
 
+def test_a_title_never_reads_as_bookkeeping(dlq):
+    """A partial named after its title is payload, whatever the title says.
+
+    ``.temp.`` anywhere in a name once meant "a merge in progress", so a video
+    called "Clearing the .temp. cache" had nothing here — the progress cell at
+    nought and Remove taking its paid-for partial for scratch. The rule is
+    yt-dlp's own and anchored where yt-dlp puts it: the merge beside it is
+    still not counted.
+    """
+    dlq.item("10-thing.py", cap=100 * MiB)
+    dl = dlq.root / "work" / "10-thing.py" / "dl"
+    dl.mkdir(parents=True)
+    title = "Clearing the .temp. cache - a 4K tour"
+    (dl / f"{title}.f137.mp4.part").write_bytes(b"x" * 5000)
+    (dl / f"{title}.temp.mp4").write_bytes(b"t" * 400)
+    assert row_for(dlq.sched.items(), "10-thing.py")["have"] == 5000
+
+
 def test_what_is_here_is_every_payload_file_added_up(dlq):
     """A download that arrived in pieces has all of them on the disk.
 
