@@ -607,7 +607,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    number = args.number if args.number is not None else ytq.next_number()
     # The item is named as a video's is, after what it downloads (one name
     # everywhere, design §6): the file's name without its suffix, cleaned by
     # the same rule. A slug made every name that is not ASCII ``video``.
@@ -631,6 +630,9 @@ def main(argv: list[str] | None = None) -> int:
         print(source, end="")
         return 0
 
+    # Only past the dry run: at the cap next_number deals the queue fresh
+    # keys, and a dry run writes nothing, renames nothing.
+    number = args.number if args.number is not None else ytq.next_number()
     try:
         path = ytq.write_item(number, slug, source, again=args.again)
     except ytq.Duplicate as clash:

@@ -811,6 +811,17 @@ def test_a_dry_run_writes_nothing(probed, capsys):
     assert "EXPECT_BYTES" in capsys.readouterr().out
 
 
+def test_a_dry_run_renames_nothing_even_with_the_last_key_taken(probed):
+    """At ``MAX_PRIORITY`` writing deals the queue fresh keys; a dry run
+    writes nothing, so it must rename nothing either."""
+    queue = probed.root / "queue"
+    for name in ("10-one.py", "99-two.py"):
+        (queue / name).write_text("# nothing\n")
+    before = sorted(p.name for p in queue.iterdir())
+    assert probed.queuer.main(["https://example.invalid/x.iso", "--dry-run"]) == 0
+    assert sorted(p.name for p in queue.iterdir()) == before
+
+
 def test_a_server_that_states_no_size_needs_a_cap_to_be_given(dlq, monkeypatch, capsys):
     """"unknown" is not a valid ``EXPECT_BYTES``: the cap is the most you are
     willing to let it cost."""
