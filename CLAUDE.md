@@ -224,22 +224,25 @@ in what nothing draws.
   never bought again. A `--sha256` is cleaned to hashlib's spelling at both
   ends (`expire_dl.sha256_digest`: upper case, a `sha256:` prefix, a whole
   `sha256sum` line), and one that is not 64 hex digits is refused before a
-  byte moves. `expire_dl.move_file` is the download's own move into `out/`:
-  a rename, else `copyfile` to a hidden name beside the target, fsync,
+  byte moves. `expire_dl.move_file` is the one move across
+  filesystems — the download's own into `out/`, `hand_over`'s onto the
+  destination and `ytdl_item.deliver`'s: a rename, else `copyfile` to a hidden name beside the target, fsync,
   rename, unlink the source; any failure removes the copy and leaves the
   source. Never `copy2`/`shutil.move`, which copy the times and the mode after
-  every byte has landed, and shared storage refuses those with EPERM. (The
-  runner's `hand_over`, `out/` to the destination, still moves with
-  `shutil.move`.)
+  every byte has landed, and shared storage refuses those with EPERM. A file
+  `hand_over` cannot move stays in `out/`, recorded there and said on the
+  phone; the destination never holds half a file.
 - **A file download keeps its file's name** (2026-10-16, design §6):
   `dlq.file_name` — Content-Disposition (`filename*` first), else the link's
   last segment or, where that names no file, where it led — cleaned by
   `ytq.title_name`'s rule with its suffix kept (or one made from the media
-  type), `--name` included. The item itself is `NN-<slug>.py`, `ytq.slugify`
-  of that name's stem. `dlq.render` writes the strings the item runs with
-  through `dlq._literal` (`json.dumps` with `ensure_ascii=False`), because
-  json.dumps' surrogate pairs read back in Python as lone surrogates, a name
-  no file can be opened under. An item whose probe saw Range ignored is
+  type), `--name` included. The item is named after its file, as a video's is
+  after its title (`ytq.title_name` of the name without its suffix). **An
+  item's strings read back as themselves**: both front ends write them with
+  `ytq.literal` (`repr`), because `json.dumps` spelled an emoji as a
+  surrogate pair that Python reads back as two lone surrogates, a name no
+  file can have; items queued that way heal where their strings come in
+  (`expire_dl.whole`, in `expire_dl.run` and `ytdl_item.run`). An item whose probe saw Range ignored is
   `PARTIAL: no`, so `admit()` gives it only a firing that can take all of it;
   a probe that finds a web page queues nothing.
 - **The Queue tab is the whole queue.** dlq's listing and its legend row,
@@ -333,8 +336,8 @@ in what nothing draws.
   on one made two items one (the record inherited, the finished row gone from
   the listing, or a raw "Directory not empty"). `_taken`, `do_reorder`'s fast
   path and `_reindex` (its fresh keys and its parking key) all answer to it.
-  A new item asks the same question of `ytq.names_in_use`; the set is written
-  twice today. A stray `NN-` file that is not `NN-name.py` is listed but
+  It is `ytq.names_in_use` (what `write_item` writes by) less what the
+  moving items own, so a move and a write cannot disagree about a name. A stray `NN-` file that is not `NN-name.py` is listed but
   neither moved nor renamed, and a reorder leaves it its name.
 - **Removing keeps what was paid for.** The confirm's keys never vary with the
   item (`removal_answers` guarantees it). A done download whose file was
@@ -353,7 +356,7 @@ in what nothing draws.
   is the one door that refuses a duplicate; a file URL goes through it too.
 - **Destinations**: `nibbles dest` holds them; the item always downloads into
   `out/<item>/` and the *runner* moves it at delivery (`hand_over`,
-  `shutil.move`, never a rename — shared storage is a different filesystem),
+  `expire_dl.move_file` — shared storage is a different filesystem),
   so an unreachable destination leaves the file safe. **A destination that
   cannot be a folder reads as the default** (`dest_state`, keyed on the key
   being present, for the reason settings do): a `*_dir` that was not a string
@@ -626,7 +629,7 @@ in what nothing draws.
   and **every deeper look re-buys the listing**: `feed_cost` is the total,
   never the increment, and it is on the `↓ 30 more · 0.6 MB in all` button
   before anything is spent. `--playlist-end` is the whole cost argument (a
-  test must pin `subs_argv` beside the search's); fewer rows back than asked
+  test must pin `feed_argv` beside the search's); fewer rows back than asked
   for is the end of the feed, told apart from `SUBS_MAX` in words; the depth
   commits only on a fetch that came back (`YouTube.want` vs `.asked`, per
   list); and `bumped_place` puts the cursor on the first new row when ↓ on
@@ -695,8 +698,8 @@ in what nothing draws.
   title moves rather than sitting clipped while the loop wakes to move it.
 - **A notice never loses its own way out** — what the old full-page messages
   said is a `shell.Notice` sheet whose body scrolls and whose `esc OK` is
-  pinned; a sweep holds it at every size. `wrapped()` sets
-  `break_on_hyphens=False` because a path broken across two lines is a path
+  pinned; a sweep holds it at every size. `widgets.wrapped`
+  (bewitch's `wrap_row`) never breaks at a hyphen, because a path broken across two lines is a path
   retyped wrong.
 - **`ytq.write_item` is the one door and refuses duplicates**
   (`ytq.Duplicate`), keyed on extractor and id rather than URL; the search,
