@@ -1,0 +1,107 @@
+# syntax=docker/dockerfile:1
+
+# nibbles-dev — a THIN CHILD of gsrpi-dev-base, the image every dev container on zero is
+# built from. Everything it shares with them lives in the infra repo's
+# `dev/Dockerfile.base` and is pulled, not rebuilt: Python 3.13, uv, ruff and ty, Claude
+# Code, gh and git (both on the hub's token), fish, zmx, sshd, the `dev` user, and the
+# entrypoint that clones this repo into /workspace and starts the lot. What is left here
+# is only what makes this container nibbles': the locked venv, and the two sibling
+# checkouts the checks need (CLAUDE.md § Checks), beside /workspace.
+#
+# WHO BUILDS THIS: infra. nibbles-dev is a service in infra's `dev/compose.yaml`, built
+# straight from this repo's `main` on GitHub with BASE_TAG passed from infra's own line,
+# so a change here reaches the container only once it is on `main` and infra rebuilds.
+# The ARG default below is a fallback for a build outside infra. The container's name,
+# volumes and environment (DEV_REPO=gsfernandes81/nibbles) are that service's.
+#
+# Nothing here is a release: this file is not in the wheel or the sdist, and changing it
+# is never a version bump.
+#
+# PINNED TAG, never `latest`: a base rebuild must not change this container until
+# infra's tag moves.
+ARG BASE_TAG=2026.10.26
+FROM ghcr.io/gsfernandes81/gsrpi-dev-base:${BASE_TAG}
+
+# Re-declared, because an ARG before FROM is out of scope after it; recorded as a label
+# so which base a running container is on can be read off it rather than guessed.
+ARG BASE_TAG
+LABEL uk.gsrpi.base-tag="${BASE_TAG}"
+
+# The base ends as dev; the two layers below write system paths.
+USER root
+
+# No build-essential and no uv of our own. Every locked package has a pure-Python or an
+# aarch64 wheel, and the two built here (nibbles, and bewitch should a `uv sync` add it)
+# are pure Python on hatchling. The base's uv is pinned and sits in /bin; a
+# `COPY --from=…uv:latest` would make this image a function of the day it was built.
+#
+# THE SIBLINGS LIVE BESIDE /workspace, at /bewitch and /zwana-quota, made here because
+# only root can write in / and owned by dev so child-init.sh can clone into them.
+# "Beside" and not a folder named by $BEWITCH_HOME/$ZWANA_HOME, because three readers of
+# the arrangement take no variable: `[tool.uv.sources]` spells bewitch as `../bewitch`
+# (so `make dev`, `uv run` or `uv sync` fail outright without /bewitch),
+# `poodle_config.py` hands `make mutants` HERE.parent's, and `home.zwana_root(job=True)`
+# — what `nibbles status` reports the nightly job finding — never reads ZWANA_HOME. Beside
+# is also how CI and the phone lay them out, so neither variable is set.
+RUN install -d -o dev -g dev /bewitch /zwana-quota
+
+# TZ, CLAUDE_CONFIG_DIR, GH_CONFIG_DIR and the rest come from the base and are not
+# repeated. The venv is OUTSIDE /workspace so the workspace volume cannot shadow it;
+# VIRTUAL_ENV mirrors UV_PROJECT_ENVIRONMENT for the tools that key off it. PATH puts the
+# venv first, so `python3` is the venv's (which is what .githooks/checks.sh runs when
+# there is no .venv) and `ruff` is the lint group's 0.16.4, Termux's, not the base's.
+#
+# EXPIRE_HOME is deliberately NOT set. The suites point it at their own throwaway roots,
+# and with it unset the editable install's queue root is the checkout, /workspace, which
+# no job scheduler fires on: there is no Termux here. Nothing makes a ~/nibbles.
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0 \
+    UV_PROJECT_ENVIRONMENT=/home/dev/venv \
+    VIRTUAL_ENV=/home/dev/venv \
+    PATH=/home/dev/venv/bin:$PATH
+
+# Pre-build the locked dependencies into /home/dev/venv: the dev group (pytest, pyte,
+# hypothesis — uv's default), lint (ruff) and mutants (poodle). The editable project is
+# added at every start by child-init.sh, once /workspace holds the clone.
+#
+# --no-install-package bewitch: the lock has it as the editable checkout at ../bewitch,
+# which a build has no copy of. It is used as that checkout, never from the venv, just as
+# on the phone: tui._bewitch_root and the suites find /bewitch first.
+#
+# KEEP THESE FLAGS IN SYNC with docker-child-init.dev.sh, which runs the same sync minus
+# --no-install-project: a start that asked for fewer groups would uninstall them.
+#
+# pyproject.toml and uv.lock are bind-mounted rather than copied, so the image puts
+# nothing in /workspace and a fresh workspace volume is empty for the entrypoint's clone.
+# Run as root against a root-owned cache and chowned in the same layer, because a
+# BuildKit cache mount is root's and the base's dev uid is not a fixed number.
+RUN --mount=type=bind,source=pyproject.toml,target=/tmp/lock/pyproject.toml \
+    --mount=type=bind,source=uv.lock,target=/tmp/lock/uv.lock \
+    --mount=type=cache,target=/root/.cache/uv \
+    cd /tmp/lock \
+    && UV_CACHE_DIR=/root/.cache/uv \
+       uv sync --frozen --no-install-project --no-install-package bewitch \
+           --group lint --group mutants \
+    && chown -R dev:dev /home/dev/venv
+
+USER dev
+
+# The uv cache volume's mountpoint: a volume empty on first use takes the ownership of
+# the directory it covers, and one root made is one uv cannot write to.
+RUN mkdir -p /home/dev/.cache/uv
+
+# ── the seams ───────────────────────────────────────────────────────────────
+# No ssh_config: the base's /home/dev/ssh_config is the defaults and nothing else, and
+# nibbles needs no host and no identity. No known_hosts.extra, for the same reason. No
+# sshd drop-in: since 2026-10-27 the base's sshd reads only its own config.
+
+# What this image does at start that the base cannot know about: the venv, the siblings
+# and the pre-push hook.
+COPY --chown=dev:dev docker-child-init.dev.sh /home/dev/child-init.sh
+
+# The login walkthrough — the hub's token, Claude, the clone, the siblings. infra's
+# `make login C=nibbles-dev` runs it.
+COPY --chown=dev:dev docker-login.dev.sh /home/dev/login.sh
+
+# WORKDIR, EXPOSE and CMD are inherited.

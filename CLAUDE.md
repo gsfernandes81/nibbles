@@ -809,6 +809,18 @@ reaches YouTube or the portal. Needs the zwana-quota and bewitch checkouts,
 and a shallow clone path — a deep worktree is itself the width the screens
 cannot fit.
 
+**In the dev container** (`nibbles-dev` on zero, which the infra repo builds
+from `Dockerfile.dev` on `main`) the checkout is `/workspace` and the two
+siblings are beside it, `/bewitch` and `/zwana-quota`: beside rather than
+named by `$BEWITCH_HOME`/`$ZWANA_HOME`, because uv's `../bewitch`,
+`poodle_config.py` and `zwana_root(job=True)` read no variable.
+`docker-child-init.dev.sh` clones them at every start, anonymously — the
+container's GitHub token reaches this repo and no other, so **both must stay
+public** — and syncs `/home/dev/venv` (first on PATH; the lint group's ruff;
+no bewitch, which is the checkout) with the build's flags. There is no Termux
+in there: no JobScheduler, no `termux-*`, no yt-dlp, no queue a job fires on.
+The suites need none of it.
+
 **The pty tests stand in for Termux** (`tests/termux_pty.py`, shared by both
 suites): they answer blessed's startup queries the way Termux does — a
 cursor-position request with `ESC[1;1R`, a DECRQM query with `ESC[?<mode>;2$y`

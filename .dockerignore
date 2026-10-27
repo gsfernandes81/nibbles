@@ -1,0 +1,28 @@
+# Build-context excludes for Dockerfile.dev. The image reads only pyproject.toml, uv.lock
+# and the two docker-*.dev.sh scripts; the source arrives at start as a clone in the
+# /workspace volume. infra builds from this repo's git URL, whose context is the tracked
+# tree anyway, so this matters for a local build: it keeps the context small, and keeps
+# this checkout's queue — the runner's state, a device's config.json, partial downloads —
+# out of any image.
+
+.git
+.venv
+**/__pycache__
+*.pyc
+.pytest_cache
+.hypothesis
+.ruff_cache
+.poodle-temp
+.poodle-report.json
+dist
+
+# The runner's state when this checkout is a live queue root (see .gitignore).
+done/
+failed/
+heartbeat
+logs/
+out/
+work/
+runner.lock
+state.json
+config.json
