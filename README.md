@@ -56,6 +56,9 @@ screens follow; `design/divergences.md` lists where the build differs.
   the root are doors to the package's modules, kept for a phone armed, and
   holding items queued, before nibbles was a package. They are not shipped.
 - `queue/`: the queue, with the item contract in `queue/README.md`.
+- `Dockerfile.dev`, `docker-child-init.dev.sh`, `docker-login.dev.sh`: the
+  owner's dev container, `nibbles-dev`, which the infra repo builds from
+  `main` (see Checks). Not shipped.
 - **`~/zwana-quota`** (a clone beside the queue root, else under `~`): the
   portal client and quota widget the zwana budget source reads every guard
   figure through. Not needed with a manual budget. `$ZWANA_HOME` points a
@@ -200,6 +203,14 @@ read back with `pyte`; and every tab and sheet is composed at every width from
 Two failures that are not regressions: a long checkout path (the screens check
 every line fits 32 columns, and the root is on the status screen), and a
 missing zwana-quota or bewitch checkout.
+
+In the dev container (`nibbles-dev`) all of that is already there: the
+checkout is `/workspace`, bewitch and zwana-quota are cloned beside it at
+`/bewitch` and `/zwana-quota` on every start (anonymously, so both have to stay
+public), the locked venv is first on `PATH`, and the pre-push hook is armed.
+`cd /workspace && make test`. Termux is not in there, so neither is anything
+that needs it — the job scheduler, `termux-*`, yt-dlp — and the suites need
+none of it.
 
 `make mutants` runs poodle; it is a ratchet, outside the checks, and
 `poodle_config.py` says how it is arranged.
