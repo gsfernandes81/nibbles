@@ -16,9 +16,9 @@
  h quality chips               240-720 │
 ╭──────────────────────────────────────╮
 │ Destinations ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
-│    video · /tmp/nibbles-fillins-oy…  │
-│    default, used by ytq              │
-│    audio · /tmp/nibbles-fillins-oy…  │
-│    default, used by ytq, audio only  │
-│    file · /tmp/nibbles-fillins-oyf…  │
-│    default, used by dlq              │
+│    video · /tmp/nibbles-fillins-67…  │
+│    default, used by videos           │
+│    audio · /tmp/nibbles-fillins-67…  │
+│    default, used by audio-only pic…  │
+│    file · /tmp/nibbles-fillins-67a…  │
+│    default, used by plain file URLs  │

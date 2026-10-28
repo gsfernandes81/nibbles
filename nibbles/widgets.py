@@ -297,13 +297,16 @@ class Btn:
 
 
 def button_min(word: str, key: str = "", note: str = "") -> int:
-    """The narrowest a button can be with nothing cut."""
-    return (
+    """The narrowest a button can be with nothing cut — and never under the
+    five columns :func:`button` draws at least, or a label of no width (a soft
+    hyphen) made :func:`dock` count a row narrower than it drew, and the last
+    button was cut off with its target."""
+    return max(5, (
         string_width(word)
         + (string_width(key) + 1 if key else 0)
         + (string_width(note) + 1 if note else 0)
         + 4
-    )
+    ))
 
 
 def button(

@@ -1,0 +1,24 @@
+ nibbles ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ queue • 00:16 
+╭──────────────────────────────────────╮
+│ waiting · 03:00 (3h)   ╭───────────╮ │
+│ ██████████████████░░░░ │ n Run now │ │
+│ 636/763 MiB to spend   ╰───────────╯ │
+╰──────────────────────────────────────╯
+╭────────────╮╭────────────╮╭──────────╮
+│  Queued 3  ││  Failed 1  ││  Done 1  │
+╰────────────╯╰────────────╯╰──────────╯
+                                        
+ ✓ Crust of Rust - Lifetimes            
+   92 MiB · deleted                     
+                                        
+╭──────────────────────────────────────╮
+│ Not opened ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  esc ×  │
+│ could not open Crust of Rust -       │
+│ Lifetimes.mp4: Termux shares no file │
+│ with another app until               │
+│ ~/.termux/termux.properties has      │
+│ allow-external-apps = true: add it,  │
+│ then run termux-reload-settings      │
+│ ╭──────────────────────────────────╮ │
+│ │              esc OK              │ │
+│ ╰──────────────────────────────────╯ │

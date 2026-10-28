@@ -16,8 +16,8 @@
 │ config at ~/.config/yt-dlp/config    │
 │ and yt-dlp -v must show a JS runtime │
 │ and yt_dlp_ejs.                      │
-│ ytq itself: reinstall nibbles from   │
-│ the checkout — docs:                 │
+│ nibbles itself: pip install -U       │
+│ nibbles — docs:                      │
 │ ~/nibbles/docs/ytq.md                │
 │ ╭──────────────────────────────────╮ │
 │ │              esc OK              │ │

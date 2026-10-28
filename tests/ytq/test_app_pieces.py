@@ -199,6 +199,13 @@ def test_a_row_of_buttons_fills_its_width_exactly(labels, width):
     assert all(a[1] == b[0] for a, b in zip(edges, edges[1:], strict=False))
 
 
+def test_a_label_of_no_width_still_leaves_every_button_its_target():
+    """Found by the property above: a soft hyphen is no columns wide, but a
+    button is never narrower than five."""
+    row = w.dock([w.Btn(label, id=f"b{i}") for i, label in enumerate(["0", "\xad", "0" * 10])], 24)
+    assert row.width == 24 and sorted(h.id for h in row.hits) == ["b0", "b1", "b2"]
+
+
 @given(width=st.integers(10, 80), n=st.integers(2, 4))
 def test_one_of_choices_are_equal_boxes(width, n):
     row = w.segmented([f"opt{i}" for i in range(n)], 0, width, "pick")
